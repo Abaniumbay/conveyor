@@ -198,7 +198,7 @@ async function world(options: {
   const config = {
     labels: {
       enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" },
-      metadata: { closable: "conveyor:closable", noSplit: options.noSplitLabel ?? "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+      metadata: { closable: "conveyor:closable", noSplit: options.noSplitLabel ?? "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
     },
     repositories: { repo: { pipeline: "default", systemLabels: options.systemLabels ?? ["area:api", "area:ui"], address: "o/r", ...(options.refinement ? { refinement: options.refinement } : {}) } },
     pipelines: { default: { stages: (options.pipelineStages ?? ["refinement", "implementation"]).map((id) => ({

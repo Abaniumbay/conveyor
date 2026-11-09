@@ -1096,4 +1096,18 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 46,
+    sql: `
+      -- Pause is the conveyor:paused label now. Items paused the old way (enrollment label removed)
+      -- are listed here so the service relabels them once, then the marker column goes.
+      CREATE TABLE pending_pause_relabels (
+        issue_id TEXT PRIMARY KEY REFERENCES issues(id) ON DELETE CASCADE
+      );
+      INSERT INTO pending_pause_relabels(issue_id)
+        SELECT id FROM issues
+        WHERE source_state = 'open' AND (paused_by_conveyor = 1 OR projected_state = 'paused');
+      ALTER TABLE issues DROP COLUMN paused_by_conveyor;
+    `,
+  },
 ];

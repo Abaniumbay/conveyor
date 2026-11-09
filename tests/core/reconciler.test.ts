@@ -32,7 +32,7 @@ const labels = {
   states: { done: "conveyor:done", blocked: "conveyor:blocked" },
   metadata: {
     closable: "conveyor:closable",
-    noSplit: "conveyor:no-split",
+    noSplit: "conveyor:no-split", paused: "conveyor:paused",
     orderTemplate: "conveyor:order:{number}",
   },
 };
@@ -88,22 +88,66 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
-  test("keeps a parked question active when only the base enrollment label is removed", async () => {
+  const common = (store: ConveyorStore) => ({
+    store, configHash: "hash-1",
+    repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+    stages: ["refinement", "implementation"], labels,
+  });
+
+  test("records an item paused, with the label as the reason, while conveyor:paused is present", async () => {
     const store = await openStore();
-    const common = {
-      store, configHash: "hash-1",
-      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
-      stages: ["refinement", "implementation"], labels,
-    };
-    await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
-    const enrollment = store.activateEnrollment("github:owner/repo#1");
-    const question = store.openQuestion({ issueId: "github:owner/repo#1", runId: null, prompt: "Which scope?", reason: "Need a decision", options: ["small"] });
+    const id = "github:owner/repo#1";
+    await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:implementation"])]; } } });
 
-    await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor:refinement"])]; } } });
+    await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:implementation", "conveyor:paused"])]; } } });
 
-    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: "refinement", projectedState: "needs-input" });
-    expect(store.getEnrollment(enrollment.id)).toMatchObject({ status: "active" });
+    expect(store.getIssue(id)).toMatchObject({ projectedStage: "implementation", projectedState: "paused" });
+    expect(store.listStageTransitions(id)).toEqual(expect.arrayContaining([expect.objectContaining({
+      kind: "paused", status: "completed", reason: "Paused: the conveyor:paused label is present.",
+    })]));
+    store.close();
+  });
+
+  test("keeps a parked question open and the item paused while conveyor:paused is present, and resumes when it is removed", async () => {
+    const store = await openStore();
+    const id = "github:owner/repo#1";
+    await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
+    const question = store.openQuestion({ issueId: id, runId: null, prompt: "Which scope?", reason: "Need a decision", options: ["small"] });
+
+    await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement", "conveyor:paused"])]; } } });
+    expect(store.getIssue(id)).toMatchObject({ projectedStage: "refinement", projectedState: "paused" });
     expect(store.getQuestion(question.id)).toMatchObject({ status: "open", answer: null });
+
+    await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
+    expect(store.getIssue(id)).toMatchObject({ projectedStage: "refinement", projectedState: "needs-input" });
+    store.close();
+  });
+
+  test("resumes the same stage when conveyor:paused is removed, leaving an interrupted stage ready", async () => {
+    const store = await openStore();
+    const id = "github:owner/repo#1";
+    await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:implementation"])]; } } });
+    await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:implementation", "conveyor:paused"])]; } } });
+    store.setStageState({ issueId: id, stageId: "implementation", status: "interrupted", feedbackCycle: 0, configHash: "hash-1" });
+
+    await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:implementation"])]; } } });
+
+    expect(store.getIssue(id)).toMatchObject({ projectedStage: "implementation", projectedState: "active" });
+    expect(store.getStageState(id)).toMatchObject({ stageId: "implementation", status: "ready" });
+    expect(store.listStageTransitions(id)).toEqual(expect.arrayContaining([expect.objectContaining({
+      kind: "resumed", reason: "Resumed: the conveyor:paused label was removed.",
+    })]));
+    store.close();
+  });
+
+  test("does not mark an item paused when only the conveyor label is removed", async () => {
+    const store = await openStore();
+    const id = "github:owner/repo#1";
+    await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
+
+    await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor:refinement"])]; } } });
+
+    expect(store.getIssue(id)).toMatchObject({ projectedState: "offboarded" });
     store.close();
   });
 

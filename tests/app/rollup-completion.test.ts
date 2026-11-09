@@ -48,7 +48,7 @@ function config(root: string): ConveyorConfig {
       enrollment: "conveyor",
       stageTemplate: "conveyor:{stage}",
       states: { done: "conveyor:done" },
-      metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+      metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
     },
     pipelines: {
       default: {

@@ -418,6 +418,7 @@ function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
     })),
     { name: config.labels.metadata.closable, color: "8b5cf6", description: "Conveyor considers this issue closable" },
     { name: config.labels.metadata.noSplit, color: "0f766e", description: "Conveyor will not split this issue" },
+    { name: config.labels.metadata.paused, color: "9ca3af", description: "Conveyor is paused on this issue" },
     ...repository.systemLabels.map((name) => ({
       name,
       color: "64748b",
@@ -880,6 +881,7 @@ export class ConveyorService {
     const startedAt = Date.now();
     this.#repositoryReconciledAt.set(id, startedAt);
     try {
+      await this.relabelOldPausedItems(id);
       // What Conveyor held before the read, so a `changed` pass re-reads relationships only for issues
       // GitHub reports changed (the listing overlaps the last read and returns some unchanged ones).
       const before = new Map(this.store.listIssues(id).map((issue) => [issue.id, { body: issue.body, sourceUpdatedAt: issue.sourceUpdatedAt }]));
@@ -3079,7 +3081,7 @@ export class ConveyorService {
             address,
             parent.sourceNumber,
             labels,
-            [this.config.labels.metadata.noSplit],
+            [this.config.labels.metadata.noSplit, this.config.labels.metadata.paused],
           );
           this.store.completeSourceMutation(labelMutation.id, { labels });
         } catch (error) {
@@ -4252,7 +4254,7 @@ export class ConveyorService {
           this.config.labels.enrollment,
           ...(stage ? [this.config.labels.stageTemplate.replace("{stage}", stage)] : []),
           ...metadata,
-        ], [this.config.labels.metadata.noSplit]);
+        ], [this.config.labels.metadata.noSplit, this.config.labels.metadata.paused]);
       } catch (error) {
         if (error instanceof RepositoryPausedError) throw error;
         throw new Error("Your answer was saved but the question state could not be cleared. Submit the same answer to retry.");
@@ -4274,7 +4276,7 @@ export class ConveyorService {
         this.config.labels.enrollment,
         this.config.labels.stageTemplate.replace("{stage}", issue.projectedStage),
         ...metadata,
-      ], [this.config.labels.metadata.noSplit]);
+      ], [this.config.labels.metadata.noSplit, this.config.labels.metadata.paused]);
     }
     this.schedule();
   }
@@ -6094,7 +6096,7 @@ export class ConveyorService {
             repository.address,
             issue.sourceNumber,
             labels,
-            [this.config.labels.metadata.noSplit],
+            [this.config.labels.metadata.noSplit, this.config.labels.metadata.paused],
           );
           this.store.completeSourceMutation(mutation.id, { labels });
         } catch (error) {
@@ -6286,7 +6288,7 @@ export class ConveyorService {
   /** Whether an open paused item can safely restore its enrollment label. */
   private resumablePausedIssue(issue: StoredIssue, running: boolean): boolean {
     return issue.sourceState === "open" && issue.projectedState === "paused" &&
-      !issue.labels.includes(this.config.labels.enrollment) && !running;
+      issue.labels.includes(this.config.labels.metadata.paused) && !running;
   }
 
   private resumableRollupIssue(issue: StoredIssue, children: number, running: boolean, hasOpenQuestion: boolean): boolean {
@@ -6450,7 +6452,7 @@ export class ConveyorService {
             repository.address,
             issue.sourceNumber,
             conveyorLabels,
-            [this.config.labels.metadata.noSplit],
+            [this.config.labels.metadata.noSplit, this.config.labels.metadata.paused],
           );
           this.store.completeSourceMutation(mutation.id, { labels: conveyorLabels });
         } catch (error) {
@@ -6534,7 +6536,7 @@ export class ConveyorService {
           repository.address,
           issue.sourceNumber,
           conveyorLabels,
-          [this.config.labels.metadata.noSplit],
+          [this.config.labels.metadata.noSplit, this.config.labels.metadata.paused],
         );
       } catch (error) {
         if (error instanceof RepositoryPausedError) throw error;
@@ -6657,22 +6659,15 @@ export class ConveyorService {
   }
 
   /**
-   * Pauses an item the way the source does: removes only its enrollment label, so Conveyor stops
-   * scheduling it and interrupts its running stage; its stage, worktree and history are kept.
+   * Pauses an item by adding the paused label: Conveyor stops scheduling it and interrupts its
+   * running agent; its labels, stage, worktree and history are kept.
    */
   async pauseIssue(issueId: string, actor: string): Promise<{ stageId: string | null }> {
     const { issue, repository, live } = await this.liveEnrolledIssue(issueId);
-    if (!live.labels.includes(this.config.labels.enrollment)) throw new Error("the item is already paused");
-    const labels = this.conveyorLabels(live.labels).filter((label) => label !== this.config.labels.enrollment);
-    // Recorded before the write: the webhook of the removal can reconcile before this call returns.
-    const keepsMarker = labels.length === 0;
-    if (keepsMarker) this.store.setPausedByConveyor(issueId, true);
-    try {
-      await this.replaceLabelsRecorded(issue, repository, "issue.labels.pause", labels);
-    } catch (error) {
-      if (keepsMarker) this.store.setPausedByConveyor(issueId, false);
-      throw error;
-    }
+    const pausedLabel = this.config.labels.metadata.paused;
+    if (live.labels.includes(pausedLabel)) throw new Error("the item is already paused");
+    const labels = [...this.conveyorLabels(live.labels), pausedLabel];
+    await this.replaceLabelsRecorded(issue, repository, "issue.labels.pause", labels);
     await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
     this.interruptIneligibleRuns();
     this.store.appendConversationMessage({
@@ -6683,11 +6678,12 @@ export class ConveyorService {
     return { stageId: issue.projectedStage };
   }
 
-  /** Resumes a paused item by restoring its enrollment label; reports whether its stage started or queued. */
+  /** Resumes a paused item by removing the paused label; reports whether its stage started or queued. */
   async resumeIssue(issueId: string, actor: string): Promise<{ status: "started" | "queued"; stageId: string | null }> {
     const { issue, repository, live } = await this.liveEnrolledIssue(issueId);
-    if (live.labels.includes(this.config.labels.enrollment)) throw new Error("the item is not paused");
-    const labels = [...this.conveyorLabels(live.labels), this.config.labels.enrollment];
+    const pausedLabel = this.config.labels.metadata.paused;
+    if (!live.labels.includes(pausedLabel)) throw new Error("the item is not paused");
+    const labels = this.conveyorLabels(live.labels).filter((label) => label !== pausedLabel);
     await this.replaceLabelsRecorded(issue, repository, "issue.labels.resume", labels);
     await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
     this.store.events().append("item.requeued", { reason: "resume" }, { issueId });
@@ -6702,6 +6698,24 @@ export class ConveyorService {
     return { status, stageId: refreshed?.projectedStage ?? null };
   }
 
+  /**
+   * Items paused the old way (enrollment label removed) get the enrollment and paused labels once, so
+   * they stay paused now that removing the enrollment label means leaving Conveyor.
+   */
+  private async relabelOldPausedItems(repositoryId: string): Promise<void> {
+    const repository = this.config.repositories[repositoryId];
+    if (!repository) return;
+    for (const issue of this.store.listPendingPauseRelabels().sort((left, right) => left.sourceNumber - right.sourceNumber)) {
+      if (issue.repositoryId !== repositoryId) continue;
+      const live = await this.executionGitHub(repositoryId).getIssue(repository.address, issue.sourceNumber);
+      if (live.state === "open") {
+        const labels = [...new Set([...this.conveyorLabels(live.labels), this.config.labels.enrollment, this.config.labels.metadata.paused])].sort((left, right) => left.localeCompare(right));
+        await this.replaceLabelsRecorded(issue, repository, "issue.labels.upgrade-pause", labels);
+      }
+      this.store.completePauseRelabel(issue.id);
+    }
+  }
+
   /** An open item known to Conveyor (enrolled or paused), with its live source state. */
   private async liveEnrolledIssue(issueId: string) {
     const issue = this.store.getIssue(issueId);
@@ -6710,7 +6724,7 @@ export class ConveyorService {
     this.assertRepositoryActive(issue.repositoryId);
     const live = await this.github.getIssue(repository.address, issue.sourceNumber);
     if (live.state !== "open") throw new Error("the item is closed");
-    if (this.conveyorLabels(live.labels).length === 0 && !issue.pausedByConveyor) throw new Error("the item is offboarded (it has no Conveyor labels)");
+    if (!live.labels.includes(this.config.labels.enrollment)) throw new Error("the item is offboarded (it has no conveyor label)");
     return { issue, repository, live };
   }
 
@@ -6734,7 +6748,7 @@ export class ConveyorService {
         repository.address,
         issue.sourceNumber,
         labels,
-        [this.config.labels.metadata.noSplit],
+        [this.config.labels.metadata.noSplit, this.config.labels.metadata.paused],
       );
       this.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {

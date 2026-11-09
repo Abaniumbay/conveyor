@@ -15,7 +15,7 @@ const labels = {
   },
   metadata: {
     closable: "conveyor:closable",
-    noSplit: "conveyor:no-split",
+    noSplit: "conveyor:no-split", paused: "conveyor:paused",
     orderTemplate: "conveyor:order:{number}",
   },
 };
@@ -54,7 +54,7 @@ describe("evaluateIssueState", () => {
     ).toMatchObject({ mode: "offboarded", visible: false, eligible: false });
   });
 
-  test("shows a labeled issue without the base label as paused", () => {
+  test("offboards a stage-labeled issue without the base label instead of pausing it", () => {
     expect(
       evaluateIssueState({
         sourceState: "open",
@@ -63,12 +63,19 @@ describe("evaluateIssueState", () => {
         stages,
         expectedPostMergeClosure: false,
       }),
-    ).toMatchObject({
-      mode: "paused",
-      visible: true,
-      eligible: false,
-      stage: "implementation",
-    });
+    ).toMatchObject({ mode: "offboarded", visible: false, eligible: false });
+  });
+
+  test("shows an issue carrying the paused label as paused, keeping its stage and state", () => {
+    expect(
+      evaluateIssueState({
+        sourceState: "open",
+        sourceLabels: ["conveyor", "conveyor:implementation", "conveyor:blocked", "conveyor:paused"],
+        labels,
+        stages,
+        expectedPostMergeClosure: false,
+      }),
+    ).toEqual({ mode: "paused", visible: true, eligible: false, stage: "implementation", state: "blocked", warnings: [] });
   });
 
   test("places a new enrolled issue at the first stage", () => {

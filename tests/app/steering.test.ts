@@ -113,7 +113,7 @@ describe("ConveyorService steering", () => {
       settings: { workspaces: path.join(root, "worktrees"), artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, labelPrefix: "conveyor", retention: { runHistoryMs: null, artifactsMs: null } },
       web: { listen: "127.0.0.1:4300", steering: { agent: "operator", workspace: root, periodic: { intervalMs: 60_000 } } },
       runners: { codex: { type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true } },
-      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" } },
       agents: { operator: { runner: "codex", model: "gpt-5", effort: "high", instructions, workspaceAccess: "read-only", tasks: ["operator.getBoard", "operator.getItemHistory", "operator.retryStoppedItem", "operator.answerItemQuestion", "operator.reportStoppedItemOutcome"] } },
       pipelines: { default: { stages: [{ id: "implementation" }] } },
       repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
@@ -338,7 +338,7 @@ describe("ConveyorService steering", () => {
     const config = {
       hash: "config-hash", root,
       settings: { workspaces: path.join(root, "worktrees"), artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, labelPrefix: "conveyor", retention: { runHistoryMs: null, artifactsMs: null } },
-      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" } },
       pipelines: { default: { stages: [{ id: "implementation" }] } },
       repositories: { repo: { source: "github", address: "owner/my-app", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
       sources: { github: { type: "github" } }, checks: {}, ci: {}, runners: {}, agents: {},
@@ -426,7 +426,7 @@ describe("ConveyorService steering", () => {
         enrollment: "conveyor",
         stageTemplate: "conveyor:{stage}",
         states: { blocked: "conveyor:blocked" },
-        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
       },
       agents: {
         operator: {

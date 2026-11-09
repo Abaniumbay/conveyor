@@ -221,7 +221,7 @@ conveyor item show conveyor:90        # its stage, live wait or queue reason, co
 conveyor item history conveyor:90     # stage transitions
 conveyor item logs conveyor:90 --follow   # agent events, tool calls and checks
 conveyor item retry conveyor:90 --note "rotated the key"
-conveyor item pause conveyor:90       # removes its enrollment label; resume restores it
+conveyor item pause conveyor:90       # adds conveyor:paused; resume removes it
 conveyor questions list
 conveyor questions answer <id> <answer>
 conveyor logs --level warn --since 1h --follow

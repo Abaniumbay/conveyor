@@ -203,7 +203,7 @@ describe("ConveyorService dashboard", () => {
       labels: {
         enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
         states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error", "needs-intervention": "conveyor:needs-intervention" },
-        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
       },
       pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }, { id: "review", run: { type: "agent", agent: "reviewer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }, { id: "deploy", run: { type: "agent", agent: "deployer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
       repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
@@ -312,7 +312,7 @@ describe("ConveyorService dashboard", () => {
       labels: {
         enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
         states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error", "needs-intervention": "conveyor:needs-intervention", "needs-input": "conveyor:needs-input", rejected: "conveyor:rejected" },
-        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
       },
       pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: ["refinement", "implementation", "review"].map((id) => ({ id, run: { type: "agent", agent: id === "refinement" ? "refiner" : "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] })) } },
       repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
@@ -785,9 +785,8 @@ describe("ConveyorService dashboard", () => {
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash });
     store.upsertIssue({
       id: "paused-refinement", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.com/issues/1",
-      title: "Paused refinement", body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-21T00:00:00Z",
+      title: "Paused refinement", body: "", sourceState: "open", labels: ["conveyor", "conveyor:paused"], sourceUpdatedAt: "2026-10-21T00:00:00Z",
     });
-    store.setPausedByConveyor("paused-refinement", true);
     store.setIssueProjection("paused-refinement", { stage: null, state: "paused", warning: null });
 
     const service = new ConveyorService(config, store, {} as never);
@@ -800,7 +799,6 @@ describe("ConveyorService dashboard", () => {
       id: "enrolled-paused", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.com/issues/2",
       title: "Enrolled paused", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-10-21T00:00:00Z",
     });
-    store.setPausedByConveyor("enrolled-paused", true);
     store.setIssueProjection("enrolled-paused", { stage: null, state: "paused", warning: null });
     expect(service.issueDetails("csrf", "enrolled-paused")).toMatchObject({ resumable: false });
     store.close();
@@ -830,6 +828,7 @@ describe("ConveyorService dashboard", () => {
       async getIssueProvenance() {
         return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
       },
+      async collaboratorPermission() { return "write" as const; },
     };
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash });
     store.upsertIssue({
@@ -849,9 +848,8 @@ describe("ConveyorService dashboard", () => {
     service.drain("tests");
     await service.pauseIssue("paused-refinement", "operator");
 
-    expect(sourceIssue.labels).toEqual(["conveyor:refinement", "conveyor:blocked"]);
+    expect(sourceIssue.labels).toEqual(["conveyor", "conveyor:refinement", "conveyor:blocked", "conveyor:paused"]);
     expect(store.getIssue("paused-refinement")).toMatchObject({
-      pausedByConveyor: false,
       projectedStage: "refinement",
       projectedState: "paused",
     });
@@ -870,7 +868,7 @@ describe("ConveyorService dashboard", () => {
     const config = dashboardResumeConfig(root);
     const sourceIssue = {
       id: "github:owner/my-app#1", number: 1, url: "https://example.com/issues/1", title: "Paused refinement", body: "",
-      state: "open" as const, stateReason: null, labels: [] as string[], updatedAt: "2026-10-21T00:00:00Z",
+      state: "open" as const, stateReason: null, labels: ["conveyor", "conveyor:paused"] as string[], updatedAt: "2026-10-21T00:00:00Z",
     };
     const source = {
       async getIssue() { return sourceIssue; },
@@ -885,9 +883,8 @@ describe("ConveyorService dashboard", () => {
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash });
     store.upsertIssue({
       id: "paused-refinement", repositoryId: "repo", sourceNumber: 1, sourceUrl: sourceIssue.url,
-      title: sourceIssue.title, body: "", sourceState: "open", labels: [], sourceUpdatedAt: sourceIssue.updatedAt,
+      title: sourceIssue.title, body: "", sourceState: "open", labels: sourceIssue.labels, sourceUpdatedAt: sourceIssue.updatedAt,
     });
-    store.setPausedByConveyor("paused-refinement", true);
     store.setIssueProjection("paused-refinement", { stage: null, state: "paused", warning: null });
 
     const service = new ConveyorService(config, store, source as never);
@@ -910,7 +907,7 @@ describe("ConveyorService dashboard", () => {
 
     expect(response.status).toBe(202);
     expect(sourceIssue.labels).toContain("conveyor");
-    expect(store.getIssue("paused-refinement")).toMatchObject({ pausedByConveyor: false });
+    expect(sourceIssue.labels).not.toContain("conveyor:paused");
     await service.close();
   });
 
@@ -1510,7 +1507,7 @@ describe("ConveyorService dashboard", () => {
         enrollment: "conveyor",
         stageTemplate: "conveyor:{stage}",
         states: { done: "conveyor:done", blocked: "conveyor:blocked" },
-        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
       },
       pipelines: {
         default: {
@@ -1652,7 +1649,7 @@ describe("ConveyorService dashboard", () => {
         enrollment: "conveyor",
         stageTemplate: "conveyor:{stage}",
         states: { done: "conveyor:done", "needs-intervention": "conveyor:needs-intervention" },
-        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
       },
       pipelines: {
         default: {
@@ -2337,7 +2334,7 @@ describe("ConveyorService dashboard", () => {
         enrollment: "conveyor",
         stageTemplate: "conveyor:{stage}",
         states: { done: "conveyor:done", blocked: "conveyor:blocked" },
-        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
       },
       pipelines: {
         default: {

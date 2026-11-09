@@ -567,7 +567,8 @@ Conveyor labels have four roles:
 Eligibility is resolved in this order:
 
 1. No label matching `conveyor` or `conveyor:*`: fully offboarded and absent from the active UI.
-2. At least one matching label but no base `conveyor`: paused/excluded, visible in the UI, and never scheduled regardless of its remembered stage/state.
+2. At least one matching label but no base `conveyor`: the item has left Conveyor (offboarded), is absent from the active UI, and is never scheduled.
+   Base `conveyor` plus `conveyor:paused` (the name is `labels.metadata.paused`): paused. The item stays visible with its stage and state labels, its running agent is stopped, and nothing new starts for it (stage, retry, follow-up or CI wait) until the label is removed, when it continues the same stage from the interrupted step. Reconciliation records the pause with the reason that the label is present.
 3. A closed source issue is stopped immediately and no further delivery work is scheduled. It appears in the Done lane while its source close reason distinguishes completed work from other closure.
 4. Base label plus a waiting, blocking, or terminal state: visible but not eligible until the corresponding question, retry, or explicit restart transition resolves it. Done and rejected never restart automatically.
 5. Base label plus an open issue and no stopping state: active. A newly enrolled issue with no stage label enters the first configured stage; otherwise its one valid stage label selects the stage.
@@ -602,6 +603,7 @@ Terminal/default labels include:
 
 - `conveyor:done`
 - `conveyor:closable`
+- `conveyor:paused` (pauses the item while present)
 - `conveyor:reject`
 - `conveyor:blocked`
 - `conveyor:error`
@@ -868,7 +870,7 @@ Admission is checked atomically with the stage checkpoint, so simultaneous compl
 
 A superuser may pause a configured repository from its dashboard detail page, with an optional reason. This is durable Conveyor operational state, recording the actor and time; it is not configuration and does not change a configuration or pipeline-plan hash. A repository without a pause record is active. While paused, Conveyor may read GitHub to refresh the dashboard, but admits no new stage, retry, operator action, or follow-on work for its items and makes no GitHub, code-host, or CI mutation. A run already executing may finish its current process, but its next write boundary is deferred with the stage cursor and recorded intent preserved. Pause never rewrites enrollment labels or removes projections, epochs, cursors, journals, questions, approvals, costs, or worktrees. Resuming removes only the repository pause record and readmits eligible items at their stored step; individually paused items and other blockers remain unchanged.
 
-Repository pause differs from item pause, which removes that issue's active enrollment label and affects only that item. It also differs from removing a repository from configuration: configuration removal is an administrative lifecycle change that removes its local operational records, whereas pausing preserves them and leaves the configured pipeline unchanged.
+Repository pause differs from item pause, which adds the `conveyor:paused` label to that issue and affects only that item. It also differs from removing a repository from configuration: configuration removal is an administrative lifecycle change that removes its local operational records, whereas pausing preserves them and leaves the configured pipeline unchanged.
 
 ## 11. Workspace and Git behavior
 
@@ -911,7 +913,7 @@ The resumed action continues the agent's own session with the answer when its ha
 
 The web UI is the primary answer path. The question comment contains a hidden question ID; a subsequent non-bot comment from a configured allowed GitHub login is also accepted as the answer while that question is open. UI answers use an idempotent source mutation, so the mirrored bot comment cannot be consumed as a second answer.
 
-The UI provides pause/resume and retry controls. Pause removes only the base label; resume restores it; retry normally clears a configured nonterminal blocking/error state while preserving the current stage. A repeated diagnosed required-CI failure that stops a `ci.passed` gate may retain that gate's configured cross-stage `onFail: { return: <stage> }` route; retry follows the route and gives the destination's first run the recorded CI failure report. Done and rejected cannot be restarted accidentally from the UI—the user must deliberately change the source labels. Source-label semantics remain authoritative: controls perform the corresponding label action through the source adapter rather than creating a second state system.
+The UI provides pause/resume and retry controls. Pause adds the `conveyor:paused` label and keeps every other label; resume removes it; retry normally clears a configured nonterminal blocking/error state while preserving the current stage. A repeated diagnosed required-CI failure that stops a `ci.passed` gate may retain that gate's configured cross-stage `onFail: { return: <stage> }` route; retry follows the route and gives the destination's first run the recorded CI failure report. Done and rejected cannot be restarted accidentally from the UI—the user must deliberately change the source labels. Source-label semantics remain authoritative: controls perform the corresponding label action through the source adapter rather than creating a second state system.
 
 An explicit **Steer** action is different from an ordinary issue edit: it mirrors the instruction into the issue conversation, interrupts the current process, and starts a fresh attempt at the same stage with the preserved worktree and steering instruction. Steering is user-initiated infrastructure control and does not consume a verifier feedback cycle.
 

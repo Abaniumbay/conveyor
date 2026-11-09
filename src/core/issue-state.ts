@@ -5,6 +5,7 @@ export interface LabelConfiguration {
   metadata: {
     closable: string;
     noSplit: string;
+    paused: string;
     orderTemplate: string;
   };
 }
@@ -32,8 +33,6 @@ export interface IssueStateInput {
   labels: LabelConfiguration;
   stages: readonly string[];
   expectedPostMergeClosure: boolean;
-  /** Conveyor's pause removed the item's last control label, so an empty label set is not offboarding. */
-  pausedByConveyor?: boolean;
 }
 
 function templatePattern(template: string, token: string): RegExp {
@@ -49,10 +48,6 @@ export function evaluateIssueState(input: IssueStateInput): EvaluatedIssueState 
         label.startsWith(`${input.labels.enrollment}:`)) &&
       label !== input.labels.metadata.noSplit,
   );
-
-  if (relevantLabels.length === 0 && input.pausedByConveyor) {
-    return { mode: "paused", visible: true, eligible: false, stage: null, state: null, warnings: [] };
-  }
 
   if (relevantLabels.length === 0) {
     return {
@@ -93,6 +88,7 @@ export function evaluateIssueState(input: IssueStateInput): EvaluatedIssueState 
     ...Object.values(input.labels.states),
     input.labels.metadata.closable,
     input.labels.metadata.noSplit,
+    input.labels.metadata.paused,
   ]);
   const orderPattern = templatePattern(input.labels.metadata.orderTemplate, "number");
   const stagePattern = templatePattern(input.labels.stageTemplate, "stage");
@@ -110,15 +106,13 @@ export function evaluateIssueState(input: IssueStateInput): EvaluatedIssueState 
   const state = selectedStates[0] ?? null;
   const hasBaseLabel = sourceLabels.has(input.labels.enrollment);
 
+  // Without the base label the item has left Conveyor.
   if (!hasBaseLabel) {
-    return {
-      mode: "paused",
-      visible: true,
-      eligible: false,
-      stage,
-      state,
-      warnings,
-    };
+    return { mode: "offboarded", visible: false, eligible: false, stage: null, state: null, warnings: [] };
+  }
+
+  if (sourceLabels.has(input.labels.metadata.paused)) {
+    return { mode: "paused", visible: true, eligible: false, stage, state, warnings };
   }
 
   if (warnings.length > 0) {

@@ -695,6 +695,7 @@ const labelsSchema = z
         closable: identifierSchema,
         orderTemplate: z.string().includes("{number}"),
         noSplit: identifierSchema.optional(),
+        paused: identifierSchema.optional(),
       })
       .strict(),
   })
@@ -704,6 +705,7 @@ const labelsSchema = z
     metadata: {
       ...labels.metadata,
       noSplit: labels.metadata.noSplit ?? `${labels.enrollment}:no-split`,
+      paused: labels.metadata.paused ?? `${labels.enrollment}:paused`,
     },
   }));
 

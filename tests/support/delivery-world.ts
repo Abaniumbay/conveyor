@@ -57,6 +57,10 @@ export interface DeliveryWorld {
   drive(limit?: number): Promise<void>;
   /** GitHub closes the source issue, as a person or a late auto-close would, and delivers the signed `issues.closed` webhook. */
   closeIssueOnGitHub(): Promise<void>;
+  /** A person edits the issue's labels on GitHub; the next sync reads them. */
+  editLabelsOnGitHub(edit: (labels: string[]) => string[]): void;
+  /** The labels the source issue carries now. */
+  sourceLabels(): string[];
   close(): Promise<void>;
 }
 
@@ -431,6 +435,10 @@ export async function deliveryWorld(options: {
         else process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET = previous;
       }
     },
+    editLabelsOnGitHub(edit) {
+      sourceIssue = { ...sourceIssue!, labels: edit([...sourceIssue!.labels]), updatedAt: new Date(Math.max(Date.now(), Date.parse(sourceIssue!.updatedAt) + 1)).toISOString() };
+    },
+    sourceLabels() { return [...sourceIssue!.labels]; },
     async close() { await service.close(); await rm(root, { recursive: true, force: true }); },
   };
   return world;

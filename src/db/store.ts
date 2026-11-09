@@ -78,7 +78,6 @@ export interface StoredIssue extends IssueProjection {
   metadata: IssueMetadata;
   queueRank: number | null;
   /** Set when Conveyor's pause removed the item's last control label. */
-  pausedByConveyor: boolean;
   projectedStage: string | null;
   projectedState: string | null;
   warning: string | null;
@@ -944,10 +943,19 @@ export class ConveyorStore {
     })();
   }
 
-  setPausedByConveyor(issueId: string, paused: boolean): void {
-    this.#database
-      .query("UPDATE issues SET paused_by_conveyor = ? WHERE id = ? AND paused_by_conveyor != ?")
-      .run(paused ? 1 : 0, issueId, paused ? 1 : 0);
+  /** Items an upgrade found paused the old way (enrollment label removed) whose labels still need rewriting. */
+  listPendingPauseRelabels(): StoredIssue[] {
+    const rows = this.#database
+      .query("SELECT issue_id FROM pending_pause_relabels ORDER BY issue_id")
+      .all() as Array<{ issue_id: string }>;
+    return rows.flatMap((row) => {
+      const issue = this.getIssue(row.issue_id);
+      return issue ? [issue] : [];
+    });
+  }
+
+  completePauseRelabel(issueId: string): void {
+    this.#database.query("DELETE FROM pending_pause_relabels WHERE issue_id = ?").run(issueId);
   }
 
   setQueueRank(issueId: string, rank: number): void {
@@ -1993,7 +2001,6 @@ export class ConveyorStore {
       acceptedTextAt: row.accepted_text_at === null ? null : String(row.accepted_text_at),
       parentId: row.parent_id === null ? null : String(row.parent_id),
       queueRank: row.queue_rank === null ? null : Number(row.queue_rank),
-      pausedByConveyor: Number(row.paused_by_conveyor) === 1,
       projectedStage:
         row.projected_stage === null ? null : String(row.projected_stage),
       projectedState:

@@ -285,7 +285,7 @@ export const itemResumeWaiting: Command = {
 export const itemPause: Command = {
   name: "item pause",
   usage: "<item>",
-  summary: "pause an item (removes its enrollment label; its stage and worktree are kept)",
+  summary: "pause an item (adds the conveyor:paused label; its stage and worktree are kept)",
   async run(context) {
     const result = await control<{ item: string; stageId: string | null }>(context, "POST", itemPath(context, "/pause"));
     if (context.json) return printJson(context, result);
@@ -296,7 +296,7 @@ export const itemPause: Command = {
 export const itemResume: Command = {
   name: "item resume",
   usage: "<item>",
-  summary: "resume a paused item",
+  summary: "resume a paused item (removes the conveyor:paused label; the same stage continues)",
   async run(context) {
     const result = await control<{ item: string; status: string; stageId: string | null }>(context, "POST", itemPath(context, "/resume"));
     if (context.json) return printJson(context, result);
