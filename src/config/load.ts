@@ -320,6 +320,8 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
       error(["agents", name], "runs on Claude Code with access: workspace-write, which needs network: true (its commands cannot be kept off the network yet)");
     } else if (runner.type === "claude-code" && agent.workspaceAccess === "read-only" && agent.writableRoots.length > 0) {
       error(["agents", name], "is read-only, so writableRoots does not apply");
+    } else if (runner.type === "codex" && !agent.shell) {
+      error(["agents", name], `sets shell: false, but Codex reaches files only through its shell, so agent "${name}" cannot run without one`);
     } else if (runner.type === "claude-code" && Object.keys(agent.codexConfig).length > 0) {
       error(["agents", name], "runs on Claude Code, which does not take codexConfig");
     }

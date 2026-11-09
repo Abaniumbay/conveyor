@@ -114,6 +114,7 @@ export function claudeSchema(raw: string): string {
 export function claudeArguments(input: ClaudeCodeRunInput, schema: string): string[] {
   const writes = input.sandbox === "workspace-write";
   const web = input.network ? WEB_TOOLS : [];
+  const fileTools = input.shell === false ? READ_ONLY_TOOLS.filter((tool) => tool !== "Bash") : READ_ONLY_TOOLS;
   const servers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
     conveyor: { command: input.mcp.command, args: input.mcp.args },
   };
@@ -128,8 +129,8 @@ export function claudeArguments(input: ClaudeCodeRunInput, schema: string): stri
     "--setting-sources", "",
     "--strict-mcp-config",
     "--mcp-config", JSON.stringify({ mcpServers: servers }),
-    "--tools", [...READ_ONLY_TOOLS, ...(writes ? EDIT_TOOLS : []), ...web].join(","),
-    "--allowedTools", [...READ_ONLY_TOOLS, ...web, "mcp__conveyor", ...serverTools].join(","),
+    "--tools", [...fileTools, ...(writes ? EDIT_TOOLS : []), ...web].join(","),
+    "--allowedTools", [...fileTools, ...web, "mcp__conveyor", ...serverTools].join(","),
     // acceptEdits accepts edits inside the working directory only; anything else would need a prompt, so it is refused.
     "--permission-mode", writes ? "acceptEdits" : "dontAsk",
     "--json-schema", schema,

@@ -24,6 +24,8 @@ export interface HarnessRunInput {
   onEvent?: (event: unknown) => void;
   /** Network isolation policy for the run; absent keeps the legacy (environment-only) behaviour. */
   egress?: EgressInput;
+  /** `false` withholds the shell (Claude Code only); absent keeps it. */
+  shell?: false;
   /** Live web search, plus network for the agent's commands under workspace-write. */
   network?: boolean;
   /** Directories outside the workspace that the agent's commands may write (workspace-write only). */

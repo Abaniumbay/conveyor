@@ -320,6 +320,8 @@ const agentSchema = z
     writableRoots: z.array(homePathSchema).default([]),
     /** Environment variables for the agent's run, such as toolchain cache locations; `~/` values are expanded. */
     env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), homeExpandedSchema).default({}),
+    /** `false` takes the shell away: a Claude Code agent loses Bash; a Codex agent cannot run without one. */
+    shell: z.boolean().default(true),
     /** Extra Codex settings, passed as `-c key=value` (Codex agents only), e.g. model_auto_compact_token_limit. */
     codexConfig: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
     /** MCP servers the agent may use beside Conveyor's own (Codex agents only), keyed by server name. */
