@@ -1,4 +1,6 @@
-import { access, constants, stat } from "node:fs/promises";
+import { access, constants, mkdtemp, rm, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import net from "node:net";
 import { tmpdir } from "node:os";
 
@@ -10,7 +12,11 @@ import { publicRepositoryTrustPolicy } from "../../source/github/trust";
 import { GITHUB_CALL_SOURCES } from "../../source/github/call-meter";
 import type { GitHubCallReport } from "../../app/service";
 import { EXIT } from "../args";
+import { probeAgentMcpServers } from "../../isolation/mcp-probe";
 import { agentLaunchCommand } from "../../isolation/sandbox";
+import { agentEgressFor } from "../../isolation/agent-egress";
+import { protectedServiceLocations, resolveToolchainPaths } from "../../isolation/toolchain-paths";
+import { resolveFilesystemPath } from "../../core/paths";
 import { printJson, type Command } from "../command";
 import { control, serviceRunning } from "../control-client";
 import { autoUpgradeSummary } from "./service";
@@ -36,6 +42,8 @@ export interface DoctorCommand {
 type ToolFinder = (command: string) => string | null;
 
 export interface DoctorRuntime {
+  /** Starts an agent's MCP servers inside its sandbox and returns those that did not answer. */
+  probeMcp?: typeof probeAgentMcpServers;
   execute?: DoctorCommand;
   findTool?: ToolFinder;
 }
@@ -119,6 +127,53 @@ export async function configuredCodexIsolationChecks(
           detail: `bwrap cannot create the user namespace required by the Codex sandbox: ${namespaces.output}`,
           fix: "allow unprivileged user namespaces for Codex (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)",
         });
+  }
+  return checks;
+}
+
+/** Starts each configured MCP server of each agent once, inside the agent's sandbox, and asks it to initialize. */
+export async function mcpServerChecks(
+  config: { agents: Record<string, { runner?: string; env?: Record<string, string> | undefined; writableRoots?: string[] | undefined; workspaceAccess?: string; mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number | undefined }> }> },
+  probe: typeof probeAgentMcpServers = probeAgentMcpServers,
+  full?: ConveyorConfig,
+): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  // An agent is not tied to one repository, so it is probed with what every repository grants:
+  // the union of their toolchain directories, and the egress policy only when all of them confine agents.
+  const repositories = Object.entries(full?.repositories ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const declared = [...new Set(repositories.flatMap(([, repository]) => repository.agentToolchainPaths?.paths ?? []))];
+  const toolchainPaths = full && declared.length > 0
+    ? resolveToolchainPaths(declared, protectedServiceLocations({ ...full, root: full.root }))
+    : undefined;
+  const confined = repositories.length > 0 && repositories.every(([, repository]) => repository.agentEgress);
+  const workspace = await mkdtemp(path.join(tmpdir(), "conveyor-doctor-workspace-"));
+  try {
+    for (const [agent, definition] of Object.entries(config.agents).sort(([a], [b]) => a.localeCompare(b))) {
+      const servers = definition.mcpServers ?? {};
+      if (Object.keys(servers).length === 0) continue;
+      const readOnly = definition.workspaceAccess === "read-only";
+      const writableRoots = readOnly ? [] : [...new Set(definition.writableRoots ?? [])].filter((root) => existsSync(root)).map(resolveFilesystemPath);
+      const runner = full?.runners[definition.runner ?? ""];
+      const egress = confined && full ? agentEgressFor(full, repositories[0]![0], { controlPlaneHosts: runner && "controlPlaneHosts" in runner ? runner.controlPlaneHosts : undefined }) : undefined;
+      const failures = new Map((await probe(servers, {
+        workspace, env: definition.env, writableRoots, readOnly,
+        ...(toolchainPaths ? { toolchainPaths } : {}),
+        ...(egress ? { egress } : {}),
+      })).map((failure) => [failure.server, failure.detail]));
+      for (const server of Object.keys(servers)) {
+        const detail = failures.get(server);
+        checks.push(detail === undefined
+          ? { name: `mcp ${agent}/${server}`, status: "ok", detail: "answered initialize" }
+          : {
+              name: `mcp ${agent}/${server}`,
+              status: "fail",
+              detail: `MCP server ${server} of agent ${agent} did not answer initialize: ${detail}`,
+              fix: "run the server's command by hand to see its error; if the message mentions namespaces or bwrap, allow unprivileged user namespaces (see docs/operations.md)",
+            });
+      }
+    }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
   }
   return checks;
 }
@@ -210,6 +265,7 @@ export async function doctorReport(
       const confined = !missing && found && (runner.type === "codex" || runner.type === "claude-code") ? confinedLaunchFailure(name, runner.command, found) : null;
       checks.push(missing ?? confined ?? { name: `harness ${name}`, status: "ok", detail: found! });
     }
+    checks.push(...await mcpServerChecks(config, runtime.probeMcp, config));
     for (const command of scriptInterpreters(config)) {
       const missing = tool(`script interpreter ${command}`, command, command === "bun"
         ? "install Bun (https://bun.sh), or set an interpreter for the scripts that need another one"

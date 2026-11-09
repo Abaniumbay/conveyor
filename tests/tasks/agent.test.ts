@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
+import { bwrapUnavailableReason } from "../support/bwrap";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
@@ -307,6 +308,50 @@ describe("agent.run", () => {
     });
     expect(w.calls[0]!.mcpServers!.serena).not.toHaveProperty("gitExclude");
     expect(await Bun.file(path.join(workspace, ".git", "info", "exclude")).text()).toContain(".serena/\n");
+  });
+
+  test("a run whose MCP server fails logs the server and its error and posts one note naming it", async () => {
+    const w = await world();
+    Object.assign(w.deps.config.agents.kaveh!, {
+      mcpServers: { serena: { command: process.execPath, args: ["-e", "console.error('serena exploded'); process.exit(4)"], env: {}, startupTimeoutSec: 5, gitExclude: [] } },
+    });
+    expect((await w.run(false)).status).toBe("pass");
+    const runId = w.leases[0]!.runId;
+    const failures = w.store.listRunEvents(runId).filter((event) => event.type === "mcp.failure");
+    expect(failures).toHaveLength(1);
+    expect(JSON.stringify(failures[0]!.payload)).toContain('"server":"serena"');
+    const notes = w.store.listConversationMessages("i1").filter((m) => m.actorType === "conveyor" && m.message.includes("MCP server"));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.message).toContain("`serena`");
+  });
+
+  test.skipIf(bwrapUnavailableReason() !== null)("a run whose MCP server fails logs the server's own stderr and exit status", async () => {
+    const w = await world();
+    Object.assign(w.deps.config.agents.kaveh!, {
+      mcpServers: { serena: { command: process.execPath, args: ["-e", "console.error('serena exploded'); process.exit(4)"], env: {}, startupTimeoutSec: 5, gitExclude: [] } },
+    });
+    expect((await w.run(false)).status).toBe("pass");
+    const failure = w.store.listRunEvents(w.leases[0]!.runId).find((event) => event.type === "mcp.failure");
+    expect(JSON.stringify(failure!.payload)).toContain("serena exploded");
+    expect(JSON.stringify(failure!.payload)).toContain("status 4");
+  });
+
+  test.skipIf(bwrapUnavailableReason() !== null)("a run whose MCP servers all answer records no MCP failure and posts no MCP note", async () => {
+    const w = await world();
+    const answering = `process.stdin.on("data", (c) => { for (const l of String(c).split("\\n").filter(Boolean)) { const { id, method } = JSON.parse(l); if (method === "initialize") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fake", version: "1" } } }) + "\\n"); } });`;
+    Object.assign(w.deps.config.agents.kaveh!, {
+      mcpServers: { serena: { command: process.execPath, args: ["-e", answering], env: {}, startupTimeoutSec: 5, gitExclude: [] } },
+    });
+    expect((await w.run(false)).status).toBe("pass");
+    expect(w.store.listRunEvents(w.leases[0]!.runId).filter((event) => event.type === "mcp.failure")).toEqual([]);
+    expect(w.store.listConversationMessages("i1").filter((m) => m.message.includes("MCP server"))).toEqual([]);
+  });
+
+  test("a run without MCP servers records no MCP failure and posts no MCP note", async () => {
+    const w = await world();
+    expect((await w.run(false)).status).toBe("pass");
+    expect(w.store.listRunEvents(w.leases[0]!.runId).filter((event) => event.type === "mcp.failure")).toEqual([]);
+    expect(w.store.listConversationMessages("i1").filter((m) => m.message.includes("MCP server"))).toEqual([]);
   });
 
   test("an agent without extensions passes no config or MCP servers", async () => {

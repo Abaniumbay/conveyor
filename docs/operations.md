@@ -135,6 +135,13 @@ For configured Codex runs, repositories with `agentEgress` report network and PI
 and the filesystem mounts required by Conveyor's bubblewrap egress wrapper. Without `agentEgress`, the
 check instead reports the user namespace required by Codex's own sandbox. A denied capability names
 the requirement and suggests a host permission fix.
+It also starts each MCP server configured for an agent (`mcpServers`, such as a code index) once,
+inside that agent's sandbox, and sends it `initialize`. A server that exits or does not answer in its
+`startupTimeoutSec` (10 seconds by default) is a failing check naming the agent and the server, with the
+server's stderr tail.
+An agent is not tied to one repository, so doctor probes it with the union of every repository's
+`agentToolchainPaths` and, only when all repositories set `agentEgress`, the first one's egress policy
+(sorted by id). Writable roots are the agent's configured roots that exist; a run also adds its worktree paths.
 For repositories that configure `refinement`, it
 also reads (never writes) whether the GitHub credentials can read the organization's issue types and
 issue fields and write them on the repository. Each failure comes with the fix. Agent sign-ins are
@@ -264,6 +271,15 @@ running, and 5 means it refused the request (the reason is printed).
 - `conveyor item show <item>` explains why an item stopped, is waiting on dependencies, or is
   queued for capacity, and what can be done. Service-level failures (provider outages, crashes)
   appear in `conveyor logs --level warn`.
+- An agent says an MCP server (for example the Serena code index) was unavailable: Conveyor starts every
+  configured MCP server once at the start of the run and records a failure as an `mcp.failure` event in the
+  run's technical log (server name, exit status, stderr tail), with one Conveyor note in the item's
+  conversation. `conveyor doctor` makes the same check ahead of time. On a host that restricts
+  unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), Codex's own bubblewrap
+  sandbox cannot start inside Conveyor's sandbox: its shell commands fail and the agent can read no file
+  (conveyor#629 stopped as blocked this way). Allow them for bwrap, for example
+  `sysctl kernel.apparmor_restrict_unprivileged_userns=0` or an AppArmor profile for bwrap, then check
+  `conveyor doctor`.
 - The service does not start: check `conveyor service status` and `journalctl -u conveyor -n 100`.
   "another Conveyor is already running for this home" means a second instance (for example a
   foreground `serve`) holds the control socket.

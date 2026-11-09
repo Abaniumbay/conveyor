@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { conveyorToolGuidance, prompt } from "../../src/tasks/agent-support";
+import { conveyorToolGuidance, prompt, reportMcpFailures } from "../../src/tasks/agent-support";
 
 test("handoff maps only the current grant, canonicalizing aliases and deduplicating", () => {
   const text = prompt({}, "Implement the issue.", {
@@ -34,4 +34,25 @@ test("native runs explain supported stops while legacy runs keep their configure
   const legacy = prompt({ allowedFailureStatuses: ["needs-intervention", "error"] }, "Check.");
   expect(legacy).toContain("configured failure statuses: needs-intervention, error");
   expect(legacy).not.toContain("use blocked or rejected");
+});
+
+test("a failed MCP server is noted once however often the failure is observed", () => {
+  const events: unknown[] = [];
+  const messages: string[] = [];
+  const store = {
+    appendRunEvent: (_run: string, type: string, payload: unknown) => { events.push({ type, payload }); },
+    appendConversationMessage: (m: { message: string }) => { messages.push(m.message); },
+  } as never;
+  reportMcpFailures(store, {
+    issueId: "i", stageId: "s", runId: "r", agentId: "kaveh",
+    failures: [{ server: "serena", detail: "first" }, { server: "serena", detail: "again" }, { server: "other", detail: "x" }],
+  });
+  expect(messages).toHaveLength(2);
+  expect(messages[0]).toContain("`serena`");
+  expect(events).toHaveLength(2);
+});
+
+test("no MCP failures post nothing", () => {
+  const store = { appendRunEvent: () => { throw new Error("no"); }, appendConversationMessage: () => { throw new Error("no"); } } as never;
+  reportMcpFailures(store, { issueId: "i", stageId: "s", runId: "r", agentId: "a", failures: [] });
 });
