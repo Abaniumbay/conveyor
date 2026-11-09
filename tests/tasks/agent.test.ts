@@ -155,6 +155,22 @@ describe("agent.run", () => {
     expect(notes(w)).toEqual([]);
   });
 
+  test("a question opened before an invalid result is kept when the corrected result is needs-input", async () => {
+    const w = await world();
+    let calls = 0;
+    w.setBehaviour((call, runId, store) => {
+      if (++calls === 1) {
+        store.openQuestion({ issueId: "i1", runId, prompt: "Which database?", reason: "need it", options: [] });
+        throw invalid();
+      }
+      return { outcome: "failure", status: "needs-input", summary: "Asked", reason: "Which database?", sessionId: "sess-1" };
+    });
+    const result = await w.run(false, { agents: ["kaveh", "shirin"] });
+    expect(result.status).toBe("pending");
+    expect(w.calls).toHaveLength(2);
+    expect(notes(w)).toEqual([]);
+  });
+
   test("a second invalid result is an infrastructure error and runs no fallback agent", async () => {
     const w = await world();
     w.setBehaviour(() => { throw invalid(); });

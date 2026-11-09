@@ -83,11 +83,11 @@ function executionAgent(deps: Deps, runId: string): string | null {
   return typeof agentId === "string" ? agentId : null;
 }
 
-function outcomeOf(deps: Deps, runId: string, agentId: string, result: RunEnvelope): TaskResult {
+function outcomeOf(deps: Deps, runIds: string[], agentId: string, result: RunEnvelope): TaskResult {
   const { status, outcome, summary, reason } = result.stageResult;
-  const captured: AgentContext = { agentId, status, summary, reason, sessionId: result.sessionId, runId };
+  const captured: AgentContext = { agentId, status, summary, reason, sessionId: result.sessionId, runId: runIds[runIds.length - 1]! };
   if (status === "needs-input") {
-    const question = deps.store.getQuestionForRun(runId);
+    const question = [...runIds].reverse().map((id) => deps.store.getQuestionForRun(id)).find((found) => found !== null) ?? null;
     if (question?.status === "open") return pending(waiting(question.prompt));
     // Answered while the agent was still finishing: poll again at once and continue from the answer.
     if (question) return pending(waiting(question.prompt), { after: 0 });
@@ -121,7 +121,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
   name: "agent.run",
   kind: "act",
   description:
-    "Runs a configured agent (`agent`, or `agents` in order of preference: the next runs when one's harness cannot) through its harness in the item's workspace (creating or re-attaching it when needed) and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides) when the item has an open finding, including imported findings or findings from earlier runs, and otherwise stops as an error. An invalid result stops as an error.",
+    "Runs a configured agent (`agent`, or `agents` in order of preference: the next runs when one's harness cannot) through its harness in the item's workspace (creating or re-attaching it when needed) and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides) when the item has an open finding, including imported findings or findings from earlier runs, and otherwise stops as an error. An invalid structured result is returned to the same agent once, in the same session, with the validation message; a second one ends the attempt as an infrastructure error retried with the executor's backoff. Only a harness that cannot run (usage limit, process failure or missing CLI) falls back to the next agent; workspace, MCP and protocol errors do not.",
   reads: ["run"],
   writes: ["agent"],
   invalidates: ["workspace"],
@@ -172,14 +172,16 @@ async function runWithCorrection(
   agentId: string,
   answered: Answered | null,
 ): Promise<TaskResult> {
+  // A question the agent opened before its result was rejected belongs to the first run; the corrected result may still point at it.
+  const runIds: string[] = [];
   try {
-    return await runAgent(args, agentId, answered, null);
+    return await runAgent(args, agentId, answered, null, runIds);
   } catch (error) {
     const sessionId = (error as { sessionId?: unknown } | null)?.sessionId;
     if (!isInvalidResult(error) || typeof sessionId !== "string" || args.deps.signal?.aborted) throw error;
     const runner = args.deps.config.runners[args.deps.config.agents[agentId]?.runner ?? ""];
     if (!runner || (runner.type !== "codex" && runner.type !== "claude-code") || !args.deps.harnesses?.[runner.type]?.capabilities.sessionResume) throw error;
-    return await runAgent(args, agentId, answered, { message: (error as Error).message, sessionId });
+    return await runAgent(args, agentId, answered, { message: (error as Error).message, sessionId }, runIds);
   }
 }
 
@@ -221,6 +223,7 @@ async function runAgent(
   agentId: string,
   answered: Answered | null,
   correction: Correction | null,
+  runIds: string[],
 ): Promise<TaskResult> {
   const { store } = deps;
   const issue = store.getIssue(deps.issueId);
@@ -249,6 +252,7 @@ async function runAgent(
   const stageId = instance.stage;
   const runId = startRun(store, { issueId: issue.id, stageId, kind: KIND, configHash: deps.config.hash });
   store.appendRunEvent(runId, "execution", { idempotencyKey: instance.idempotencyKey, agentId });
+  runIds.push(runId);
   const started = performance.now();
   try {
     const lease = await deps.mcp.create({
@@ -364,7 +368,7 @@ async function runAgent(
     agentMessage(store, deps.config, issue.id, stageId, runId, agentId, producerConversationMessage(stageId, result));
     return interrupted
       ? fail(result.stageResult.summary, { route: { stop: "interrupted" } })
-      : outcomeOf(deps, runId, agentId, result);
+      : outcomeOf(deps, runIds, agentId, result);
   } catch (error) {
     finishRun(
       store,
