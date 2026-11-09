@@ -356,12 +356,12 @@ function itemStageBadge(
   stageId: string | null,
   stageNames: ReadonlyMap<string, string>,
   stageIcons: ReadonlyMap<string, string>,
-  position: "backlog" | "done" | "offboarded" | null,
+  position: "backlog" | "done" | null,
 ): IssueStageBadgeViewModel {
-  if (position === "backlog") return { name: "Backlog", icon: null, offboarded: false };
-  if (position === "done") return { name: "Done", icon: null, offboarded: false };
+  if (position === "backlog") return { name: "Backlog", icon: null };
+  if (position === "done") return { name: "Done", icon: null };
   const name = stageId === null ? "Unknown stage" : stageNames.get(stageId) ?? displayName(stageId);
-  return { name, icon: stageId === null ? null : stageIcons.get(stageId) ?? null, offboarded: position === "offboarded" };
+  return { name, icon: stageId === null ? null : stageIcons.get(stageId) ?? null };
 }
 
 function userFacingSteeringEvent(event: {
@@ -471,6 +471,7 @@ export class ConveyorService {
   readonly #codeHosts: CodeHostRegistry;
   readonly workspaceManager: WorkspaceManager;
   readonly #active = new Map<string, ActiveRun>();
+  readonly #purges = new Map<string, Promise<void>>();
   /** Live answer mirrors are guarded in memory; persisted pending mutations can be retried after a restart. */
   readonly #answerMirrorsInFlight = new Set<string>();
   readonly #statusCommentUpdates = new Set<Promise<void>>();
@@ -837,6 +838,7 @@ export class ConveyorService {
       await this.reconcileOne(id, managed ? "changed" : "full");
       read += 1;
     }
+    this.resumePurges();
     // A tick that read nothing changed nothing; startup always completes, even with no repository to read.
     if (options.skipFresh && read === 0) return;
     this.#lastReconciledAt = new Date().toISOString();
@@ -902,6 +904,7 @@ export class ConveyorService {
         trust: this.#issueTrust,
         extraTrustedLogins: repository.extraTrustedLogins ?? [],
         expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+      onLeft: (issueId) => { void this.purgeItem(issueId); },
         ...(options.verifyTrust ? { verifyTrust: true } : {}),
         ...(listing.since !== undefined ? { since: listing.since } : {}),
       });
@@ -1021,6 +1024,7 @@ export class ConveyorService {
         trust: { isTrusted: async () => true },
         extraTrustedLogins: repository.extraTrustedLogins ?? [],
         expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+      onLeft: (issueId) => { void this.purgeItem(issueId); },
         issues: [created],
         delivered: new Map([[created.number, { enrollment: self, title: self, body: self }]]),
       });
@@ -1284,7 +1288,7 @@ export class ConveyorService {
     }
     for (const controller of this.#steeringActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
-    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#answerFollowUps.size > 0 || this.#startupRunning || this.#tickRunning || this.#advisoryPolling || this.#retentionActive > 0) {
+    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#purges.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#answerFollowUps.size > 0 || this.#startupRunning || this.#tickRunning || this.#advisoryPolling || this.#retentionActive > 0) {
       await Bun.sleep(25);
     }
     this.store.close();
@@ -1339,7 +1343,7 @@ export class ConveyorService {
     issue: StoredIssue,
     deliveredIssue?: SourceIssue,
   ): Promise<void> {
-    if (issue.projectedState === "done" || issue.projectedState === "offboarded") return;
+    if (issue.projectedState === "done" || issue.projectedState === "unlisted") return;
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
     let sourceIssue: SourceIssue;
@@ -1399,6 +1403,8 @@ export class ConveyorService {
         transitionId: `closed-item-offboard:${issue.id}:${enrollment?.generation ?? "untracked"}`,
         issue,
       });
+      // The labels are gone and the purge has begun: stop the run, then remove what Conveyor holds.
+      await this.purgeItem(issue.id);
     } catch (error) {
       if (error instanceof RepositoryPausedError) {
         this.store.setIssueProjection(issue.id, {
@@ -1497,6 +1503,7 @@ export class ConveyorService {
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+      onLeft: (issueId) => { void this.purgeItem(issueId); },
       issues: [issue],
     });
   }
@@ -2279,7 +2286,7 @@ export class ConveyorService {
   /** Changes an enrolled item's final board-approval requirement without altering repository configuration. */
   setBoardApprovalRequirement(issueId: string, stageId: string, required: boolean): void {
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
+    if (!issue || issue.projectedState === "unlisted") throw new Error("issue not found");
     this.assertRepositoryActive(issue.repositoryId);
     this.boardApprovalCandidate(issue, stageId);
     const journal = this.store.executions();
@@ -2302,7 +2309,7 @@ export class ConveyorService {
   /** Records a human receipt only for the current manual gate visit, then wakes that item. */
   approveManualGate(issueId: string, stageId: string, gateId: string | null, account: { id: string; username: string }): void {
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
+    if (!issue || issue.projectedState === "unlisted") throw new Error("issue not found");
     this.assertRepositoryActive(issue.repositoryId);
     const candidate = gateId !== null ? this.manualGateCandidate(issue, stageId, gateId) : null;
     if (gateId === null) this.boardApprovalCandidate(issue, stageId);
@@ -2811,7 +2818,69 @@ export class ConveyorService {
     return isLightweightRepositoryStage(this.config, repositoryId, stageId);
   }
 
-  private interruptIneligibleRuns(): void {
+  /**
+   * Purges an item that has no Conveyor labels any more (it left, or closed without a merge). One
+   * entry point for every way Conveyor learns of it. Synchronously, before any GitHub call, it kills
+   * the item's run, ends its enrollment and fences in-flight work; then it removes the workspace,
+   * worktree and branch (each step recorded, so a restart repeats nothing) and deletes the rows.
+   * The event log keeps the item's events. Safe to call again for an item already being purged.
+   */
+  purgeItem(issueId: string): Promise<void> {
+    if (!this.store.getIssue(issueId)) return Promise.resolve();
+    this.#active.get(issueId)?.controller.abort();
+    this.store.beginPurge(issueId);
+    return this.continuePurge(issueId);
+  }
+
+  /** Resolves once every purge in progress has finished or given up for now. */
+  async purgesSettled(): Promise<void> {
+    while (this.#purges.size > 0) await Promise.all([...this.#purges.values()]);
+  }
+
+  /** Finishes the purges a restart (or a failed attempt) left behind. */
+  private resumePurges(): void {
+    for (const pending of this.store.listPendingPurges()) void this.continuePurge(pending.issueId);
+  }
+
+  private continuePurge(issueId: string): Promise<void> {
+    const running = this.#purges.get(issueId);
+    if (running) return running;
+    const purge = this.finishPurge(issueId)
+      .catch((error) => log.warn("Item purge will be retried", { issue: issueId }, error))
+      .finally(() => this.#purges.delete(issueId));
+    this.#purges.set(issueId, purge);
+    return purge;
+  }
+
+  private async finishPurge(issueId: string): Promise<void> {
+    const issue = this.store.getIssue(issueId);
+    if (!issue) {
+      this.store.finishPurge(issueId);
+      return;
+    }
+    // The run was told to stop; the workspace is removed only once it has.
+    await this.runsEnded([issueId]);
+    if (this.#shuttingDown || this.store.repositoryPause(issue.repositoryId)) return;
+    const repository = this.config.repositories[issue.repositoryId];
+    if (!repository) throw new Error(`repository ${issue.repositoryId} is not configured; cannot remove the workspace of ${issueId}`);
+    for (const workspace of this.store.listUnremovedWorkspaces(issueId)) {
+      await this.workspaceManager.remove({
+        repositoryPath: repository.folder,
+        workspacePath: workspace.path,
+        branch: workspace.branch,
+        deleteBranch: true,
+      });
+      this.store.markWorkspaceRemoved(workspace.id);
+    }
+    this.store.finishPurge(issueId);
+    this.github.forgetIssue?.(repository.address, issue.sourceNumber);
+    log.info("Item purged", { issue: issueId, number: issue.sourceNumber });
+    this.schedule();
+  }
+
+  /** Tells the runs that must not go on to stop; returns the items it told. */
+  private interruptIneligibleRuns(): string[] {
+    const interrupted: string[] = [];
     for (const [issueId, active] of this.#active) {
       const issue = this.store.getIssue(issueId);
       if (
@@ -2820,7 +2889,17 @@ export class ConveyorService {
         issue.projectedStage !== active.stageId
       ) {
         active.controller.abort();
+        interrupted.push(issueId);
       }
+    }
+    return interrupted;
+  }
+
+  /** Resolves once the runs of these items have ended: their agent processes are gone. */
+  private async runsEnded(issueIds: readonly string[]): Promise<void> {
+    while (issueIds.some((issueId) => this.#active.has(issueId))) {
+      if (this.#shuttingDown) return;
+      await Bun.sleep(10);
     }
   }
 
@@ -2879,6 +2958,7 @@ export class ConveyorService {
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+      onLeft: (issueId) => { void this.purgeItem(issueId); },
       ...(listing.since !== undefined ? { since: listing.since } : {}),
       ...(options.includeIssueNumbers !== undefined ? { includeIssueNumbers: options.includeIssueNumbers } : {}),
     });
@@ -2911,6 +2991,7 @@ export class ConveyorService {
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+      onLeft: (issueId) => { void this.purgeItem(issueId); },
       issues,
       // Conveyor's own label writes move updated_at but change neither enrollment nor text. Anyone
       // else's change arrives as a delivery that names them, so a trusted item keeps its decision.
@@ -3188,7 +3269,7 @@ export class ConveyorService {
           // Stopped items too: the board must show the dependencies a person
           // added while an item was blocked, and the scheduler needs them the
           // moment it is unblocked.
-          !["offboarded", "missing"].includes(issue.projectedState ?? ""),
+          !["unlisted"].includes(issue.projectedState ?? ""),
       );
     const issueByNumber = new Map(
       this.store
@@ -3734,7 +3815,7 @@ export class ConveyorService {
   }
 
   private operatorVisibleItem(issue: StoredIssue | null): issue is StoredIssue {
-    return Boolean(issue && this.config.repositories[issue.repositoryId] && issue.projectedState !== "offboarded");
+    return Boolean(issue && this.config.repositories[issue.repositoryId] && issue.projectedState !== "unlisted");
   }
 
   private operatorVisibleItems(): StoredIssue[] {
@@ -3993,10 +4074,14 @@ export class ConveyorService {
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+      onLeft: (issueId) => { void this.purgeItem(issueId); },
       issues: [change.issue],
       delivered: new Map([[number, change.actors]]),
     });
     this.restoreRetryFeedback(repositoryId);
+    // A run that must not go on (the item was closed, paused, left Conveyor) stops before closed-item
+    // recovery makes any GitHub call for it.
+    await this.runsEnded(this.interruptIneligibleRuns());
     const applied = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
     if (change.issue.state === "closed" && applied) await this.recoverClosedItem(repositoryId, applied, change.issue);
     if (this.store.repositoryPause(repositoryId)) return true;
@@ -4187,8 +4272,8 @@ export class ConveyorService {
     const question = this.store.getQuestion(questionId);
     if (!question) throw new Error("question not found");
     const issue = this.store.getIssue(question.issueId);
-    if (issue?.projectedState === "offboarded") {
-      throw new Error("This question belongs to an offboarded item.");
+    if (issue?.projectedState === "unlisted") {
+      throw new Error("This question belongs to an item that left Conveyor.");
     }
     if (issue) this.assertRepositoryActive(issue.repositoryId);
     const response = validatedQuestionAnswer(question, answer);
@@ -4321,7 +4406,7 @@ export class ConveyorService {
       const response = questionAnswerText(question.answer);
       const issue = this.store.getIssue(question.issueId);
       const repository = issue && this.config.repositories[issue.repositoryId];
-      if (!response || !issue || !repository || issue.projectedState === "offboarded") continue;
+      if (!response || !issue || !repository || issue.projectedState === "unlisted") continue;
       this.#trackAnswerFollowUp(this.#completeScheduledAnswer(question, issue, repository, response));
     }
   }
@@ -4406,7 +4491,7 @@ export class ConveyorService {
       Boolean(this.config.repositories[issue.repositoryId]) &&
       this.store.repositoryPause(issue.repositoryId) === null &&
       issue.labels.includes(this.config.labels.enrollment) &&
-      issue.projectedState !== "offboarded" &&
+      issue.projectedState !== "unlisted" &&
       issue.projectedState !== null && STOPPED_ISSUE_STATES.has(issue.projectedState),
     );
     if (targets.length === 0) return null;
@@ -4632,7 +4717,7 @@ export class ConveyorService {
 
   private requireBacklogIssue(issueId: string): void {
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.parentId || issue.projectedState === "offboarded") {
+    if (!issue || issue.parentId || issue.projectedState === "unlisted") {
       throw new Error("only top-level board issues can be reordered");
     }
     const repository = this.config.repositories[issue.repositoryId];
@@ -4863,7 +4948,7 @@ export class ConveyorService {
       }];
     });
     const listedIssues = this.store.listIssues();
-    const issues = listedIssues.filter((issue) => issue.projectedState !== "offboarded");
+    const issues = listedIssues.filter((issue) => issue.projectedState !== "unlisted");
     const repositoryColors = new Map(Object.keys(this.config.repositories).map((repositoryId, index) =>
       [repositoryId, (index % 8) + 1],
     ));
@@ -5067,7 +5152,6 @@ export class ConveyorService {
         resumable,
         resumableRollup,
         stoppedRollup: stopped && children.length > 0,
-        ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
       };
     };
     const stageNames = new Map<string, string>();
@@ -5228,9 +5312,7 @@ export class ConveyorService {
       issue.projectedStage ?? state?.stageId ?? null,
       stageNames,
       stageIcons,
-      issue.projectedState === "offboarded"
-        ? "offboarded"
-        : finishedRollupIds.has(issue.id) || (issue.sourceState === "closed" && !remainsInWorkflow(issue))
+      finishedRollupIds.has(issue.id) || (issue.sourceState === "closed" && !remainsInWorkflow(issue))
         ? "done"
         : backlogIds.has(issue.id)
         ? "backlog"
@@ -5633,7 +5715,7 @@ export class ConveyorService {
     };
   }
 
-  /** One item's card, for an item the live dashboard model does not hold (finished long ago or offboarded). */
+  /** One item's card, for an item the live dashboard model does not hold (finished long ago). */
   issueDetails(csrfToken: string, issueId: string): IssueCardViewModel | null {
     // This route is deliberately independent from dashboard(). A dialog is normally opened for
     // one card, so rebuilding every board column, rollup, and repository summary here would make
@@ -5665,10 +5747,10 @@ export class ConveyorService {
       return relatedIssues.get(id) ?? null;
     };
     // Board cards show only enrolled children and parents, but their dependency list deliberately
-    // retains offboarded relationship stubs so a stopped item can still say what it is waiting for.
+    // retains unlisted relationship stubs so a stopped item can still say what it is waiting for.
     const boardIssue = (id: string): StoredIssue | null => {
       const candidate = relatedIssue(id);
-      return candidate?.projectedState === "offboarded" ? null : candidate;
+      return candidate?.projectedState === "unlisted" ? null : candidate;
     };
     const stageStates = new Map<string, ReturnType<ConveyorStore["getStageState"]>>();
     const stageStateFor = (id: string) => {
@@ -5774,7 +5856,7 @@ export class ConveyorService {
       issue.projectedStage ?? state?.stageId ?? null,
       stageNamesById,
       stageIconsById,
-      issue.projectedState === "offboarded" ? "offboarded" : finished ? "done" : isBacklog(issue) ? "backlog" : null,
+      finished ? "done" : isBacklog(issue) ? "backlog" : null,
     );
     const manualGates = this.manualGateViews(issue);
     const manualWaiting = manualGates.find((gate) => gate.waiting) ?? null;
@@ -5877,13 +5959,12 @@ export class ConveyorService {
       resumable,
       resumableRollup,
       stoppedRollup: stopped && children.length > 0,
-      ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
     };
   }
 
   issueActivity(issueId: string, before?: string): IssueActivityViewModel | null {
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.projectedState === "offboarded") return null;
+    if (!issue || issue.projectedState === "unlisted") return null;
     const page = this.store.listIssueRunsPage(issueId, {
       ...(before ? { before } : {}),
       limit: ACTIVITY_RUN_PAGE_SIZE,
@@ -5912,7 +5993,7 @@ export class ConveyorService {
   issueRunEvents(issueId: string, runId: string, before?: number): IssueRunEventsViewModel | null {
     const issue = this.store.getIssue(issueId);
     const run = this.store.getRun(runId);
-    if (!issue || issue.projectedState === "offboarded" || run?.issueId !== issueId) return null;
+    if (!issue || issue.projectedState === "unlisted" || run?.issueId !== issueId) return null;
     const page = this.store.listRunEventsPage(runId, {
       ...(before === undefined ? {} : { before }),
       limit: ACTIVITY_EVENT_PAGE_SIZE,
@@ -6011,7 +6092,7 @@ export class ConveyorService {
 
   issueConversation(issueId: string): IssueConversationViewModel | null {
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.projectedState === "offboarded") return null;
+    if (!issue || issue.projectedState === "unlisted") return null;
     return {
       issueId,
       messages: this.store.listConversationMessages(issueId, 100).map((message) => ({
@@ -6034,12 +6115,12 @@ export class ConveyorService {
     username: string,
   ): Promise<{ status: "delivered" | "started" | "queued"; stageId: string }> {
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
+    if (!issue || issue.projectedState === "unlisted") throw new Error("issue not found");
     this.assertRepositoryActive(issue.repositoryId);
     if (issue.sourceState === "closed" && !this.store.hasMergedPullRequest(issueId)) {
       throw new Error("closed issues cannot be resumed from conversation");
     }
-    if (["done", "missing", "inconsistent"].includes(issue.projectedState ?? "")) {
+    if (["done", "inconsistent"].includes(issue.projectedState ?? "")) {
       throw new Error(`issue state ${issue.projectedState} cannot be resumed from conversation`);
     }
     const activeRun = this.store.listActiveIssueRuns().find((run) => run.issueId === issueId);
@@ -6183,7 +6264,7 @@ export class ConveyorService {
     if (!check.inspected.has(question.issueId)) throw new Error("inspect the item's history before answering it");
     const issue = this.store.getIssue(question.issueId);
     const repository = issue && this.config.repositories[issue.repositoryId];
-    if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("question belongs to an ineligible board item");
+    if (!issue || !repository || issue.projectedState === "unlisted") throw new Error("question belongs to an ineligible board item");
     let evidenceText: string | undefined;
     try {
       const live = await this.github.getIssue(repository.address, issue.sourceNumber);
@@ -6282,7 +6363,7 @@ export class ConveyorService {
   private pausableIssue(issue: StoredIssue): boolean {
     return issue.sourceState === "open" && issue.projectedStage !== null &&
       issue.labels.includes(this.config.labels.enrollment) &&
-      !["paused", "done", "offboarded", "inconsistent", "rejected"].includes(issue.projectedState ?? "");
+      !["paused", "done", "unlisted", "inconsistent", "rejected"].includes(issue.projectedState ?? "");
   }
 
   /** Whether an open paused item can safely be resumed by removing the paused label. */
@@ -6382,7 +6463,7 @@ export class ConveyorService {
     try {
       const issue = this.store.getIssue(issueId);
       const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
-      if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("issue not found");
+      if (!issue || !repository || issue.projectedState === "unlisted") throw new Error("issue not found");
       this.assertRepositoryActive(issue.repositoryId);
       if (!this.canResumeRollupParent(issueId)) {
         throw new Error("roll-up parent is not eligible to resume waiting for children");
@@ -6480,13 +6561,13 @@ export class ConveyorService {
     try {
       const issue = this.store.getIssue(issueId);
       const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
-      if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("issue not found");
+      if (!issue || !repository || issue.projectedState === "unlisted") throw new Error("issue not found");
       this.assertRepositoryActive(issue.repositoryId);
       if (note.length > 4_000) throw new Error("retry note must not exceed 4000 characters");
       const expectedPostMergeClosure = this.store.hasMergedPullRequest(issueId);
       if ((issue.sourceState !== "open" && !(issue.sourceState === "closed" && expectedPostMergeClosure)) ||
         !issue.labels.includes(this.config.labels.enrollment)) {
-        throw new Error("issue is closed or offboarded");
+        throw new Error("issue is closed or has left Conveyor");
       }
       if (this.hasLiveIssueRun(issueId)) {
         throw new Error("issue is already running");
@@ -6720,11 +6801,11 @@ export class ConveyorService {
   private async liveEnrolledIssue(issueId: string) {
     const issue = this.store.getIssue(issueId);
     const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
-    if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("item not found");
+    if (!issue || !repository || issue.projectedState === "unlisted") throw new Error("item not found");
     this.assertRepositoryActive(issue.repositoryId);
     const live = await this.github.getIssue(repository.address, issue.sourceNumber);
     if (live.state !== "open") throw new Error("the item is closed");
-    if (!live.labels.includes(this.config.labels.enrollment)) throw new Error("the item is offboarded (it has no conveyor label)");
+    if (!live.labels.includes(this.config.labels.enrollment)) throw new Error("the item has left Conveyor (it has no conveyor label)");
     return { issue, repository, live };
   }
 
@@ -6795,7 +6876,7 @@ export class ConveyorService {
       pushPublicKey: push?.publicKey ?? null,
       dispatchPushEvents: () => deliverPushEvents(this.store, async (issueId) => {
         const target = this.store.getIssue(issueId);
-        return target && target.projectedState !== "offboarded"
+        return target && target.projectedState !== "unlisted"
           ? `/issues/${encodeURIComponent(target.repositoryId)}/${target.sourceNumber}`
           : null;
       }, push),

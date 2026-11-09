@@ -162,7 +162,7 @@ settings:
 ```
 
 The retention settings apply to run events and non-home per-run artifacts of finished runs whose
-items are closed, done or offboarded, and to finished steering runs. Independently of those settings,
+items are closed or done, and to finished steering runs. Independently of those settings,
 every terminal run's private `home` directory is reclaimed, including runs of open, parked and
 stopped items; a running run's home is never selected. Recorded results, events and artifacts outside
 that private home remain subject to the configured retention policy. The service checks at start and
@@ -195,7 +195,7 @@ web:
 On each interval, Conveyor first reconciles the board. It starts a scheduled
 Operator run only when at least one enrolled, configured board item is stopped
 (`blocked`, `error`, `needs-input`, `needs-intervention`, or `rejected`). Empty,
-healthy, paused-only, completed-only, and offboarded boards do not start a run.
+healthy, paused-only and completed-only boards do not start a run.
 After a restart, the first check waits for the next interval; missed intervals
 are not replayed in a burst.
 
@@ -672,7 +672,7 @@ repositories:
       from: implementation # a stage at or before its change.merge stage
 ```
 
-- **Counted interval.** An enrolled leaf item holds one slot from the moment it enters the `from` stage until it leaves the stage with the `change.merge` action (merged, sent back to a stage before `from`, rejected, individually paused or offboarded). It keeps the slot while it waits for CI or review and while it is blocked or in error, whether or not an agent is running. A repository pause retains the slots. Stages before `from`, stages after merge and roll-up parents hold no slot.
+- **Counted interval.** An enrolled leaf item holds one slot from the moment it enters the `from` stage until it leaves the stage with the `change.merge` action (merged, sent back to a stage before `from`, rejected, individually paused or purged). It keeps the slot while it waits for CI or review and while it is blocked or in error, whether or not an agent is running. A repository pause retains the slots. Stages before `from`, stages after merge and roll-up parents hold no slot.
 - **Waiting.** While the repository is at its limit, an item that finishes the stage before `from` stays there, without rerunning completed work, and the dashboard and `conveyor item show` say "Waiting for an in-progress slot in <repository>: #303, #305". When a slot opens, waiting items advance in queue order without a retry. A restart keeps the same holders and waiters.
 - **Corrections.** An item sent back from review or merge to a stage inside the interval keeps its slot and is not blocked by the limit.
 - **Relation to `concurrency`.** `concurrency` still limits running agents (including refinement) in the repository; `inFlight` limits items, and is checked independently for each repository. Stage and global runner limits are unchanged. Without `inFlight` nothing changes.

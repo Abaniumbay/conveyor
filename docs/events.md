@@ -26,6 +26,7 @@ Each event has:
 | `item.enrolled` | An item started a new enrollment generation. | `generation`: integer |
 | `item.metadataChanged` | An item's issue type or issue-field values changed. | - |
 | `item.offboarded` | An item's active enrollment ended; `status` says how. | `status`: string |
+| `item.purged` | An item lost its Conveyor labels (or was closed without a merge) and Conveyor deleted everything it held about it; the event log keeps the item's events. | `number`: integer |
 | `item.queueChanged` | An item's backlog position changed; null rank leaves the queue. | `rank`: number \| null |
 | `item.relationshipsChanged` | An item's stored parent or blockers changed. | `parentId`: string \| null<br>`dependencies`: string[] |
 | `item.requeued` | A person asked for an item's stage to run again: a retry, a message, a resume or an answer. | `reason`: `"retry"` \| `"message"` \| `"resume"` \| `"answer"` |

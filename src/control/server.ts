@@ -56,11 +56,11 @@ export function resolveItem(service: ConveyorService, reference: string): string
   const issue = match
     ? service.store.listIssues(match[1]).find((candidate) => candidate.sourceNumber === Number(match[2]))
     : service.store.getIssue(reference);
-  if (!issue || issue.projectedState === "offboarded") throw new ControlError(`no item ${reference}`, 404);
+  if (!issue || issue.projectedState === "unlisted") throw new ControlError(`no item ${reference}`, 404);
   return issue.id;
 }
 
-/** The item an operator tool targets, or null for an unknown or offboarded reference; `running` means an agent is running on it. */
+/** The item an operator tool targets, or null for an unknown reference; `running` means an agent is running on it. */
 export function operatorItemTarget(service: ConveyorService, reference: string): { issueId: string; running: boolean } | null {
   let issueId: string;
   try {
@@ -81,7 +81,7 @@ function githubOutageStatus(service: ConveyorService): { since: string; waiting:
 /** The status payload `GET /v1/status` and the operator MCP `conveyor_status` tool both return. */
 export function status(service: ConveyorService, info: ControlInfo) {
   const work = service.activeWork();
-  const issues = service.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
+  const issues = service.store.listIssues().filter((issue) => issue.projectedState !== "unlisted");
   return {
     version: BUILD,
     pid: process.pid,
@@ -106,7 +106,7 @@ export function status(service: ConveyorService, info: ControlInfo) {
         reason: service.issueJourney(issue.id)?.now.reason ?? issue.warning,
       })),
     openQuestions: service.store.listOpenQuestions()
-      .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "offboarded")
+      .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "unlisted")
       .length,
   };
 }
@@ -114,7 +114,7 @@ export function status(service: ConveyorService, info: ControlInfo) {
 function board(service: ConveyorService) {
   const running = new Set(service.activeWork().items.map((item) => item.issueId));
   return service.store.listIssues()
-    .filter((issue) => issue.projectedState !== "offboarded")
+    .filter((issue) => issue.projectedState !== "unlisted")
     .sort((left, right) => (left.queueRank ?? Infinity) - (right.queueRank ?? Infinity))
     .map((issue) => ({
       item: `${issue.repositoryId}:${issue.sourceNumber}`,
@@ -225,7 +225,7 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
       }
       if (route === "GET /v1/questions") {
         return json(service.store.listOpenQuestions()
-          .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "offboarded")
+          .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "unlisted")
           .map((question) => ({
           id: question.id, item: itemReference(service, question.issueId), prompt: question.prompt, reason: question.reason,
           options: question.options, allowFreeText: question.allowFreeText, createdAt: question.createdAt,

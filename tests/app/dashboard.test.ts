@@ -226,7 +226,7 @@ describe("ConveyorService dashboard", () => {
       store.setStageState({ issueId: issue.id, stageId, status: stoppedState, feedbackCycle: 2, configHash: config.hash });
     }
     store.upsertIssue({ id: blocker.id, repositoryId: "repo", sourceNumber: blocker.number, sourceUrl: blocker.url, title: blocker.title, body: blocker.body, sourceState: blocker.state, sourceStateReason: null, labels: blocker.labels, sourceUpdatedAt: blocker.updatedAt });
-    store.setIssueProjection(blocker.id, { stage: null, state: "offboarded", warning: null });
+    store.setIssueProjection(blocker.id, { stage: null, state: "unlisted", warning: null });
     for (const issue of issues) store.replaceRelationships(issue.id, null, ["blocker"]);
     store.activateEnrollment("closed-merged");
     store.upsertPullRequest({ issueId: "closed-merged", id: "merged-pr", number: 100, url: "https://github.com/owner/repo/pull/100", state: "merged", mergedAt: "2026-10-01T00:00:00Z" });
@@ -334,7 +334,7 @@ describe("ConveyorService dashboard", () => {
       ["refinement-rollup", "blocked", true],
       ["review-rollup", "error", true],
       ["intervention-rollup", "needs-intervention", true],
-      ["offboarded", "offboarded", true],
+      ["unlisted", "unlisted", true],
       ["stale-state", "blocked", true],
       ["stale-stage", "blocked", true],
     ] as const;
@@ -351,7 +351,7 @@ describe("ConveyorService dashboard", () => {
       };
       store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: sourceIssue.url, title: id, body: "", sourceState: sourceIssue.state, sourceStateReason: null, labels, sourceUpdatedAt: sourceIssue.updatedAt });
       store.setQueueRank(id, number);
-      store.setIssueProjection(id, { stage: id === "offboarded" ? null : stage, state: projectedState, warning: null });
+      store.setIssueProjection(id, { stage: id === "unlisted" ? null : stage, state: projectedState, warning: null });
       store.setStageState({ issueId: id, stageId: stage, status: projectedState, feedbackCycle: 0, configHash: config.hash });
       const liveLabels = id === "active" || id === "stale-state"
         ? ["conveyor", "conveyor:implementation"]
@@ -436,7 +436,7 @@ describe("ConveyorService dashboard", () => {
     const retryableById = Object.fromEntries(cards.map((issue) => [issue.id, issue.retryable]));
     expect(retryableById).toMatchObject({ blocked: true, error: true, intervention: true, "refinement-rollup": true });
     expect(retryableById).toMatchObject({ active: false, "needs-input": false, rejected: false, closed: false, unenrolled: false, running: false, rollup: false, "review-rollup": false });
-    expect(retryableById).not.toHaveProperty("offboarded");
+    expect(retryableById).not.toHaveProperty("unlisted");
 
     const resumableRollupById = Object.fromEntries(cards.map((issue) => [issue.id, issue.resumableRollup]));
     expect(resumableRollupById).toMatchObject({ rollup: true, "review-rollup": true, "intervention-rollup": true, "refinement-rollup": false });
@@ -447,7 +447,7 @@ describe("ConveyorService dashboard", () => {
     expect(refinementHtml).toContain("data-retry-form");
     expect(refinementHtml).not.toContain("data-resume-rollup-form");
 
-    const rejectedIds = ["active", "needs-input", "rejected", "closed", "unenrolled", "running", "rollup", "review-rollup", "offboarded", "stale-state", "stale-stage"];
+    const rejectedIds = ["active", "needs-input", "rejected", "closed", "unenrolled", "running", "rollup", "review-rollup", "unlisted", "stale-state", "stale-stage"];
     for (const id of rejectedIds) {
       await expect(service.retryIssue(id, "must not be recorded", "operator")).rejects.toThrow();
       expect(store.listConversationMessages(id)).toEqual([]);
@@ -700,7 +700,7 @@ describe("ConveyorService dashboard", () => {
     };
     add("done-parent", 1, "closed", "not_planned", "done");
     add("completed-child", 2, "closed", "completed", "done");
-    add("offboarded-blocker", 3, "closed", "completed", "offboarded");
+    add("offboarded-blocker", 3, "closed", "completed", "unlisted");
     add("ancestor", 4, "open", null, "active");
     store.replaceRelationships("completed-child", { parentId: "done-parent", siblingOrder: 1 }, []);
     store.replaceRelationships("done-parent", { parentId: "ancestor", siblingOrder: 1 }, ["offboarded-blocker"]);
@@ -761,19 +761,19 @@ describe("ConveyorService dashboard", () => {
     add("in-review", 2, "review", "active", "open", ["conveyor", "conveyor:review"]);
     add("backlog", 3, "build", "active", "open", ["conveyor"]);
     add("done", 4, "build", "done", "closed", ["conveyor", "conveyor:build"]);
-    add("offboarded", 5, null, "offboarded", "closed", ["conveyor"]);
+    add("unlisted", 5, null, "unlisted", "closed", ["conveyor"]);
 
     const service = new ConveyorService(config, store, {} as never);
     const model = service.dashboard("csrf");
     const staged = model.stages.flatMap((column) => column.issues);
-    expect(staged.find((card) => card.id === "in-build")).toMatchObject({ stageBadge: { name: "Build", icon: "🛠️", offboarded: false } });
-    expect(staged.find((card) => card.id === "in-review")).toMatchObject({ stageBadge: { name: "Review", icon: null, offboarded: false } });
-    expect(model.backlog.find((card) => card.id === "backlog")).toMatchObject({ stageBadge: { name: "Backlog", icon: null, offboarded: false } });
-    expect(model.done.issues.find((card) => card.id === "done")).toMatchObject({ stageBadge: { name: "Done", icon: null, offboarded: false } });
-    expect(service.issueDetails("csrf", "in-build")).toMatchObject({ stageBadge: { name: "Build", icon: "🛠️", offboarded: false } });
-    expect(service.issueDetails("csrf", "backlog")).toMatchObject({ stageBadge: { name: "Backlog", icon: null, offboarded: false } });
-    expect(service.issueDetails("csrf", "done")).toMatchObject({ stageBadge: { name: "Done", icon: null, offboarded: false } });
-    expect(service.issueDetails("csrf", "offboarded")).toMatchObject({ historyOnly: true, stageBadge: { name: "Review", icon: null, offboarded: true } });
+    expect(staged.find((card) => card.id === "in-build")).toMatchObject({ stageBadge: { name: "Build", icon: "🛠️" } });
+    expect(staged.find((card) => card.id === "in-review")).toMatchObject({ stageBadge: { name: "Review", icon: null } });
+    expect(model.backlog.find((card) => card.id === "backlog")).toMatchObject({ stageBadge: { name: "Backlog", icon: null } });
+    expect(model.done.issues.find((card) => card.id === "done")).toMatchObject({ stageBadge: { name: "Done", icon: null } });
+    expect(service.issueDetails("csrf", "in-build")).toMatchObject({ stageBadge: { name: "Build", icon: "🛠️" } });
+    expect(service.issueDetails("csrf", "backlog")).toMatchObject({ stageBadge: { name: "Backlog", icon: null } });
+    expect(service.issueDetails("csrf", "done")).toMatchObject({ stageBadge: { name: "Done", icon: null } });
+    expect(service.issueDetails("csrf", "unlisted")).toBeNull();
     store.close();
   });
 
@@ -1118,7 +1118,7 @@ describe("ConveyorService dashboard", () => {
       },
     });
     store.completeStageTransition("blocked-transition");
-    store.setIssueProjection("blocker", { stage: null, state: "offboarded", warning: null });
+    store.setIssueProjection("blocker", { stage: null, state: "unlisted", warning: null });
     store.replaceRelationships("issue", null, ["blocker"]);
     const replaced: string[][] = [];
     const github = {
@@ -2006,7 +2006,7 @@ describe("ConveyorService dashboard", () => {
     store.upsertIssue({ ...parent, sourceState: "open", labels: [] });
     expect(service.dashboard("csrf").questions).toEqual([]);
     expect(service.dashboard("csrf").needsYou).toEqual([]);
-    store.setIssueProjection("parent", { stage: null, state: "offboarded", warning: null });
+    store.setIssueProjection("parent", { stage: null, state: "unlisted", warning: null });
     expect(service.dashboard("csrf").questions).toEqual([]);
     expect(service.dashboard("csrf").needsYou).toEqual([]);
     const account = store.createDashboardUser("reader", "hash");
@@ -2290,7 +2290,7 @@ describe("ConveyorService dashboard", () => {
       allowFreeText: true,
     });
     add({ id: "paused", number: 10, sourceState: "closed", state: "blocked", enrolled: false, pullRequest: null });
-    add({ id: "offboarded", number: 11, sourceState: "closed", state: "offboarded", enrolled: true, pullRequest: "merged" });
+    add({ id: "unlisted", number: 11, sourceState: "closed", state: "unlisted", enrolled: true, pullRequest: "merged" });
 
     const service = new ConveyorService(config, store, {} as never);
     const dashboard = service.dashboard("csrf");
@@ -2676,7 +2676,7 @@ describe("ConveyorService dashboard", () => {
     expect(findingStore.get("github:owner/repo#31", finding.id)?.type).toBe("security");
     store.setIssueProjection("github:owner/repo#31", {
       stage: null,
-      state: "offboarded",
+      state: "unlisted",
       warning: null,
     });
     const repositoryDetail = service.dashboard("csrf", {
@@ -2707,15 +2707,9 @@ describe("ConveyorService dashboard", () => {
       runId: null,
       issueId: "github:owner/repo#31",
     });
-    expect(offboardedDashboard.selectedIssue).toMatchObject({
-      id: "github:owner/repo#31",
-      historyOnly: true,
-    });
-    expect(service.issueDetails("csrf", "github:owner/repo#31")).toMatchObject({ historyOnly: true });
-    const offboardedHtml = renderDashboard(offboardedDashboard);
-    expect(offboardedHtml).toContain("This item is no longer enrolled. Its history is read-only.");
-    expect(offboardedHtml).toContain('data-detail-tab="journey"');
-    expect(offboardedHtml).not.toContain('data-conversation-form');
+    // An item that left Conveyor has no card, not even a read-only history one.
+    expect(offboardedDashboard.selectedIssue).toBeNull();
+    expect(service.issueDetails("csrf", "github:owner/repo#31")).toBeNull();
     expect(dashboard.repositories.find((repository) => repository.id === "repo")?.trust).toEqual({
       visibility: "public",
       checkedAt: "2026-09-29T03:00:00Z",
@@ -2844,8 +2838,8 @@ describe("ConveyorService dashboard", () => {
     // The database count uses the same literal search and enrollment predicates as the rendered
     // Done cards. In particular, closed offboarded relationship stubs are not board items, and
     // SQLite LIKE metacharacters in a user query are ordinary text for the board filter.
-    store.upsertIssue({ id: "offboarded", repositoryId: "beta", sourceNumber: 900, sourceUrl: "https://github.com/owner/beta/issues/900", title: "Offboarded history", body: "", sourceState: "closed", sourceStateReason: "done", labels: ["conveyor"], sourceUpdatedAt: "2026-10-03T00:00:00Z" });
-    store.setIssueProjection("offboarded", { stage: "implementation", state: "offboarded", warning: null });
+    store.upsertIssue({ id: "unlisted", repositoryId: "beta", sourceNumber: 900, sourceUrl: "https://github.com/owner/beta/issues/900", title: "Offboarded history", body: "", sourceState: "closed", sourceStateReason: "done", labels: ["conveyor"], sourceUpdatedAt: "2026-10-03T00:00:00Z" });
+    store.setIssueProjection("unlisted", { stage: "implementation", state: "unlisted", warning: null });
     add("literal-query", "beta", 901, "closed", "Literal _% query", "2026-10-03T00:00:00Z");
     add("wildcard-only", "beta", 902, "closed", "Literal AX query", "2026-10-03T00:00:00Z");
     expect(service.dashboard("csrf").done.totalIssues).toBe(afterHistory.done.totalIssues + 2);

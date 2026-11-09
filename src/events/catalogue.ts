@@ -33,6 +33,7 @@ export const EVENT_CATALOGUE = {
   }).strict()),
   "item.enrolled": define("Items", "An item started a new enrollment generation.", z.object({ generation: z.number().int().nonnegative() }).strict()),
   "item.offboarded": define("Items", "An item's active enrollment ended; `status` says how.", z.object({ status: z.string() }).strict()),
+  "item.purged": define("Items", "An item lost its Conveyor labels (or was closed without a merge) and Conveyor deleted everything it held about it; the event log keeps the item's events.", z.object({ number }).strict()),
   "item.stageChanged": define("Items", "An item's projected stage or state changed.", z.object({
     fromStage: stage, fromState: z.string().nullable(), toStage: stage, toState: z.string().nullable(),
   }).strict()),

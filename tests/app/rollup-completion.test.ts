@@ -193,7 +193,7 @@ describe("roll-up parent completion", () => {
     store.close();
   });
 
-  test("leaves unfinished, paused, offboarded, and already closed parents untouched", async () => {
+  test("leaves unfinished, paused, and already closed parents untouched", async () => {
     const { fixture, service, store } = await serviceFor([
       sourceIssue(1, "open", ["conveyor", "conveyor:implementation"]),
       sourceIssue(2, "open", ["conveyor", "conveyor:implementation"]),

@@ -217,9 +217,7 @@ export const LiveDetailsContext = createContext<((issue: IssueCardViewModel) => 
 
 function DetailsDialog({ issue, id, selected = false, canManage = false }: { issue: IssueCardViewModel; id: string; selected?: boolean; canManage?: boolean }) {
   const live = useContext(LiveDetailsContext)?.(issue) ?? null;
-  const historyOnly = issue.historyOnly === true;
-  // An item no longer enrolled has only its history.
-  const shown: DetailTab = historyOnly ? "journey" : live?.tab ?? "summary";
+  const shown: DetailTab = live?.tab ?? "summary";
   const tabProps = (tab: DetailTab) => ({ "aria-selected": shown === tab ? "true" as const : "false" as const, tabIndex: shown === tab ? 0 : -1 });
   const hiddenUnless = (tab: DetailTab) => shown !== tab;
   const url = safeUrl(issue.url);
@@ -237,7 +235,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
             <span class="issue-number">#{issue.number}</span>
             {stageBadge && <span class="repository-badge details-stage-badge" data-details-stage-badge>
               {stageBadge.icon && <span aria-hidden="true"><span class="details-stage-icon">{stageBadge.icon}</span>{" "}</span>}
-              <span class="sr-only">Stage: </span>{stageBadge.name}{stageBadge.offboarded && " (offboarded)"}
+              <span class="sr-only">Stage: </span>{stageBadge.name}
             </span>}
             {url && <a class="details-source-link" href={url} target="_blank" rel="noopener noreferrer">Open issue source ↗</a>}
           </p>
@@ -248,16 +246,11 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         </div>
       </header>
       <nav class="details-tabs" aria-label="Issue detail sections" role="tablist">
-        {historyOnly
-          ? <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} {...tabProps("journey")} data-detail-tab="journey">Journey</button>
-          : <>
-            <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} {...tabProps("summary")} data-detail-tab="summary">Summary</button>
-            <button type="button" role="tab" id={`${conversationId}-tab`} aria-controls={conversationId} {...tabProps("conversation")} data-detail-tab="conversation">Conversation</button>
-            <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} {...tabProps("journey")} data-detail-tab="journey">Journey</button>
-            <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} {...tabProps("activity")} data-detail-tab="activity">Technical logs</button>
-          </>}
+        <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} {...tabProps("summary")} data-detail-tab="summary">Summary</button>
+        <button type="button" role="tab" id={`${conversationId}-tab`} aria-controls={conversationId} {...tabProps("conversation")} data-detail-tab="conversation">Conversation</button>
+        <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} {...tabProps("journey")} data-detail-tab="journey">Journey</button>
+        <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} {...tabProps("activity")} data-detail-tab="activity">Technical logs</button>
       </nav>
-      {!historyOnly && <>
       <section id={summaryId} role="tabpanel" aria-labelledby={`${summaryId}-tab`} data-detail-panel="summary" hidden={hiddenUnless("summary")}>
         <div class="details-status">
           <span class={`andon andon--${issueSignal(issue)}`} aria-hidden="true" />
@@ -405,7 +398,6 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
           </div>
         </form>
       </section>
-      </>}
       <section
         id={journeyId}
         role="tabpanel"
@@ -413,10 +405,8 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         data-detail-panel="journey"
         hidden={hiddenUnless("journey")}
       >
-        {historyOnly && <p class="details-empty">This item is no longer enrolled. Its history is read-only.</p>}
         {live?.journey}
       </section>
-      {!historyOnly && <>
       <section
         id={activityId}
         role="tabpanel"
@@ -426,7 +416,6 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
       >
         {live?.activity}
       </section>
-      </>}
     </dialog>
   );
 }

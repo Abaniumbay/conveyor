@@ -124,7 +124,7 @@ describe("ConveyorService steering", () => {
     const sourceComments: string[] = [];
     let listingUnavailable = false;
     store.upsertIssue({ id: "healthy", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Healthy", body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
-    store.setIssueProjection("healthy", { stage: null, state: "offboarded", warning: null });
+    store.setIssueProjection("healthy", { stage: null, state: "unlisted", warning: null });
     sourceIssues.set(1, { id: "healthy", number: 1, url: "https://example.test/1", title: "Healthy", body: "", state: "open", stateReason: null, labels: [], updatedAt: "2026-01-01T00:00:00Z" });
     let scheduledCalls = 0;
     let holdScheduledRun = false;
@@ -566,18 +566,18 @@ describe("ConveyorService steering", () => {
       store.setIssueProjection(id, { stage: "backlog", state: "active", warning: null });
       store.setStageState({ issueId: id, stageId: "backlog", status: "ready", feedbackCycle: 0, configHash: config.hash });
     }
-    for (const [id, number, stage] of [["item-2", 88, "backlog"], ["item-3", 89, "backlog"], ["child", 90, "backlog"], ["not-backlog", 91, "implementation"], ["offboarded", 92, null]] as const) {
+    for (const [id, number, stage] of [["item-2", 88, "backlog"], ["item-3", 89, "backlog"], ["child", 90, "backlog"], ["not-backlog", 91, "implementation"], ["unlisted", 92, null]] as const) {
       store.upsertIssue({
         id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: id,
         body: "", sourceState: "open",
-        labels: id === "offboarded"
+        labels: id === "unlisted"
           ? []
           : id === "not-backlog"
             ? ["conveyor", "conveyor:implementation"]
             : ["conveyor", "conveyor:backlog"],
         sourceUpdatedAt: "2026-01-01T00:00:00Z",
       });
-      store.setIssueProjection(id, { stage, state: id === "offboarded" ? "offboarded" : "active", warning: null });
+      store.setIssueProjection(id, { stage, state: id === "unlisted" ? "unlisted" : "active", warning: null });
       if (stage) store.setStageState({ issueId: id, stageId: stage, status: "ready", feedbackCycle: 0, configHash: config.hash });
       if (id === "item-2") store.setQueueRank(id, 20);
       if (id === "item-3") store.setQueueRank(id, 30);
@@ -697,7 +697,7 @@ describe("ConveyorService steering", () => {
         expect((await find("conveyor 318")).items.map((item) => item.id).sort()).toEqual(["conveyor-v2:318", "other-conveyor:318"]);
         await expect(service.handleMcp({ tool: "operator.getItemHistory", input: { itemId: "Abaniumbay/conveyor#318" } }, context.control.token))
           .resolves.toMatchObject({ item: { id: "conveyor-v2:318" } });
-        expect(await find("offboarded")).toEqual({ reference: "offboarded", status: "not-on-board", message: "This reference is not on this configured board.", items: [] });
+        expect(await find("unlisted")).toEqual({ reference: "unlisted", status: "not-on-board", message: "This reference is not on this configured board.", items: [] });
         expect(await find("unconfigured#318")).toEqual({ reference: "unconfigured#318", status: "not-on-board", message: "This reference is not on this configured board.", items: [] });
         const history = await service.handleMcp({ tool: "operator.getItemHistory", input: { itemId: "item-1", eventLimit: 2 } }, context.control.token) as {
           delivery: { status: string; pullRequest: { number: number }; checks: Array<{ state: string }> };
@@ -740,7 +740,7 @@ describe("ConveyorService steering", () => {
         await rejectMove({ itemId: "missing", position: "end" });
         await rejectMove({ itemId: "child", position: "end" });
         await rejectMove({ itemId: "not-backlog", position: "end" });
-        await rejectMove({ itemId: "item-1", position: "before", beforeItemId: "offboarded" });
+        await rejectMove({ itemId: "item-1", position: "before", beforeItemId: "unlisted" });
         expect(store.listRunEvents(steeringRunId).filter((event) => event.type === "operator.control")).toHaveLength(auditsBeforeReject);
         return { summary: "Done", sessionId: "thread-operator", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, durationMs: 1, exitCode: 0, stderr: "" };
       },

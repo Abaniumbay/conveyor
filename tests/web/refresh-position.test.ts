@@ -978,7 +978,7 @@ describe("dashboard live refresh position", () => {
     let revision = "stage-badge-1";
     let target: IssueCardViewModel = {
       ...issue("target", 20, "Target item"),
-      stageBadge: { name: "Build", icon: "🛠️", offboarded: false },
+      stageBadge: { name: "Build", icon: "🛠️" },
     };
     const server = startDashboard({ dashboard: () => dashboard(revision, [target]), revision: () => revision });
     try {
@@ -991,7 +991,7 @@ describe("dashboard live refresh position", () => {
       await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Build"));
       await page.getByRole("tab", { name: "Conversation" }).click();
 
-      target = { ...target, stageBadge: { name: "Review", icon: "🔍", offboarded: false } };
+      target = { ...target, stageBadge: { name: "Review", icon: "🔍" } };
       revision = "stage-badge-2";
       await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Review"));
 

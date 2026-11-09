@@ -15,7 +15,7 @@ describe("in-flight documentation", () => {
       expect(text).toContain("inFlight");
       expect(text).toContain("`concurrency`");
       expect(text).toMatch(/in-progress slot/);
-      expect(text).toMatch(/offboarded/);
+      expect(text).toMatch(/purged/);
       expect(text).toMatch(/repository pause/i);
     }
   });

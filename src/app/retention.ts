@@ -1,5 +1,5 @@
 // Retention of finished work (settings.retention): run events and per-run artifact directories of
-// runs whose item is closed, done or offboarded, once older than the configured age. Terminal run
+// runs whose item is closed or done, once older than the configured age. Terminal run
 // homes are reclaimed independently, even for open items; running homes are never touched. Service
 // log retention is separate (settings.logging).
 

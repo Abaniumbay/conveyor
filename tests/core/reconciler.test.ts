@@ -140,18 +140,19 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
-  test("does not mark an item paused when only the conveyor label is removed", async () => {
+  test("purges an item when only the conveyor label is removed: it is not paused", async () => {
     const store = await openStore();
     const id = "github:owner/repo#1";
     await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
 
     await reconcileRepository({ ...common(store), source: { async listIssues() { return [issue(1, ["conveyor:refinement"])]; } } });
 
-    expect(store.getIssue(id)).toMatchObject({ projectedState: "offboarded" });
+    expect(store.getIssue(id)).toMatchObject({ projectedState: "unlisted", projectedStage: null });
+    expect(store.isPurging(id)).toBe(true);
     store.close();
   });
 
-  test("offboards a parked question until the item is enrolled again", async () => {
+  test("purges an item with a parked question when its labels go; once purged, enrolling again starts a new item", async () => {
     const store = await openStore();
     const common = {
       store, configHash: "hash-1",
@@ -164,15 +165,18 @@ describe("reconcileRepository", () => {
 
     await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["backend"])]; } } });
 
-    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: null, projectedState: "offboarded" });
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: null, projectedState: "unlisted" });
     expect(store.getEnrollment(enrollment.id)).toMatchObject({ status: "offboarded" });
-    expect(store.getQuestion(question.id)).toMatchObject({ status: "open", answer: null });
+    expect(store.isPurging("github:owner/repo#1")).toBe(true);
+
+    store.finishPurge("github:owner/repo#1");
+    expect(store.getIssue("github:owner/repo#1")).toBeNull();
+    expect(store.getQuestion(question.id)).toBeNull();
 
     await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
 
-    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: "refinement", projectedState: "needs-input" });
-    expect(store.getQuestion(question.id)).toMatchObject({ id: question.id, status: "open", answer: null });
-    expect(store.activateEnrollment("github:owner/repo#1").generation).toBe(enrollment.generation + 1);
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: "refinement", projectedState: "active" });
+    expect(store.activateEnrollment("github:owner/repo#1").generation).toBe(1);
     store.close();
   });
 
@@ -215,7 +219,7 @@ describe("reconcileRepository", () => {
       source: { async listIssues() { return [transferredIssue]; } },
     });
 
-    expect(result).toEqual({ seen: 1, enrolled: 0, offboarded: 0, missing: 0 });
+    expect(result).toEqual({ seen: 1, enrolled: 0, purged: 0 });
     expect(store.listIssues("repo")).toHaveLength(1);
     expect(store.getIssue(oldIssue.id)).toMatchObject({
       id: oldIssue.id,
@@ -249,7 +253,7 @@ describe("reconcileRepository", () => {
       source: { async listIssues() { return sourceIssues; } },
     });
 
-    expect(result).toEqual({ seen: 3, enrolled: 2, offboarded: 0, missing: 0 });
+    expect(result).toEqual({ seen: 3, enrolled: 2, purged: 0 });
     expect(store.listIssues("repo").map((stored) => stored.sourceNumber)).toEqual([1, 3]);
     expect(store.getIssue(sourceIssues[0]!.id)).toMatchObject({
       projectedStage: "refinement",
@@ -267,7 +271,7 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
-  test("onboards an enrolled issue first stored as an offboarded dependency", async () => {
+  test("onboards an enrolled issue first stored as an unlisted dependency", async () => {
     const store = await openStore();
     const repository = { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" };
     const dependency = issue(2, []);
@@ -284,7 +288,7 @@ describe("reconcileRepository", () => {
       labels: dependency.labels,
       sourceUpdatedAt: dependency.updatedAt,
     });
-    store.setIssueProjection(dependency.id, { stage: null, state: "offboarded", warning: null });
+    store.setIssueProjection(dependency.id, { stage: null, state: "unlisted", warning: null });
 
     const result = await reconcileRepository({
       store,
@@ -295,7 +299,7 @@ describe("reconcileRepository", () => {
       source: { async listIssues() { return [issue(2, ["conveyor", "conveyor:refinement"])]; } },
     });
 
-    expect(result).toEqual({ seen: 1, enrolled: 1, offboarded: 0, missing: 0 });
+    expect(result).toEqual({ seen: 1, enrolled: 1, purged: 0 });
     expect(store.getIssue(dependency.id)).toMatchObject({
       queueRank: 10,
       projectedStage: "refinement",
@@ -306,7 +310,7 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
-  test("leaves an unenrolled issue first stored as a dependency offboarded", async () => {
+  test("leaves an unenrolled issue first stored as a dependency unlisted", async () => {
     const store = await openStore();
     const repository = { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" };
     const dependency = issue(2, []);
@@ -323,7 +327,7 @@ describe("reconcileRepository", () => {
       labels: dependency.labels,
       sourceUpdatedAt: dependency.updatedAt,
     });
-    store.setIssueProjection(dependency.id, { stage: null, state: "offboarded", warning: null });
+    store.setIssueProjection(dependency.id, { stage: null, state: "unlisted", warning: null });
 
     const result = await reconcileRepository({
       store,
@@ -334,8 +338,8 @@ describe("reconcileRepository", () => {
       source: { async listIssues() { return [dependency]; } },
     });
 
-    expect(result).toEqual({ seen: 1, enrolled: 0, offboarded: 0, missing: 0 });
-    expect(store.getIssue(dependency.id)).toMatchObject({ queueRank: null, projectedStage: null, projectedState: "offboarded" });
+    expect(result).toEqual({ seen: 1, enrolled: 0, purged: 0 });
+    expect(store.getIssue(dependency.id)).toMatchObject({ queueRank: null, projectedStage: null, projectedState: "unlisted" });
     expect(store.getStageState(dependency.id)).toBeNull();
     expect(store.listStageTransitions(dependency.id).filter((transition) => transition.kind === "onboarded")).toHaveLength(0);
     store.close();
@@ -369,10 +373,10 @@ describe("reconcileRepository", () => {
       source: { async listIssues() { return [enrolled]; } },
     };
 
-    expect(await reconcileRepository(input)).toEqual({ seen: 1, enrolled: 1, offboarded: 0, missing: 0 });
+    expect(await reconcileRepository(input)).toEqual({ seen: 1, enrolled: 1, purged: 0 });
     const queueRank = store.getIssue(enrolled.id)?.queueRank;
     expect(queueRank).toBe(10);
-    expect(await reconcileRepository(input)).toEqual({ seen: 1, enrolled: 0, offboarded: 0, missing: 0 });
+    expect(await reconcileRepository(input)).toEqual({ seen: 1, enrolled: 0, purged: 0 });
     expect(store.getIssue(enrolled.id)?.queueRank).toBe(queueRank);
     expect(store.listStageTransitions(enrolled.id).filter((transition) => transition.kind === "onboarded")).toHaveLength(1);
     store.close();
@@ -404,16 +408,15 @@ describe("reconcileRepository", () => {
       source: { async listIssues() { return [issue(1, ["backend"])]; } },
     });
 
-    expect(result.offboarded).toBe(1);
+    expect(result.purged).toBe(1);
     expect(store.getIssue("github:owner/repo#1")).toMatchObject({
-      labels: ["backend"],
+      labels: ["conveyor"],
       projectedStage: null,
-      projectedState: "offboarded",
+      projectedState: "unlisted",
       queueRank: 10,
     });
-    expect(store.activateEnrollment("github:owner/repo#1").generation).toBe(
-      enrollment.generation + 1,
-    );
+    expect(store.getEnrollment(enrollment.id)).toMatchObject({ status: "offboarded" });
+    expect(store.listPendingPurges()).toEqual([{ issueId: "github:owner/repo#1", repositoryId: "repo" }]);
     store.close();
   });
 
@@ -648,7 +651,7 @@ describe("reconcileRepository", () => {
       projectedState: "blocked",
     });
     expect(store.getIssue("github:owner/repo#1")?.labels).toEqual(storedCurrent.labels);
-    expect(staleResult).toMatchObject({ seen: 1, missing: 0 });
+    expect(staleResult).toMatchObject({ seen: 1 });
     const resumed = () => store.listStageTransitions("github:owner/repo#1").filter((transition) => transition.kind === "resumed");
     expect(resumed()).toHaveLength(0);
 
@@ -661,7 +664,7 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
-  test("stops scheduling closed and missing source issues with visible reasons", async () => {
+  test("stops scheduling closed source issues with a visible reason and leaves unlisted-by-listing issues alone", async () => {
     const store = await openStore();
     const common = {
       store,
@@ -686,15 +689,13 @@ describe("reconcileRepository", () => {
       source: { async listIssues() { return [issue(1, ["conveyor"], "closed")]; } },
     });
 
-    expect(result.missing).toBe(1);
+    expect(result.purged).toBe(0);
     expect(store.getIssue("github:owner/repo#1")).toMatchObject({
       projectedState: "closed",
       warning: expect.stringContaining("closed before"),
     });
-    expect(store.getIssue("github:owner/repo#2")).toMatchObject({
-      projectedState: "missing",
-      warning: expect.stringContaining("not returned"),
-    });
+    // Whether a source issue that was not returned was deleted is not decided by a listing.
+    expect(store.getIssue("github:owner/repo#2")).toMatchObject({ projectedState: "active", warning: null });
     store.close();
   });
 
@@ -771,6 +772,7 @@ describe("reconcileRepository", () => {
 
     live = { ...live, labels: ["backend"], updatedAt: "2026-10-17T03:00:00Z" };
     await reconcileRepository({ ...common, source });
+    store.finishPurge(live.id);
     labeler = "outsider";
     live = { ...live, labels: ["conveyor", "conveyor:refinement"], updatedAt: "2026-10-17T04:00:00Z" };
     await reconcileRepository({ ...common, source });
@@ -883,7 +885,7 @@ describe("reconcileRepository", () => {
     });
   });
 
-  test("updates only the given issues, without a listing, and marks nothing else missing", async () => {
+  test("updates only the given issues, without a listing, and touches nothing else", async () => {
     const store = await openStore();
     let listings = 0;
     const input = {
@@ -901,7 +903,7 @@ describe("reconcileRepository", () => {
     await reconcileRepository({ ...input, issues: [{ ...issue(1, ["conveyor", "conveyor:refinement", "backend"]), updatedAt: "2026-10-17T01:00:00Z" }] });
     expect(listings).toBe(1);
     expect(store.getIssue("github:owner/repo#1")?.labels).toContain("backend");
-    expect(store.getIssue("github:owner/repo#2")?.projectedState).not.toBe("missing");
+    expect(store.getIssue("github:owner/repo#2")?.projectedState).toBe("active");
     store.close();
   });
 
@@ -1014,7 +1016,7 @@ describe("reconcileRepository against rows stored while it waits", () => {
     const enrolled = issue(3, ["conveyor", "conveyor:refinement"]);
     store.upsertRepository({ ...repository, configHash: "hash-1" });
     store.insertPlaceholderIssue({ id: enrolled.id, repositoryId: "repo", sourceNumber: 3, sourceUrl: enrolled.url, title: "ignored", body: "ignored", sourceState: "open", labels: [], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
-    expect(store.getIssue(enrolled.id)).toMatchObject({ title: "", body: "", projectedState: "offboarded" });
+    expect(store.getIssue(enrolled.id)).toMatchObject({ title: "", body: "", projectedState: "unlisted" });
 
     await reconcileRepository({ store, configHash: "hash-1", repository, stages: ["refinement", "implementation"], labels, source: { async listIssues() { return [enrolled]; } } });
 

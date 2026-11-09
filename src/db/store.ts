@@ -957,6 +957,81 @@ export class ConveyorStore {
     this.#database.query("DELETE FROM pending_pause_relabels WHERE issue_id = ?").run(issueId);
   }
 
+  /**
+   * Starts purging an item that left Conveyor: from here the item is unlisted (the board and every
+   * list skip it), its enrollment is over and in-flight work is fenced. The pending record makes a
+   * restart finish the purge. Safe to repeat.
+   */
+  beginPurge(issueId: string): boolean {
+    return this.#database.transaction(() => {
+      const issue = this.getIssue(issueId);
+      if (!issue) return false;
+      this.#database
+        .query("INSERT OR IGNORE INTO pending_purges(issue_id, repository_id, created_at) VALUES (?, ?, ?)")
+        .run(issueId, issue.repositoryId, now());
+      if (issue.projectedState !== "unlisted" || issue.projectedStage !== null) {
+        this.setIssueProjection(issueId, { stage: null, state: "unlisted", warning: null });
+      }
+      this.endActiveEnrollment(issueId, "offboarded");
+      this.#executions.onStageChange(issueId);
+      return true;
+    })();
+  }
+
+  isPurging(issueId: string): boolean {
+    return this.#database.query("SELECT 1 FROM pending_purges WHERE issue_id = ?").get(issueId) !== null;
+  }
+
+  /** Purges begun and not finished, oldest first. */
+  listPendingPurges(): Array<{ issueId: string; repositoryId: string }> {
+    return (this.#database
+      .query("SELECT issue_id, repository_id FROM pending_purges ORDER BY created_at, issue_id")
+      .all() as Array<{ issue_id: string; repository_id: string }>)
+      .map((row) => ({ issueId: row.issue_id, repositoryId: row.repository_id }));
+  }
+
+  /** Every workspace of an item that was not removed yet, whatever its enrollment's state. */
+  listUnremovedWorkspaces(issueId: string): StoredWorkspace[] {
+    const rows = this.#database
+      .query(
+        `SELECT w.*, e.issue_id, e.generation
+         FROM workspaces w
+         JOIN enrollments e ON e.id = w.enrollment_id
+         WHERE e.issue_id = ? AND w.status <> 'removed'
+         ORDER BY e.generation DESC`,
+      )
+      .all(issueId) as Record<string, SQLQueryBindings>[];
+    return rows.map((row) => ({
+      id: String(row.id),
+      enrollmentId: String(row.enrollment_id),
+      issueId: String(row.issue_id),
+      generation: Number(row.generation),
+      path: String(row.path),
+      branch: String(row.branch),
+      status: String(row.status),
+    }));
+  }
+
+  /**
+   * Deletes everything held about a purged item once its workspaces are gone: the issue and, with it,
+   * stage state, journal, todos, questions and relationships, plus its runs and push events. The
+   * event log keeps the item's events.
+   */
+  finishPurge(issueId: string): void {
+    this.#database.transaction(() => {
+      const issue = this.getIssue(issueId);
+      if (issue) {
+        this.#database.query("DELETE FROM runs WHERE issue_id = ?").run(issueId);
+        this.#database.query("DELETE FROM push_events WHERE target = ?").run(issueId);
+        // A later item of the same number must not inherit this one's recorded writes.
+        this.#database.query("DELETE FROM source_mutations WHERE json_extract(request_json, '$.issueId') = ?").run(issueId);
+        this.#database.query("DELETE FROM issues WHERE id = ?").run(issueId);
+        this.#events.append("item.purged", { number: issue.sourceNumber }, { issueId, repositoryId: issue.repositoryId });
+      }
+      this.#database.query("DELETE FROM pending_purges WHERE issue_id = ?").run(issueId);
+    })();
+  }
+
   setQueueRank(issueId: string, rank: number): void {
     if (!Number.isFinite(rank)) throw new Error("queue rank must be finite");
     this.#database.transaction(() => {
@@ -1058,7 +1133,7 @@ export class ConveyorStore {
   }
 
   /**
-   * Store a dependency that no pass has stored yet: no text, no accepted timestamp, offboarded.
+   * Store a dependency that no pass has stored yet: no text, no accepted timestamp, unlisted.
    * The check and the insert share one transaction, so a row stored by anyone else first
    * (by id or by number) is returned untouched.
    */
@@ -1067,7 +1142,7 @@ export class ConveyorStore {
       const existing = this.getIssue(issue.id) ?? this.getIssueByNumber(issue.repositoryId, issue.sourceNumber);
       if (existing) return existing;
       this.#upsertIssue({ ...issue, title: "", body: "", acceptedTextAt: null });
-      this.setIssueProjection(issue.id, { stage: null, state: "offboarded", warning: null });
+      this.setIssueProjection(issue.id, { stage: null, state: "unlisted", warning: null });
       return this.getIssue(issue.id)!;
     })();
   }
@@ -1137,7 +1212,7 @@ export class ConveyorStore {
          FROM stage_transitions AS st INDEXED BY stage_transitions_created_at_idx
          JOIN issues AS i ON i.id = st.issue_id
         WHERE st.status = 'completed'
-          AND COALESCE(i.projected_state, '') <> 'offboarded'
+          AND COALESCE(i.projected_state, '') <> 'unlisted'
           AND (? IS NULL OR st.created_at >= ?)
           AND (? IS NULL OR st.created_at < ? OR (st.created_at = ? AND (? IS NOT NULL AND ('transition:' || st.id) < ?)))
           ${repositoryFilter}
@@ -1151,7 +1226,7 @@ export class ConveyorStore {
          FROM push_events AS p INDEXED BY push_events_done_created_at_idx
          JOIN issues AS i ON i.id = p.target
         WHERE p.category = 'done'
-          AND COALESCE(i.projected_state, '') <> 'offboarded'
+          AND COALESCE(i.projected_state, '') <> 'unlisted'
           AND (? IS NULL OR p.created_at >= ?)
           AND (? IS NULL OR p.created_at < ? OR (p.created_at = ? AND (? IS NOT NULL AND ('done:' || p.id) < ?)))
           ${repositoryFilter}
@@ -1167,7 +1242,7 @@ export class ConveyorStore {
            JOIN enrollments AS e ON e.id = pr.enrollment_id
            JOIN issues AS i ON i.id = e.issue_id
           WHERE i.projected_state IN ('done', 'completed')
-            AND COALESCE(i.projected_state, '') <> 'offboarded'
+            AND COALESCE(i.projected_state, '') <> 'unlisted'
             AND pr.merged_at IS NOT NULL
             AND NOT EXISTS (SELECT 1 FROM push_events AS p WHERE p.category = 'done' AND p.target = i.id)
             AND NOT EXISTS (
@@ -1267,7 +1342,7 @@ export class ConveyorStore {
           SELECT 1 FROM issue_relationships WHERE parent_id = issues.id
         ))
       )
-      AND COALESCE(issues.projected_state, '') <> 'offboarded'
+      AND COALESCE(issues.projected_state, '') <> 'unlisted'
       ${filters.length > 0 ? `AND ${filters.join(" AND ")}` : ""}
     `).get(...bindings) as { count: number };
     return Number(row.count);
@@ -3088,7 +3163,7 @@ export class ConveyorStore {
 
   /**
    * Runs that finished before `before` and can no longer be needed to recover work: their item is
-   * closed, done or offboarded, or they had no item (steering). Open items' runs are never listed,
+   * closed or done, or they had no item (steering). Open items' runs are never listed,
    * whatever their state, since a parked or stopped item may resume from them.
    */
   listRetiredRuns(before: string): Array<{ id: string; events: number }> {
@@ -3097,7 +3172,7 @@ export class ConveyorStore {
         `SELECT r.id, (SELECT COUNT(*) FROM run_events e WHERE e.run_id = r.id) AS events
          FROM runs r LEFT JOIN issues i ON i.id = r.issue_id
          WHERE r.status <> 'running' AND r.finished_at IS NOT NULL AND r.finished_at < ?
-           AND (r.issue_id IS NULL OR i.id IS NULL OR i.source_state = 'closed' OR i.projected_state IN ('done', 'offboarded'))
+           AND (r.issue_id IS NULL OR i.id IS NULL OR i.source_state = 'closed' OR i.projected_state IN ('done', 'unlisted'))
          ORDER BY r.finished_at`,
       )
       .all(before) as Array<Record<string, SQLQueryBindings>>;

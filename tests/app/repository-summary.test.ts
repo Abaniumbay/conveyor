@@ -69,7 +69,7 @@ async function world() {
   issue("blocked", "alpha", 16, "blocked", null);
   issue("queued", "alpha", 17, "active", "implementation");
   issue("closed", "alpha", 18, "closed", "implementation");
-  issue("missing", "alpha", 19, "missing", "review");
+  issue("hidden", "alpha", 19, "unlisted", "review");
   issue("paused", "alpha", 20, "paused", null);
   for (let number = 4; number <= 14; number += 1) {
     const id = `done-${number}`;

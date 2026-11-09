@@ -99,7 +99,7 @@ const settingsSchema = z
       .prefault({}),
     /**
      * How long run events (agent transcripts, tool calls) and non-home per-run artifacts of closed,
-     * done or offboarded items are kept. Terminal private homes are reclaimed independently.
+     * done items are kept. Terminal private homes are reclaimed independently.
      */
     retention: z
       .object({

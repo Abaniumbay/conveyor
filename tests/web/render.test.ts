@@ -288,7 +288,7 @@ test("keeps dialog, line, row-fold, and theme controls out of action-button vari
 test("renders the stage badge and source link once in every item-details header", () => {
   const issue: IssueCardViewModel = {
     ...parent,
-    stageBadge: { name: "Review", icon: "🔍", offboarded: false },
+    stageBadge: { name: "Review", icon: "🔍" },
   };
   const dialog = renderDashboard({
     ...dashboard,
@@ -308,16 +308,10 @@ test("renders the stage badge and source link once in every item-details header"
     expect(html).not.toContain('class="details-source"');
   }
 
-  const noIcon = renderIssueDetails({ ...issue, stageBadge: { name: "Deploy", icon: null, offboarded: false } });
+  const noIcon = renderIssueDetails({ ...issue, stageBadge: { name: "Deploy", icon: null } });
   expect(noIcon).toContain('<span class="sr-only">Stage: </span>Deploy');
   expect(noIcon).not.toContain('aria-label="Stage: Deploy"');
   expect(noIcon).not.toContain('details-stage-icon');
-
-  const offboarded = renderIssueDetails({ ...issue, historyOnly: true, stageBadge: { name: "Build", icon: "🛠️", offboarded: true } });
-  expect(offboarded).toContain('<span class="sr-only">Stage: </span>Build (offboarded)');
-  expect(offboarded).not.toContain('aria-label="Stage: Build (offboarded)"');
-  expect(offboarded).toContain('offboarded');
-  expect(offboarded).toContain('aria-hidden="true"');
 });
 
 /** One item's details dialog, as the dashboard shows it when the item is open. */

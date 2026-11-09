@@ -162,7 +162,7 @@ function syncDoneSearch(selection: BoardSelection): void {
   }, 300);
 }
 
-/** An open item the live model does not hold (finished long ago or offboarded), loaded on its own. */
+/** An open item the live model does not hold (finished long ago), loaded on its own. */
 const outside: { key: string | null; item: IssueCardViewModel | null } = { key: null, item: null };
 
 function syncOutsideItem(selection: BoardSelection): void {

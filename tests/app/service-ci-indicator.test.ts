@@ -405,7 +405,7 @@ test("a board approval can target a later native stage but not a past, legacy, c
   expect(() => w.service.setBoardApprovalRequirement("issue", "review", false))
     .toThrow("completed item");
 
-  w.store.setIssueProjection("issue", { stage: null, state: "offboarded", warning: null });
+  w.store.setIssueProjection("issue", { stage: null, state: "unlisted", warning: null });
   expect(() => w.service.setBoardApprovalRequirement("issue", "review", false)).toThrow("issue not found");
   await w.service.close();
 });
