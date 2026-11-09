@@ -139,6 +139,9 @@ It also starts each MCP server configured for an agent (`mcpServers`, such as a 
 inside that agent's sandbox, and sends it `initialize`. A server that exits or does not answer in its
 `startupTimeoutSec` (10 seconds by default) is a failing check naming the agent and the server, with the
 server's stderr tail.
+An agent is not tied to one repository, so doctor probes it with the union of every repository's
+`agentToolchainPaths` and, only when all repositories set `agentEgress`, the first one's egress policy
+(sorted by id). Writable roots are the agent's configured roots that exist; a run also adds its worktree paths.
 For repositories that configure `refinement`, it
 also reads (never writes) whether the GitHub credentials can read the organization's issue types and
 issue fields and write them on the repository. Each failure comes with the fix. Agent sign-ins are

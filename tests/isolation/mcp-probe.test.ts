@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 
 import { probeMcpServer, probeMcpServers } from "../../src/isolation/mcp-probe";
@@ -85,5 +85,36 @@ describe.skipIf(unavailable !== null)("probeAgentMcpServers in the agent sandbox
     );
     expect(failures.map((f) => f.server)).toEqual(["bad"]);
     expect(failures[0]!.detail).toContain("sandboxed boom");
+  });
+  test("a server under a toolchain directory answers only when that directory is mounted", async () => {
+    const { probeAgentMcpServers } = await import("../../src/isolation/mcp-probe");
+    const workspace = await mkdtemp(path.join(tmpdir(), "conveyor-mcp-ws-"));
+    const tools = await mkdtemp(path.join(os.homedir(), ".conveyor-mcp-tools-"));
+    directories.push(workspace, tools);
+    await writeFile(path.join(tools, "server.js"), answering);
+    const server = { command: process.execPath, args: [path.join(tools, "server.js")], env: {}, startupTimeoutSec: 5 };
+    expect(await probeAgentMcpServers({ s: server }, { workspace })).toHaveLength(1);
+    expect(await probeAgentMcpServers({ s: server }, { workspace, toolchainPaths: [tools] })).toEqual([]);
+  });
+
+  test("a read-only run cannot write to the workspace, a writable one can", async () => {
+    const { probeAgentMcpServers } = await import("../../src/isolation/mcp-probe");
+    const workspace = await mkdtemp(path.join(tmpdir(), "conveyor-mcp-ws-"));
+    directories.push(workspace);
+    const writer = { command: process.execPath, args: ["-e", `require("fs").writeFileSync(process.argv[1], "x"); ` + answering.replace(/\n/g, " ").trim(), path.join(workspace, "out")], env: {}, startupTimeoutSec: 5 };
+    expect(await probeAgentMcpServers({ s: writer }, { workspace, readOnly: true })).toHaveLength(1);
+    expect(await probeAgentMcpServers({ s: writer }, { workspace })).toEqual([]);
+  });
+
+  test("a writable root is writable, and the agent's env reaches the server", async () => {
+    const { probeAgentMcpServers } = await import("../../src/isolation/mcp-probe");
+    const workspace = await mkdtemp(path.join(tmpdir(), "conveyor-mcp-ws-"));
+    const cache = await mkdtemp(path.join(os.homedir(), ".conveyor-mcp-cache-"));
+    directories.push(workspace, cache);
+    const code = `require("fs").writeFileSync(process.argv[1] + "/" + process.env.PROBE_MARK, "x"); ` + answering.replace(/\n/g, " ").trim();
+    const server = { command: process.execPath, args: ["-e", code, cache], env: {}, startupTimeoutSec: 5 };
+    expect(await probeAgentMcpServers({ s: server }, { workspace })).toHaveLength(1);
+    expect(await probeAgentMcpServers({ s: server }, { workspace, writableRoots: [cache], env: { PROBE_MARK: "seen" } })).toEqual([]);
+    expect(await Bun.file(path.join(cache, "seen")).exists()).toBe(true);
   });
 });

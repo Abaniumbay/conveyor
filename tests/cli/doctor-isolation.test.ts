@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { mcpServerChecks, configuredCodexIsolationChecks, type DoctorCommand } from "../../src/cli/commands/doctor";
@@ -119,5 +120,22 @@ describe("MCP server doctor checks", () => {
     const checks = await mcpServerChecks({ agents }, async () => { probes += 1; return []; });
     expect(checks.map((c) => c.status)).toEqual(["ok", "ok"]);
     expect(probes).toBe(1);
+  });
+  test("each agent is probed with the repositories' toolchain directories and egress policy", async () => {
+    const tools = await mkdtemp(path.join(tmpdir(), "conveyor-doctor-tools-"));
+    try {
+      const full = {
+        root: "/nonexistent-root", settings: { database: "/x/db", logs: "/x/l", workspaces: "/x/w", artifacts: "/x/a" },
+        web: { listen: "127.0.0.1:8080" },
+        repositories: { r: { folder: "/x/r", agentToolchainPaths: { paths: [tools] }, agentEgress: { httpsHosts: ["example.com"] } } },
+        runners: { codex: { type: "codex", controlPlaneHosts: ["api.example"] } },
+        agents,
+      } as unknown as Parameters<typeof mcpServerChecks>[2];
+      let seen: Record<string, unknown> | undefined;
+      await mcpServerChecks({ agents: { darya: { runner: "codex", workspaceAccess: "read-only", env: { A: "b" }, mcpServers: { serena: server } } } }, async (_servers, options) => { seen = options as never; return []; }, full);
+      expect(seen).toMatchObject({ readOnly: true, env: { A: "b" }, writableRoots: [], toolchainPaths: [await realpath(tools)], egress: { httpsHosts: ["example.com"], controlPlaneHosts: ["api.example"] } });
+    } finally {
+      await rm(tools, { recursive: true, force: true });
+    }
   });
 });
