@@ -129,7 +129,7 @@ export async function configuredCodexIsolationChecks(
 
 /** Starts each configured MCP server of each agent once, inside the agent's sandbox, and asks it to initialize. */
 export async function mcpServerChecks(
-  config: { agents: Record<string, { mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number | undefined }> }> },
+  config: { agents: Record<string, { env?: Record<string, string> | undefined; writableRoots?: string[] | undefined; workspaceAccess?: string; mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number | undefined }> }> },
   probe: typeof probeAgentMcpServers = probeAgentMcpServers,
 ): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
@@ -138,7 +138,7 @@ export async function mcpServerChecks(
     for (const [agent, definition] of Object.entries(config.agents).sort(([a], [b]) => a.localeCompare(b))) {
       const servers = definition.mcpServers ?? {};
       if (Object.keys(servers).length === 0) continue;
-      const failures = new Map((await probe(servers, { workspace })).map((failure) => [failure.server, failure.detail]));
+      const failures = new Map((await probe(servers, { workspace, env: definition.env, writableRoots: definition.writableRoots, readOnly: definition.workspaceAccess === "read-only" })).map((failure) => [failure.server, failure.detail]));
       for (const server of Object.keys(servers)) {
         const detail = failures.get(server);
         checks.push(detail === undefined

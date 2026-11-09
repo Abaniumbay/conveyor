@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { resolvePathEnvironment } from "../core/paths";
+import { startRunNetwork, type EgressInput } from "./run-network";
 import { agentFilesystemCommand } from "./sandbox";
 
 export interface McpServerSpec {
@@ -97,8 +98,13 @@ export async function probeMcpServer(
     if (outcome === "timeout") {
       return { ok: false, reason: "timeout", detail: `did not answer initialize within ${timeoutSec}s` };
     }
-    const code = await child.exited;
-    const text = tail(await stderr);
+    // The server closed its output but may still be running: both waits stay inside the startup deadline.
+    const exited = await Promise.race([child.exited, timeout]);
+    if (exited === "timeout") {
+      return { ok: false, reason: "timeout", detail: `closed its output but did not exit or answer initialize within ${timeoutSec}s` };
+    }
+    const code = exited;
+    const text = tail(await Promise.race([stderr, new Promise<string>((resolve) => setTimeout(() => resolve(""), 1_000))]));
     return { ok: false, reason: "exited", detail: `exited with status ${code} before answering initialize${text ? `: ${text}` : ""}` };
   } finally {
     if (timer) clearTimeout(timer);
@@ -121,27 +127,63 @@ export async function probeMcpServers(
   return results.flatMap(({ server, result }) => (result.ok ? [] : [{ server, detail: result.detail }]));
 }
 
-/**
- * Probes an agent's servers inside the filesystem sandbox the agent itself runs in. `workspace` is the
- * run's worktree (doctor passes a scratch directory); `{workspace}` in server arguments is replaced by it.
- */
+/** What the agent's own run mounts and sets, so the probe starts a server in the same sandbox. */
+export interface AgentMcpProbeOptions {
+  /** The run's worktree (doctor passes a scratch directory); `{workspace}` in server arguments is replaced by it. */
+  workspace: string;
+  /** The agent's configured environment. */
+  env?: Record<string, string> | undefined;
+  /** The agent's writable roots (package caches, state directories). */
+  writableRoots?: readonly string[] | undefined;
+  /** The repository's read-only toolchain directories. */
+  toolchainPaths?: readonly string[] | undefined;
+  /** The repository's egress policy; without it the agent has the host network, with it the probe uses the same restricted one. */
+  egress?: EgressInput | undefined;
+  /** Whether the agent may write to its workspace. */
+  readOnly?: boolean | undefined;
+}
+
+/** Probes an agent's servers inside the filesystem (and, with egress, network) sandbox the agent itself runs in. */
 export async function probeAgentMcpServers(
   servers: Record<string, McpServerSpec>,
-  options: { workspace: string; env?: Record<string, string> },
+  options: AgentMcpProbeOptions,
 ): Promise<McpFailure[]> {
   if (Object.keys(servers).length === 0) return [];
   const scratchRoot = await mkdtemp(path.join(tmpdir(), "conveyor-mcp-probe-"));
+  let network: Awaited<ReturnType<typeof startRunNetwork>> | null = null;
   try {
     const home = path.join(scratchRoot, "home");
     const scratch = path.join(scratchRoot, "scratch");
     await Promise.all([mkdir(home), mkdir(scratch)]);
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, TMPDIR: scratch, ...(options.env ?? {}) };
+    if (options.egress) {
+      const directory = path.join(scratchRoot, "net");
+      await mkdir(directory);
+      network = await startRunNetwork({ directory, policy: { ...options.egress, controlPlaneHosts: options.egress.controlPlaneHosts ?? [] } });
+    }
+    const bridgeSockets = options.egress
+      ? [
+          ...(options.egress.mcp ? [options.egress.mcp.socket] : []),
+          ...(options.egress.localServices ?? []).flatMap((service) => "socket" in service ? [service.socket] : []),
+        ]
+      : [];
     const wrap: McpLaunchWrapper = (argv, serverEnv) => {
       const merged = { ...env, ...serverEnv };
-      const launch = agentFilesystemCommand(
-        { command: argv[0]!, env: merged, workspace: options.workspace, artifacts: scratchRoot, home, scratch, writable: [options.workspace], runtime: [argv[0]!] },
-        argv,
-      );
+      const filesystem = {
+        command: argv[0]!,
+        env: merged,
+        workspace: options.workspace,
+        artifacts: scratchRoot,
+        home,
+        scratch,
+        writable: options.readOnly ? [] : [options.workspace, ...(options.writableRoots ?? [])],
+        runtime: [argv[0]!],
+        ...(bridgeSockets.length > 0 ? { readable: bridgeSockets } : {}),
+        ...(options.toolchainPaths?.length ? { toolchain: options.toolchainPaths } : {}),
+      };
+      const launch = network
+        ? network.wrap(merged, () => argv, filesystem)
+        : agentFilesystemCommand(filesystem, argv);
       return { argv: launch.argv, env: launch.env };
     };
     const resolved = Object.fromEntries(Object.entries(servers).map(([name, server]) => [
@@ -150,6 +192,7 @@ export async function probeAgentMcpServers(
     ]));
     return await probeMcpServers(resolved, { cwd: options.workspace, wrap });
   } finally {
+    await network?.close();
     await rm(scratchRoot, { recursive: true, force: true });
   }
 }

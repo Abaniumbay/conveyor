@@ -60,6 +60,18 @@ describe("probeMcpServer", () => {
   });
 });
 
+describe("probeMcpServer deadline", () => {
+  test("a server that closes its output but keeps running is reported within the startup timeout", async () => {
+    const started = performance.now();
+    const result = await probeMcpServer(
+      { command: "/bin/sh", args: ["-c", "exec 1>&-; sleep 5"], env: {}, startupTimeoutSec: 0.3 },
+      { cwd: tmpdir() },
+    );
+    expect(result.ok).toBe(false);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+});
+
 const unavailable = bwrapUnavailableReason();
 describe.skipIf(unavailable !== null)("probeAgentMcpServers in the agent sandbox", () => {
   test("a server runs inside the sandbox and is told apart from one that fails", async () => {

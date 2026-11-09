@@ -18,7 +18,7 @@ import type { ConveyorStore, StoredQuestion } from "../db/store";
 import { ReviewFindings } from "../engine/review-findings";
 import type { Harness } from "../harness/types";
 import { agentEgressFor } from "../isolation/agent-egress";
-import { probeAgentMcpServers, type McpServerSpec } from "../isolation/mcp-probe";
+import { probeAgentMcpServers, type AgentMcpProbeOptions, type McpServerSpec } from "../isolation/mcp-probe";
 import { protectedServiceLocations, resolveToolchainPaths } from "../isolation/toolchain-paths";
 import { assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { resolveFilesystemPath } from "../core/paths";
@@ -220,7 +220,17 @@ async function runAgent(
     let result: RunEnvelope;
     try {
       const handover = await buildHandover(deps, { runId, stageId, agentId, kind: KIND, workspace: { path: workspace.path, branch: workspace.branch } });
-      await probeConfiguredMcpServers(store, { issueId: issue.id, stageId, runId, agentId, workspace: workspace.path, servers: agent.mcpServers });
+      await probeConfiguredMcpServers(store, {
+        issueId: issue.id, stageId, runId, agentId, servers: agent.mcpServers,
+        sandbox: {
+          workspace: workspace.path,
+          env: agent.env,
+          readOnly: agent.workspaceAccess === "read-only",
+          writableRoots: (await codexAccess(agent, workspace.path)).writableRoots,
+          toolchainPaths: toolchainFor(deps).toolchainPaths,
+          egress: egressFor(deps, runner).egress,
+        },
+      });
       const resume = answered !== null && harness.capabilities.sessionResume && answered.sessionId !== null;
       const shared = {
         command: runner.command,
@@ -447,10 +457,13 @@ async function codexExtensions(
 /** Starts each configured MCP server once, as the agent's harness will, and reports any that does not answer. */
 async function probeConfiguredMcpServers(
   store: ConveyorStore,
-  args: { issueId: string; stageId: string; runId: string; agentId: string; workspace: string; servers: Record<string, McpServerSpec> | undefined },
+  args: {
+    issueId: string; stageId: string; runId: string; agentId: string; servers: Record<string, McpServerSpec> | undefined;
+    sandbox: AgentMcpProbeOptions;
+  },
 ): Promise<void> {
   if (!args.servers || Object.keys(args.servers).length === 0) return;
-  const failures = await probeAgentMcpServers(args.servers, { workspace: args.workspace });
+  const failures = await probeAgentMcpServers(args.servers, args.sandbox);
   reportMcpFailures(store, { ...args, failures });
 }
 
