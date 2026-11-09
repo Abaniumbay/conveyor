@@ -206,3 +206,23 @@ export function conversationForPrompt(store: ConveyorStore, issueId: string) {
     createdAt: message.createdAt,
   }));
 }
+
+/**
+ * Records every MCP server that failed to start or answer: its error goes to the run's technical log,
+ * and the item's conversation gets one Conveyor note per server, however often it was observed.
+ */
+export function reportMcpFailures(
+  store: ConveyorStore,
+  args: { issueId: string; stageId: string; runId: string; agentId: string; failures: readonly { server: string; detail: string }[] },
+): void {
+  const seen = new Set<string>();
+  for (const { server, detail } of args.failures) {
+    if (seen.has(server)) continue;
+    seen.add(server);
+    store.appendRunEvent(args.runId, "mcp.failure", { server, detail });
+    conveyorMessage(
+      store, args.issueId, args.stageId, args.runId,
+      `MCP server \`${server}\` of agent \`${args.agentId}\` failed to start or answer; the run went on without it. The error is in the run's technical log.`,
+    );
+  }
+}

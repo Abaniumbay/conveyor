@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { configuredCodexIsolationChecks, type DoctorCommand } from "../../src/cli/commands/doctor";
+import { mcpServerChecks, configuredCodexIsolationChecks, type DoctorCommand } from "../../src/cli/commands/doctor";
 
 interface IsolationConfig {
   agents: Record<string, { runner: string }>;
@@ -100,5 +100,24 @@ describe("configured Codex isolation doctor checks", () => {
         fix: "allow unprivileged user namespaces for Codex (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)",
       },
     ]);
+  });
+});
+
+describe("MCP server doctor checks", () => {
+  const server = { command: "serena", args: [], env: {} };
+  const agents = { darya: { mcpServers: { serena: server, other: server } }, plain: {} };
+
+  test("a server that does not answer initialize fails, naming the agent and the server", async () => {
+    const checks = await mcpServerChecks({ agents }, async () => [{ server: "serena", detail: "exited with status 1 before answering initialize: boom" }]);
+    expect(checks.find((c) => c.name === "mcp darya/serena")).toMatchObject({ status: "fail" });
+    expect(checks.find((c) => c.name === "mcp darya/serena")!.detail).toContain("serena of agent darya");
+    expect(checks.find((c) => c.name === "mcp darya/other")).toMatchObject({ status: "ok" });
+  });
+
+  test("every server answering passes, and each agent is probed once", async () => {
+    let probes = 0;
+    const checks = await mcpServerChecks({ agents }, async () => { probes += 1; return []; });
+    expect(checks.map((c) => c.status)).toEqual(["ok", "ok"]);
+    expect(probes).toBe(1);
   });
 });
