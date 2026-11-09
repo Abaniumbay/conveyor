@@ -6,6 +6,7 @@ import path from "node:path";
 import { ExecutionStore } from "../../src/engine/journal";
 import { StageExecutor } from "../../src/engine/stage-executor";
 import type { ConveyorConfig } from "../../src/config/load";
+import { configSchema } from "../../src/config/schema";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness } from "../../src/harness/types";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
@@ -34,15 +35,27 @@ describe("agent.run under the stage executor", () => {
     const instructions = path.join(root, "a.md");
     await writeFile(instructions, "Agent.");
     await mkdir(path.join(root, "artifacts"));
-    const config = {
+    const config: ConveyorConfig = {
+      ...configSchema.parse({
+        settings: {
+          database: path.join(root, "conveyor.sqlite"), logs: path.join(root, "logs"),
+          workspaces: path.join(root, "workspaces"), artifacts: path.join(root, "artifacts"),
+        },
+        labels: {
+          enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
+          states: { blocked: "conveyor:blocked" },
+          metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+        },
+        agents: {
+          first: { runner: "codex", instructions, tasks: [], name: "First", title: "T", workspaceAccess: "workspace-write" },
+          second: { runner: "codex", instructions, tasks: [], name: "Second", title: "T", workspaceAccess: "workspace-write" },
+        },
+        runners: { codex: { type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true } },
+      }),
       hash: "hash",
-      settings: { artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, agentRunTokenWarning: 15_000_000 },
-      agents: {
-        first: { runner: "codex", instructions, tasks: [], name: "First", title: "T", workspaceAccess: "write" },
-        second: { runner: "codex", instructions, tasks: [], name: "Second", title: "T", workspaceAccess: "write" },
-      },
-      runners: { codex: { type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true } },
-    } as unknown as ConveyorConfig;
+      root,
+      plans: [],
+    };
     let harnessRuns = 0;
     const harness: Harness = { id: "fake", capabilities: { sessionResume: false }, async run() { harnessRuns++; throw new Error("must not run"); } };
     const deps = {
@@ -71,13 +84,13 @@ describe("agent.run under the stage executor", () => {
       registry, journal, clock, notify: () => {}, setStatus: () => {}, settings: { maxReturns: 5 },
     });
     journal.bumpStageEpoch("i1");
-    const baseContext = {
+    const baseContext: TaskContext = {
       schemaVersion: 1, configHash: "hash",
       run: { stage: "", stageEpoch: 0, attempt: 1, maxAttempts: 1, taskInstanceId: "", enteredAt: "2026-01-01T00:00:00.000Z", feedback: null },
       repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main", ciMode: "required", systemLabels: [] },
-      item: { id: "i1", number: 7, title: "Fix it", body: "Body", url: "u", labels: [], state: "open", criteria: [], children: [], dependencies: [], systemLabels: [] },
+      item: { id: "i1", number: 7, title: "Fix it", url: "u", labels: [], state: "open", criteria: [], children: [], dependencies: [], systemLabels: [] },
       checkpoints: { ciPassed: null, reviewPassed: null },
-    } as unknown as TaskContext;
+    };
 
     const thrown = await executor.execute({ issueId: "i1", pipeline: plan, stageId: "implementation", baseContext, deps }).catch((e: unknown) => e);
 

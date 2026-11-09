@@ -422,8 +422,8 @@ describe("WorkspaceManager concurrency", () => {
     const results: Array<Awaited<ReturnType<WorkspaceManager["create"]>>> = [];
     for (let round = 0; round < 5; round++) {
       await advance(round * 2);
+      // Both preparations start in the same tick, so their fetches contend for the tracking ref.
       const first = manager.create({ ...input(fixture, round * 2 + 1) });
-      await advance(round * 2 + 1); // origin moves while the first preparation is in flight
       const second = manager.create({ ...input(fixture, round * 2 + 2) });
       results.push(...(await Promise.all([first, second])));
     }

@@ -31,7 +31,7 @@ const envelope = (over: ReturnType<Behaviour>): RunEnvelope => ({
   usage: { ...usage }, cost: { ...UNAVAILABLE_COST }, durationMs: 5, exitCode: 0, artifacts: [], stderr: "",
 });
 
-async function world(options: { sessionResume?: boolean; noWorkspace?: boolean } = {}) {
+async function world(options: { sessionResume?: boolean; noWorkspace?: boolean; createFails?: Error } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-agent-"));
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
@@ -47,6 +47,7 @@ async function world(options: { sessionResume?: boolean; noWorkspace?: boolean }
   const managerCalls: Array<{ op: string; input: Record<string, unknown> }> = [];
   const workspaces = {
     create: async (input: Record<string, unknown>) => {
+      if (options.createFails) throw options.createFails;
       managerCalls.push({ op: "create", input });
       const created = path.join(root, "created");
       await mkdir(created, { recursive: true });
@@ -138,10 +139,7 @@ describe("agent.run", () => {
   });
 
   test("a WorkspaceError preparing the workspace does not run the next agent or post a fallback message", async () => {
-    const w = await world({ noWorkspace: true });
-    (w.deps.workspaces as unknown as { create: () => Promise<never> }).create = async () => {
-      throw new WorkspaceError("cannot fetch origin/main: incorrect old value provided");
-    };
+    const w = await world({ noWorkspace: true, createFails: new WorkspaceError("cannot fetch origin/main: incorrect old value provided") });
     await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toBeInstanceOf(InfrastructureError);
     expect(w.calls).toHaveLength(0);
     expect(w.leases).toHaveLength(0);
