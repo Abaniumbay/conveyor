@@ -54,6 +54,11 @@ export class GitHubTransportError extends Error {
   }
 }
 
+/** GitHub answered 404 or 410 for an issue read by number: the issue was deleted or transferred away. */
+export class GitHubIssueGoneError extends GitHubTransportError {
+  readonly issueGone = true;
+}
+
 /** How long requests pause after a rate-limit refusal when GitHub does not say when the limit resets. */
 const RATE_LIMIT_PAUSE_MS = 60_000;
 /** The longest pause: GitHub's primary limit resets hourly. */
@@ -595,10 +600,18 @@ export class GitHubAdapter {
   }
 
   async getIssue(address: string, issueNumber: number): Promise<SourceIssue> {
-    const issue = await this.transport.request<GitHubIssue>({
-      method: "GET",
-      path: `repos/${address}/issues/${issueNumber}`,
-    });
+    let issue: GitHubIssue;
+    try {
+      issue = await this.transport.request<GitHubIssue>({
+        method: "GET",
+        path: `repos/${address}/issues/${issueNumber}`,
+      });
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /HTTP (?:404|410)\b/.test(`${error.stderr} ${error.message}`)) {
+        throw new GitHubIssueGoneError(error.message, error.exitCode, error.stderr);
+      }
+      throw error;
+    }
     return sourceIssue(address, issue);
   }
 

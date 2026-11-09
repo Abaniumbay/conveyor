@@ -3,6 +3,7 @@ import { evaluateIssueState } from "./issue-state";
 import type { ConveyorStore, RepositoryRecord } from "../db/store";
 import { ItemTodos } from "../engine/todos";
 import { log } from "../log/logger";
+import { isIssueGone } from "../source/types";
 import type { IssueSourceAdapter, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../source/types";
 
 export interface RepositoryTrust {
@@ -190,6 +191,7 @@ export async function reconcileRepository(
   let sourceIssues = input.issues
     ? [...input.issues]
     : await input.source.listIssues(input.repository.address, input.since !== undefined ? { since: input.since } : {});
+  const goneNumbers: number[] = [];
   if (input.includeIssueNumbers && input.includeIssueNumbers.length > 0) {
     if (!input.source.getIssue) throw new Error("source adapter cannot refresh webhook-named issues");
     const refreshed = (await Promise.all(
@@ -197,6 +199,11 @@ export async function reconcileRepository(
         try {
           return await input.source.getIssue!(input.repository.address, number);
         } catch (error) {
+          // 404/410 proves the issue is gone; any other failure says nothing about it.
+          if (isIssueGone(error)) {
+            goneNumbers.push(number);
+            return null;
+          }
           log.warn("Webhook-named issue refresh failed", { repository: input.repository.id, issue: `${input.repository.address}:${number}` }, error);
           return null;
         }
@@ -216,6 +223,17 @@ export async function reconcileRepository(
   const seen = new Set<string>();
   let enrolled = 0;
   let purged = 0;
+
+  const purgeGone = (issueId: string): void => {
+    if (input.store.isPurging(issueId)) return;
+    if (input.onLeft) input.onLeft(issueId);
+    else input.store.beginPurge(issueId);
+    purged += 1;
+  };
+  for (const number of goneNumbers) {
+    const stored = existingByNumber.get(number);
+    if (stored && stored.projectedState !== "unlisted") purgeGone(stored.id);
+  }
 
   for (const sourceIssue of sourceIssues) {
     // Source adapters may include a repository address in their IDs. Preserve
@@ -252,6 +270,9 @@ export async function reconcileRepository(
       current = fresh;
       snapshot = await acceptedSnapshot(input, sourceIssue, current, hasEnrollment);
     }
+    // The awaits above let a purge begin or finish (a deletion delivery bypasses this pass's lock);
+    // a stale read must never put a purged item back.
+    if (input.store.isPurging(issueId) || (prior && !current)) continue;
 
     input.store.upsertIssue({
       id: issueId,
@@ -367,6 +388,21 @@ export async function reconcileRepository(
         reason: `Enrolled: the ${input.labels.enrollment} label was added${projected.stage ? ` at ${projected.stage}` : ""}.`,
       });
       enrolled += 1;
+    }
+  }
+
+  // A full listing that omits a stored issue proves nothing: confirm it by number. Only 404/410 purges;
+  // any other failure leaves the item as it is, and nothing is ever marked missing.
+  if (fullListing && input.source.getIssue) {
+    for (const stored of storedIssues) {
+      if (seen.has(stored.id) || stored.projectedState === "unlisted" || input.store.isPurging(stored.id)) continue;
+      if (!input.store.getIssue(stored.id)) continue;
+      try {
+        await input.source.getIssue(input.repository.address, stored.sourceNumber);
+      } catch (error) {
+        if (isIssueGone(error)) purgeGone(stored.id);
+        else log.warn("Issue missing from the listing could not be confirmed", { repository: input.repository.id, issue: stored.id }, error);
+      }
     }
   }
 

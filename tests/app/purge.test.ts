@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { GitHubIssueGoneError, GitHubTransportError } from "../../src/source/github/adapter";
 import { ItemTodos } from "../../src/engine/todos";
 import { WorkspaceManager } from "../../src/workspace/manager";
 import { createWorkspace } from "../../src/workspace/lifecycle";
@@ -271,4 +272,68 @@ describe("purging an item that lost its Conveyor labels", () => {
     expect(existsSync(directory)).toBe(false);
     expect(w.store.getRun(runId)).toBeNull();
   });
+});
+
+describe("purging an item whose GitHub issue was deleted or transferred", () => {
+  for (const action of ["deleted", "transferred"]) {
+    test(`an issues.${action} delivery kills the running agent before any GitHub request and purges the item without a sync`, async () => {
+      const calls: Array<{ method: string; agentAlive: boolean }> = [];
+      let pid = 0;
+      const { w, pid: agentPid, workspacePath } = await runningItem({
+        onGithubCall: (method) => { calls.push({ method, agentAlive: pid !== 0 && alive(pid) }); },
+      });
+      pid = agentPid;
+      expect(alive(pid)).toBe(true);
+      calls.length = 0;
+
+      await w.deliverIssueEvent(action, `${action}-1`);
+      await w.service.purgesSettled();
+
+      expect(alive(pid)).toBe(false);
+      expect(calls.filter((call) => call.agentAlive)).toEqual([]);
+      // No listing and no read of the issue: the delivery alone is the proof.
+      expect(calls.map((call) => call.method).filter((method) => method === "listIssues" || method === "getIssue")).toEqual([]);
+      expect(existsSync(workspacePath)).toBe(false);
+      expect(w.store.getIssue("issue")).toBeNull();
+      expect(Object.entries(rowsOf(w, "issue")).filter(([, count]) => count > 0)).toEqual([]);
+    });
+  }
+});
+
+describe("an `only` refresh that reads an enrolled issue by number", () => {
+  /** The first read (the pause's own check) succeeds; the refresh's read fails with `failure`. */
+  async function pauseWithFailingRefresh(failure: Error): Promise<DeliveryWorld> {
+    let reads = 0;
+    const { w } = await runningItem({
+      onGithubCall: (method) => {
+        if (method !== "getIssue") return;
+        reads += 1;
+        if (reads === 2) throw failure;
+      },
+    });
+    reads = 0;
+    const pausing = w.service.pauseIssue("issue", "operator");
+    await pausing.catch(() => {});
+    await w.service.purgesSettled();
+    return w;
+  }
+
+  for (const status of [404, 410]) {
+    test(`answered ${status} purges the item`, async () => {
+      const w = await pauseWithFailingRefresh(new GitHubIssueGoneError(`HTTP ${status}`, 1, `HTTP ${status}`));
+      expect(w.store.getIssue("issue")).toBeNull();
+      expect(Object.entries(rowsOf(w, "issue")).filter(([, count]) => count > 0)).toEqual([]);
+    });
+  }
+
+  for (const [what, failure] of [
+    ["a 5xx", new GitHubTransportError("HTTP 502", 1, "HTTP 502")],
+    ["a network error", new GitHubTransportError("connection reset", 1, "connection reset")],
+  ] as const) {
+    test(`failing with ${what} leaves the item unchanged`, async () => {
+      const w = await pauseWithFailingRefresh(failure);
+      expect(w.store.getIssue("issue")).not.toBeNull();
+      expect(w.store.isPurging("issue")).toBe(false);
+    });
+  }
 });

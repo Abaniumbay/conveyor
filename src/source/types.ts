@@ -33,6 +33,11 @@ export interface PullRequestReference {
   state: string;
 }
 
+/** True for an error that says the source no longer has the issue (deleted, or transferred away). */
+export function isIssueGone(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { issueGone?: unknown }).issueGone === true;
+}
+
 export interface IssueSourceAdapter {
   /** Every issue of the repository, or with `since` only those updated at or after that time. */
   listIssues(address: string, options?: { since?: string }): Promise<SourceIssue[]>;
