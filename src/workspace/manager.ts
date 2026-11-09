@@ -99,6 +99,23 @@ function registeredWorktrees(output: string): RegisteredWorktree[] {
   return worktrees;
 }
 
+const repositoryTails = new Map<string, Promise<unknown>>();
+
+/**
+ * Runs `operation` after every earlier operation on the same repository path finished, so ref-changing
+ * git commands on one shared clone never overlap. Different paths do not wait for each other.
+ */
+function withRepositoryLock<T>(repositoryPath: string, operation: () => Promise<T>): Promise<T> {
+  const previous = repositoryTails.get(repositoryPath) ?? Promise.resolve();
+  const run = previous.then(operation, operation);
+  const tail = run.catch(() => {});
+  repositoryTails.set(repositoryPath, tail);
+  void tail.then(() => {
+    if (repositoryTails.get(repositoryPath) === tail) repositoryTails.delete(repositoryPath);
+  });
+  return run;
+}
+
 export class WorkspaceManager {
   readonly #root: string;
 
@@ -111,6 +128,10 @@ export class WorkspaceManager {
 
   async create(input: CreateWorkspaceInput): Promise<ManagedWorkspace> {
     const repositoryPath = await this.validateRepository(input.repositoryPath);
+    return withRepositoryLock(repositoryPath, () => this.createLocked(repositoryPath, input));
+  }
+
+  private async createLocked(repositoryPath: string, input: CreateWorkspaceInput): Promise<ManagedWorkspace> {
     if (!Number.isSafeInteger(input.issueNumber) || input.issueNumber <= 0) {
       throw new WorkspaceError("issue number must be a positive integer");
     }
@@ -218,6 +239,13 @@ export class WorkspaceManager {
     baseBranch: string;
   }): Promise<void> {
     const repositoryPath = await this.validateRepository(input.repositoryPath);
+    await withRepositoryLock(repositoryPath, () => this.restoreLocked(repositoryPath, input));
+  }
+
+  private async restoreLocked(
+    repositoryPath: string,
+    input: { workspacePath: string; branch: string; baseBranch: string },
+  ): Promise<void> {
     const workspacePath = resolveFilesystemPath(input.workspacePath);
     this.assertManagedPath(workspacePath);
     await git(repositoryPath, ["worktree", "prune"]);
@@ -271,6 +299,10 @@ export class WorkspaceManager {
 
   async remove(input: RemoveWorkspaceInput): Promise<void> {
     const repositoryPath = await this.validateRepository(input.repositoryPath);
+    await withRepositoryLock(repositoryPath, () => this.removeLocked(repositoryPath, input));
+  }
+
+  private async removeLocked(repositoryPath: string, input: RemoveWorkspaceInput): Promise<void> {
     const workspacePath = resolveFilesystemPath(input.workspacePath);
     this.assertManagedPath(workspacePath);
     if (!input.branch.startsWith("conveyor/")) {

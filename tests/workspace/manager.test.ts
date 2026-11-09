@@ -398,3 +398,119 @@ describe("WorkspaceManager scratch recovery", () => {
     expect(existsSync(workspaceScratchPath(workspace.path))).toBe(false);
   });
 });
+
+describe("WorkspaceManager concurrency", () => {
+  const input = (fixture: { checkout: string }, issueNumber: number) => ({
+    repositoryPath: fixture.checkout, repositoryId: "owner-repository", issueNumber, enrollment: 1, slug: `issue ${issueNumber}`, baseBranch: "main",
+  });
+
+  test("two workspaces of one repository prepared at once both succeed on the then-current origin base", async () => {
+    const fixture = await repositoryWithOrigin();
+    const origin = path.join(fixture.root, "origin.git");
+    const other = path.join(fixture.root, "other");
+    await command(fixture.root, "git", "clone", "-b", "main", origin, other);
+    await command(other, "git", "config", "user.name", "Other");
+    await command(other, "git", "config", "user.email", "other@example.test");
+    const manager = new WorkspaceManager(fixture.workspaces);
+    const advance = async (n: number) => {
+      await writeFile(path.join(other, `f${n}.txt`), `${n}\n`);
+      await command(other, "git", "add", ".");
+      await command(other, "git", "commit", "-m", `advance ${n}`);
+      await command(other, "git", "push", "origin", "main");
+    };
+
+    const results: Array<Awaited<ReturnType<WorkspaceManager["create"]>>> = [];
+    for (let round = 0; round < 5; round++) {
+      await advance(round * 2);
+      // Both preparations start in the same tick, so their fetches contend for the tracking ref.
+      const first = manager.create({ ...input(fixture, round * 2 + 1) });
+      const second = manager.create({ ...input(fixture, round * 2 + 2) });
+      results.push(...(await Promise.all([first, second])));
+    }
+
+    for (const workspace of results) {
+      const head = await command(workspace.path, "git", "rev-parse", "HEAD");
+      expect(head).toBe(workspace.baseRevision);
+      // The revision is a real commit that origin/main reached.
+      const onOrigin = await command(fixture.checkout, "git", "merge-base", "--is-ancestor", workspace.baseRevision, "refs/remotes/origin/main").then(() => true, () => false);
+      expect(onOrigin).toBe(true);
+    }
+    const tracking = await command(fixture.checkout, "git", "rev-parse", "refs/remotes/origin/main");
+    expect(tracking).toBe(await command(origin, "git", "rev-parse", "refs/heads/main").then((v) => v));
+    expect(await command(fixture.checkout, "git", "fsck", "--no-dangling").then(() => "ok")).toBe("ok");
+  });
+
+  /** Puts a `git` ahead of the real one on PATH that logs when each ref-changing command starts and ends, and holds it briefly. */
+  async function tracedGit(root: string): Promise<{ log: string; restore: () => void }> {
+    const bin = path.join(root, "bin");
+    const log = path.join(root, "git-trace.log");
+    await mkdir(bin);
+    const real = Bun.which("git")!;
+    await writeFile(path.join(bin, "git"), `#!/bin/sh
+case "$1 $2" in
+  "fetch "*|"worktree add"|"worktree prune"|"branch "*)
+    echo "start $PWD $1 $(date +%s%N)" >> "${log}"
+    "${real}" "$@"; status=$?
+    sleep 0.2
+    echo "end $PWD $1 $(date +%s%N)" >> "${log}"
+    exit $status;;
+esac
+exec "${real}" "$@"
+`, { mode: 0o755 });
+    const before = process.env.PATH;
+    process.env.PATH = `${bin}:${before}`;
+    return { log, restore: () => { process.env.PATH = before; } };
+  }
+
+  type Span = { cwd: string; start: bigint; end: bigint };
+  async function spans(log: string): Promise<Span[]> {
+    const open: Array<{ cwd: string; start: bigint }> = [];
+    const done: Span[] = [];
+    for (const line of (await readFile(log, "utf8")).trim().split("\n")) {
+      const [kind, cwd, , time] = line.split(" ");
+      if (kind === "start") open.push({ cwd: cwd!, start: BigInt(time!) });
+      else {
+        const index = open.findIndex((entry) => entry.cwd === cwd);
+        done.push({ cwd: cwd!, start: open.splice(index, 1)[0]!.start, end: BigInt(time!) });
+      }
+    }
+    return done;
+  }
+  const overlaps = (a: Span, b: Span) => a.start < b.end && b.start < a.end;
+
+  test("ref-changing git operations on one repository never overlap", async () => {
+    const fixture = await repositoryWithOrigin();
+    const trace = await tracedGit(fixture.root);
+    try {
+      const manager = new WorkspaceManager(fixture.workspaces);
+      await Promise.all([1, 2, 3].map((n) => manager.create(input(fixture, n))));
+      await manager.restore({
+        repositoryPath: fixture.checkout, workspacePath: path.join(fixture.workspaces, "owner-repository", "issue-9-r1"),
+        branch: "conveyor/9-r1-restored", baseBranch: "main",
+      });
+      const found = (await spans(trace.log)).filter((span) => span.cwd === fixture.checkout);
+      expect(found.length).toBeGreaterThanOrEqual(9);
+      for (const [i, a] of found.entries()) for (const b of found.slice(i + 1)) expect(overlaps(a, b)).toBe(false);
+    } finally {
+      trace.restore();
+    }
+  });
+
+  test("preparations of different repositories run at the same time", async () => {
+    const one = await repositoryWithOrigin();
+    const two = await repositoryWithOrigin();
+    const trace = await tracedGit(one.root);
+    try {
+      const manager = new WorkspaceManager(one.workspaces);
+      await Promise.all([manager.create(input(one, 1)), manager.create({ ...input(two, 2), repositoryId: "owner-other" })]);
+      const all = await spans(trace.log);
+      const a = all.filter((span) => span.cwd === one.checkout);
+      const b = all.filter((span) => span.cwd === two.checkout);
+      expect(a.length).toBeGreaterThan(0);
+      expect(b.length).toBeGreaterThan(0);
+      expect(a.some((x) => b.some((y) => overlaps(x, y)))).toBe(true);
+    } finally {
+      trace.restore();
+    }
+  });
+});
