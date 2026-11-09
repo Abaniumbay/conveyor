@@ -139,6 +139,50 @@ describe("agent.run", () => {
     expect(notes).toEqual(["Kaveh could not run (Claude usage limit reached); Shirin takes this implementation instead."]);
   });
 
+  const invalid = (sessionId: string | null = "sess-1") => Object.assign(
+    new Error("Codex structured output failed validation: reason: a failed result requires a reason"), { kind: "invalid-result", sessionId });
+  const notes = (w: World) => w.store.listConversationMessages("i1", 100).filter((m) => m.actorName === "Conveyor");
+
+  test("an invalid structured result resumes the same session with the validation message and uses the corrected result", async () => {
+    const w = await world();
+    let calls = 0;
+    w.setBehaviour(() => { if (++calls === 1) throw invalid(); return { summary: "Fixed" }; });
+    const result = await w.run(false, { agents: ["kaveh", "shirin"] });
+    expect(outcome(result)).toMatchObject({ agentId: "kaveh", summary: "Fixed" });
+    expect(w.calls).toHaveLength(2);
+    expect(w.calls[1]!.resumeSessionId).toBe("sess-1");
+    expect(w.calls[1]!.prompt).toContain("a failed result requires a reason");
+    expect(notes(w)).toEqual([]);
+  });
+
+  test("a second invalid result is an infrastructure error and runs no fallback agent", async () => {
+    const w = await world();
+    w.setBehaviour(() => { throw invalid(); });
+    const error = await w.run(false, { agents: ["kaveh", "shirin"] }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(InfrastructureError);
+    expect(w.calls).toHaveLength(2);
+    expect(w.leases.every((lease) => lease.allowedTools.includes("agent.reportProgress"))).toBe(true);
+    expect(notes(w)).toEqual([]);
+  });
+
+  test("a process that fails to start or a missing CLI runs the next agent", async () => {
+    for (const failure of [Object.assign(new Error("Claude Code exited with code 1"), { kind: "process" }), Object.assign(new Error("spawn codex ENOENT"), { code: "ENOENT" })]) {
+      const w = await world();
+      let calls = 0;
+      w.setBehaviour(() => { if (++calls === 1) throw failure; return {}; });
+      expect(outcome(await w.run(false, { agents: ["kaveh", "shirin"] }))).toMatchObject({ agentId: "shirin" });
+      expect(notes(w)).toHaveLength(1);
+    }
+  });
+
+  test("an MCP or protocol error does not run the next agent and is an infrastructure error", async () => {
+    const w = await world();
+    w.setBehaviour(() => { throw Object.assign(new Error("Codex emitted invalid JSONL: x"), { kind: "protocol" }); });
+    await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toBeInstanceOf(InfrastructureError);
+    expect(w.calls).toHaveLength(1);
+    expect(notes(w)).toEqual([]);
+  });
+
   test("a WorkspaceError preparing the workspace does not run the next agent or post a fallback message", async () => {
     const w = await world({ noWorkspace: true, createFails: new WorkspaceError("cannot fetch origin/main: incorrect old value provided") });
     await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toBeInstanceOf(InfrastructureError);
@@ -178,7 +222,7 @@ describe("agent.run", () => {
     w.setBehaviour(() => { throw Object.assign(new Error("stopped"), { kind: "interrupted" }); });
     await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toThrow("stopped");
     expect(w.calls).toHaveLength(1);
-    w.setBehaviour(() => { throw new Error("broken"); });
+    w.setBehaviour(() => { throw Object.assign(new Error("broken"), { kind: "process" }); });
     await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toThrow("broken");
     expect(w.calls).toHaveLength(3);
   });

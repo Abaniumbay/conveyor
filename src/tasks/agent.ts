@@ -147,10 +147,10 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
       // Another agent cannot continue the asker's session: it starts fresh with the question and answer.
       const forThisAgent = answered?.agentId && answered.agentId !== agentId ? { ...answered, sessionId: null } : answered;
       try {
-        return await runAgent({ context, deps, instance }, agentId, forThisAgent);
+        return await runWithCorrection({ context, deps, instance }, agentId, forThisAgent);
       } catch (error) {
         const next = order[index + 1];
-        if (!next || !canFallBack(error, deps)) throw error;
+        if (!next || !canFallBack(error, deps)) throw asInfrastructure(error);
         conveyorMessage(deps.store, deps.issueId, instance.stage, null,
           `${agentActor(deps.config, agentId).name} could not run (${errorText(error)}); ${agentActor(deps.config, next).name} takes this ${instance.stage} instead.`);
       }
@@ -161,11 +161,54 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
 
 class WorkspaceInfrastructureError extends InfrastructureError {}
 
-/** A harness that could not run falls back to the next agent; a shutdown or a cancelled run does not. */
+interface Correction { message: string; sessionId: string }
+
+/**
+ * An invalid structured result goes back to the same agent once, in the same session, with the validation
+ * message. A second invalid result (or a harness that cannot resume) is an infrastructure error.
+ */
+async function runWithCorrection(
+  args: Pick<TaskArgs<RunConfig, unknown, Deps>, "context" | "deps" | "instance">,
+  agentId: string,
+  answered: Answered | null,
+): Promise<TaskResult> {
+  try {
+    return await runAgent(args, agentId, answered, null);
+  } catch (error) {
+    const sessionId = (error as { sessionId?: unknown } | null)?.sessionId;
+    if (!isInvalidResult(error) || typeof sessionId !== "string" || args.deps.signal?.aborted) throw error;
+    const runner = args.deps.config.runners[args.deps.config.agents[agentId]?.runner ?? ""];
+    if (!runner || (runner.type !== "codex" && runner.type !== "claude-code") || !args.deps.harnesses?.[runner.type]?.capabilities.sessionResume) throw error;
+    return await runAgent(args, agentId, answered, { message: (error as Error).message, sessionId });
+  }
+}
+
+function errorKind(error: unknown): unknown {
+  return (error as { kind?: unknown } | null)?.kind;
+}
+
+function isInvalidResult(error: unknown): boolean {
+  return errorKind(error) === "invalid-result";
+}
+
+/** Only a harness that cannot run falls back: a usage limit, a process that fails or cannot start, a missing CLI. */
 function canFallBack(error: unknown, deps: Deps): boolean {
   if (deps.signal?.aborted) return false;
-  if (error instanceof WorkspaceInfrastructureError) return false;
-  return (error as { kind?: unknown } | null)?.kind !== "interrupted";
+  if (error instanceof WorkspaceInfrastructureError || error instanceof InfrastructureError) return false;
+  const kind = errorKind(error);
+  if (kind === "usage-limit" || kind === "process") return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "EACCES";
+}
+
+/** Failures that neither fall back nor are interruptions are retried by the executor as infrastructure errors. */
+function asInfrastructure(error: unknown): unknown {
+  if (error instanceof InfrastructureError) return error;
+  const kind = errorKind(error);
+  if (kind === "protocol" || kind === "invalid-result" || kind === "timeout") {
+    return new InfrastructureError(error instanceof Error ? error.message : String(error), { cause: error });
+  }
+  return error;
 }
 
 function errorText(error: unknown): string {
@@ -177,6 +220,7 @@ async function runAgent(
   { context, deps, instance }: Pick<TaskArgs<RunConfig, unknown, Deps>, "context" | "deps" | "instance">,
   agentId: string,
   answered: Answered | null,
+  correction: Correction | null,
 ): Promise<TaskResult> {
   const { store } = deps;
   const issue = store.getIssue(deps.issueId);
@@ -264,7 +308,17 @@ async function runAgent(
         ...(deps.signal ? { signal: deps.signal } : {}),
         onEvent: (event: unknown) => { store.appendRunEvent(runId, "harness", event); },
       };
-      if (resume) {
+      if (correction) {
+        result = await harness.run({
+          ...shared,
+          prompt: prompt(
+            { handover },
+            `Your result was rejected: ${correction.message}\nReturn the required structured result again, corrected.`,
+            { progressReporting: agent.tasks.includes("agent.reportProgress"), grantedTools: agent.tasks },
+          ),
+          resumeSessionId: correction.sessionId,
+        });
+      } else if (resume) {
         result = await harness.run({
           ...shared,
           prompt: prompt(
