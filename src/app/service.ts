@@ -1003,6 +1003,10 @@ export class ConveyorService {
     await this.withRepositoryLock(repositoryId, async () => {
       const repository = this.config.repositories[repositoryId];
       if (!repository) return;
+      // A newer delivery or reconcile may have recorded the issue while the create call returned or
+      // this waited for the lock: an older state changes nothing.
+      const prior = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === created.number);
+      if (prior && Date.parse(prior.sourceUpdatedAt) > Date.parse(created.updatedAt)) return;
       const pipeline = this.config.pipelines[repository.pipeline]!;
       const self = { login: "conveyor" };
       await reconcileRepository({
