@@ -62,7 +62,7 @@ is the packaged default, one list for the installation. A repository changes a t
 
 ## Quick start
 
-On a Linux machine (x64 or arm64) with Git, the [GitHub CLI](https://cli.github.com/), bubblewrap,
+On a Linux machine (x64 or arm64) with Git, the [GitHub CLI](https://cli.github.com/), bash, bubblewrap,
 and both [Codex](https://github.com/openai/codex) and
 [Claude Code](https://docs.claude.com/en/docs/claude-code) installed. The packaged default
 configuration requires both harness executables for `conveyor doctor` to pass. Sign in to both
