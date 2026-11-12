@@ -103,15 +103,28 @@ describeWrapped("Codex sandbox selection", () => {
     expect(sandboxFlag(args)).toBe("danger-full-access");
   });
 
-  test("fresh run without agentEgress keeps the configured mode", async () => {
-    expect(sandboxFlag(await launch("run", "read-only", false))).toBe("read-only");
+  test("fresh read-only run without agentEgress disables Codex's own sandbox", async () => {
+    const args = await launch("run", "read-only", false);
+    expect(sandboxFlag(args)).toBe("danger-full-access");
+    expect(args).not.toContain("--approve-for-me");
   });
 
-  test("resumed run without agentEgress keeps the configured mode", async () => {
-    expect(await launch("run", "read-only", false, true)).toContain('sandbox_mode="read-only"');
+  test("fresh workspace-write run without agentEgress disables Codex's own sandbox", async () => {
+    const args = await launch("run", "workspace-write", false);
+    expect(sandboxFlag(args)).toBe("danger-full-access");
+    expect(args).not.toContain("--approve-for-me");
   });
 
-  test("legacy check without agentEgress keeps the configured mode", async () => {
-    expect(sandboxFlag(await launch("check", "workspace-write", false))).toBe("workspace-write");
+  test("resumed run without agentEgress disables Codex's own sandbox", async () => {
+    const args = await launch("run", "read-only", false, true);
+    expect(args).toContain('sandbox_mode="danger-full-access"');
+    expect(args).not.toContain('sandbox_mode="read-only"');
+    expect(args).not.toContain('approvals_reviewer="auto_review"');
+  });
+
+  test("legacy check without agentEgress disables Codex's own sandbox", async () => {
+    const args = await launch("check", "workspace-write", false);
+    expect(sandboxFlag(args)).toBe("danger-full-access");
+    expect(args).not.toContain("--approve-for-me");
   });
 });

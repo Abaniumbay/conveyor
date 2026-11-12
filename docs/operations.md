@@ -132,8 +132,8 @@ uses (so a custom agent configuration changes which harness executables it check
 validate Codex or Claude Code sign-in), each repository checkout, the dashboard account and the
 listen port.
 For configured Codex runs, repositories with `agentEgress` report network and PID namespace support
-and the filesystem mounts required by Conveyor's bubblewrap egress wrapper. Without `agentEgress`, the
-check instead reports the user namespace required by Codex's own sandbox. A denied capability names
+and the filesystem mounts required by Conveyor's bubblewrap egress wrapper. Without `agentEgress`, Codex
+needs no namespace of its own, so doctor reports no Codex sandbox check for it. A denied capability names
 the requirement and suggests a host permission fix.
 It also starts each MCP server configured for an agent (`mcpServers`, such as a code index) once,
 inside that agent's sandbox, and sends it `initialize`. A server that exits or does not answer in its
@@ -147,10 +147,15 @@ also reads (never writes) whether the GitHub credentials can read the organizati
 issue fields and write them on the repository. Each failure comes with the fix. Agent sign-ins are
 separate from the dashboard administrator.
 
-Effective Codex confinement: with `agentEgress`, Conveyor's wrapper is the only filesystem and network
-layer and Codex starts with its own sandbox disabled (fresh, resumed and legacy verifier runs alike).
-Without `agentEgress`, `read-only` and `workspace-write` runs use Codex's own sandbox inside the
-filesystem wrapper; `danger-full-access` runs have Codex's sandbox off and only a private `/tmp`.
+Effective Codex confinement: Conveyor's wrapper is always Codex's only sandbox, with or without
+`agentEgress`. Codex starts with its own sandbox disabled (`danger-full-access`) in every launch (fresh,
+resumed, steering and legacy verifier runs), so it never starts a nested user namespace, and the agent's
+access mode is enforced by the wrapper's mounts: `read-only` mounts the worktree and Git metadata
+read-only, `workspace-write` makes the worktree, Git metadata and configured writable roots writable.
+Every confined run has a private, writable `/tmp`. Without `agentEgress`, network access for Codex and
+its commands is unrestricted, as for Claude Code; commands of a `workspace-write` run no longer get the
+network block of Codex's own sandbox. `agentEgress` remains the way to restrict the network.
+A `danger-full-access` agent without `agentEgress` has only a private `/tmp`.
 
 ### Test databases for agents
 

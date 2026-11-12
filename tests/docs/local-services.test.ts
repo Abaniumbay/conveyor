@@ -34,12 +34,16 @@ test("SPEC and operations guide name the Codex confinement layer for each launch
   const operations = await readFile(path.join(import.meta.dir, "../../docs/operations.md"), "utf8");
 
   expect(spec).toContain("Codex confinement layer by launch mode");
-  expect(spec).toContain("solely by Conveyor's wrapper");
+  expect(spec).toContain("Conveyor's wrapper is always Codex's only sandbox");
+  expect(spec).toContain("network access for Codex and its commands is unrestricted, as for Claude Code");
   expect(spec).not.toContain("never disabled without the wrapper");
-  expect(spec).toContain("for `danger-full-access` Codex's sandbox is off and nothing confines the filesystem or network beyond a private `/tmp`");
-  expect(operations).toContain("`danger-full-access` runs have Codex's sandbox off and only a private `/tmp`");
+  expect(spec).toContain("A `danger-full-access` agent without `agentEgress` is confined by nothing beyond a private `/tmp`");
+  expect(operations).toContain("A `danger-full-access` agent without `agentEgress` has only a private `/tmp`");
   expect(operations).toContain("Effective Codex confinement");
-  expect(operations).toContain("Conveyor's wrapper is the only filesystem and network");
+  expect(operations).toContain("Conveyor's wrapper is always Codex's only sandbox");
+  expect(operations).toContain("network access for Codex and\nits commands is unrestricted, as for Claude Code");
+  const architecture = await readFile(path.join(import.meta.dir, "../../docs/architecture.md"), "utf8");
+  expect(architecture).toContain("Conveyor's wrapper is Codex's only sandbox in every launch");
 });
 
 test("operations guide describes opt-in auto-upgrade and no longer says there is none", async () => {

@@ -121,8 +121,8 @@ describeSandbox("runCodex", () => {
     expect(invocation.prompt).toBe("Implement the issue");
     expect(invocation.args).toContain("--json");
     expect(invocation.args).toContain("--output-schema");
-    expect(invocation.args).toContain("--approve-for-me");
-    expect(invocation.args).not.toContain("--sandbox");
+    expect(invocation.args).not.toContain("--approve-for-me");
+    expect(invocation.args[invocation.args.indexOf("--sandbox") + 1]).toBe("danger-full-access");
     expect(invocation.args).not.toContain("--full-auto");
     expect(invocation.args).toContain('mcp_servers.conveyor.required=true');
     expect(invocation.args).toContain(
@@ -156,8 +156,7 @@ describeSandbox("runCodex", () => {
     for (const rejected of ["-C", "--color", "--sandbox", "--approve-for-me", "--ephemeral"]) {
       expect(resumed.args).not.toContain(rejected);
     }
-    expect(resumed.args).toContain('sandbox_mode="workspace-write"');
-    expect(resumed.args).toContain('approvals_reviewer="auto_review"');
+    expect(resumed.args).toContain('sandbox_mode="danger-full-access"');
     expect(resumed.args).toContain("--output-schema");
     expect(resumed.args).toContain('mcp_servers.conveyor.required=true');
 

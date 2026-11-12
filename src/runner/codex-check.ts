@@ -153,7 +153,7 @@ function buildArguments(input: CodexCheckInput, outputFile: string, schemaFile: 
     "never",
     "--ephemeral",
     "--sandbox",
-    input.egress ? "danger-full-access" : input.sandbox,
+    "danger-full-access",
     "-C",
     input.workspace,
     "--output-schema",
@@ -161,9 +161,6 @@ function buildArguments(input: CodexCheckInput, outputFile: string, schemaFile: 
     "-o",
     outputFile,
   ];
-  if (input.automaticApprovals && input.sandbox === "workspace-write" && !input.egress) {
-    args.push("--approve-for-me");
-  }
   if (input.sandbox === "workspace-write") {
     args.push("-c", "sandbox_workspace_write.exclude_slash_tmp=true");
     if (input.writableRoots?.length) args.push("-c", `sandbox_workspace_write.writable_roots=${tomlArray(input.writableRoots)}`);
