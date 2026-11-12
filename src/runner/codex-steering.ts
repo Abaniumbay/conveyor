@@ -68,11 +68,8 @@ function argumentsFor(input: CodexSteeringInput, extra: string[] = []): string[]
     "-C",
     input.workspace,
   ];
-  if (input.automaticApprovals && input.sandbox === "workspace-write") {
-    args.push("--approve-for-me");
-  } else {
-    args.push("--sandbox", input.sandbox);
-  }
+  // Conveyor's wrapper is the only sandbox; its mounts enforce the access mode.
+  args.push("--sandbox", "danger-full-access");
   if (input.model) args.push("--model", input.model);
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${JSON.stringify(input.effort)}`);

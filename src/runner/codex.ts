@@ -245,20 +245,15 @@ function mcpArguments(input: CodexRunInput): string[] {
   return args;
 }
 
-// With agentEgress, Conveyor's wrapper is the only confinement layer (filesystem and network), and
-// Codex must not try a nested namespace. Without it, Codex's own sandbox keeps the configured mode.
-function codexSandboxMode(input: Pick<CodexRunInput, "sandbox" | "egress">): CodexRunInput["sandbox"] {
-  return input.egress ? "danger-full-access" : input.sandbox;
-}
+// Conveyor's wrapper is always Codex's only sandbox: Codex never starts a nested namespace, and the
+// configured access mode is enforced by the wrapper's mounts.
+const CODEX_SANDBOX_MODE = "danger-full-access";
 
 // `codex exec resume` rejects -C, --color, --sandbox and --approve-for-me, so a resumed run
 // takes the working directory from the spawn cwd and the sandbox and approvals from -c overrides.
 function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: string, schemaFile: string, extra: string[]): string[] {
   const args = ["exec", "resume", "--json", "--output-schema", schemaFile, "-o", outputFile];
-  args.push("-c", `sandbox_mode=${tomlString(codexSandboxMode(input))}`);
-  if (input.automaticApprovals && input.sandbox === "workspace-write" && !input.egress) {
-    args.push("-c", `approvals_reviewer=${tomlString("auto_review")}`);
-  }
+  args.push("-c", `sandbox_mode=${tomlString(CODEX_SANDBOX_MODE)}`);
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
   // Access settings follow user configuration so a config entry cannot reopen host /tmp.
@@ -271,11 +266,7 @@ function buildArguments(input: CodexRunInput, outputFile: string, schemaFile: st
   const args = ["exec", "--json", "--color", "never"];
   if (!input.persistSession) args.push("--ephemeral");
   args.push("-C", input.workspace, "--output-schema", schemaFile, "-o", outputFile);
-  if (input.automaticApprovals && input.sandbox === "workspace-write" && !input.egress) {
-    args.push("--approve-for-me");
-  } else {
-    args.push("--sandbox", codexSandboxMode(input));
-  }
+  args.push("--sandbox", CODEX_SANDBOX_MODE);
   if (input.model) args.push("--model", input.model);
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);

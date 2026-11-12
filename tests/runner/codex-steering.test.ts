@@ -62,7 +62,8 @@ describe("runCodexSteering", () => {
     expect(events).toHaveLength(4);
     const invocation = JSON.parse(await readFile(capture, "utf8")) as { args: string[]; prompt: string; tmpdir: string; home: string };
     expect(invocation.prompt).toBe("Make the requested UI change");
-    expect(invocation.args).toContain("--approve-for-me");
+    expect(invocation.args).not.toContain("--approve-for-me");
+    expect(invocation.args[invocation.args.indexOf("--sandbox") + 1]).toBe("danger-full-access");
     expect(invocation.args).toContain("--skip-git-repo-check");
     expect(invocation.args).not.toContain("--output-schema");
     expect(invocation.args).toContain("mcp_servers.conveyor.required=true");

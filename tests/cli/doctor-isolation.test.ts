@@ -80,27 +80,10 @@ describe("configured Codex isolation doctor checks", () => {
     });
   });
 
-  test("reports the user namespace required by an unwrapped Codex sandbox", async () => {
-    const checks = await configuredCodexIsolationChecks(config(false), succeeds);
+  test("reports no Codex sandbox namespace check for repositories without agentEgress", async () => {
+    const checks = await configuredCodexIsolationChecks(config(false), async () => ({ code: 1, output: "No permissions to create a new namespace" }));
 
-    expect(checks).toEqual([
-      { name: "Codex sandbox namespaces", status: "ok", detail: "bwrap can create the user namespace required by the Codex sandbox" },
-    ]);
-  });
-
-  test("names the user namespace when an unwrapped Codex sandbox cannot create it", async () => {
-    const checks = await configuredCodexIsolationChecks(config(false), async () =>
-      ({ code: 1, output: "No permissions to create a new namespace" }),
-    );
-
-    expect(checks).toEqual([
-      {
-        name: "Codex sandbox namespaces",
-        status: "fail",
-        detail: "bwrap cannot create the user namespace required by the Codex sandbox: No permissions to create a new namespace",
-        fix: "allow unprivileged user namespaces for Codex (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)",
-      },
-    ]);
+    expect(checks).toEqual([]);
   });
 });
 
