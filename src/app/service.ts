@@ -138,6 +138,8 @@ interface McpGrant {
   actor: { id: string; name: string; title: string } | null;
   /** Responses, including in-flight ones, keyed by the client's transport-retry token. */
   calls: Map<string, Promise<unknown>>;
+  /** Set only for a stop-summary Operator run: the one item and stop it may record a summary for. */
+  stopSummary?: { itemId: string; stopId: string };
 }
 
 /** What `conveyor doctor` and the dashboard show of the service's GitHub requests. */
@@ -161,6 +163,8 @@ interface ServiceImplementations {
   codeHosts?: CodeHostRegistry;
   /** Agent harnesses by runner type; by default the registered harness plugins. */
   harnesses?: Record<string, Harness>;
+  /** How long a stop-summary run may take; ten minutes by default. */
+  stopSummaryTimeoutMs?: number;
   /** Counts the GitHub requests of the adapter's transport; a fresh meter when it has none. */
   githubCalls?: GitHubCallMeter;
   /** Event sinks beyond the configured ones (an embedding application's own consumers). */
@@ -231,6 +235,9 @@ const DASHBOARD_SNAPSHOT_SELECTION: DashboardPageSelection = {
 };
 const ACTIVITY_RUN_PAGE_SIZE = 1;
 const ACTIVITY_EVENT_PAGE_SIZE = 5;
+/** The read-only Operator tools plus the recorder; a stop-summary run is granted exactly these. */
+const STOP_SUMMARY_TOOLS = ["operator.getBoard", "operator.findItem", "operator.getItemHistory", "operator.recordStopSummary"] as const;
+const STOP_SUMMARY_TIMEOUT_MS = 10 * 60_000;
 const STOPPED_ISSUE_STATES = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
 type ScheduledOperatorOutcome = {
   outcome: "retried" | "answered" | "unresolved";
@@ -513,6 +520,10 @@ export class ConveyorService {
   readonly #resumingRollups = new Set<string>();
   readonly #steeringActive = new Map<string, AbortController>();
   readonly #steeringCompletions = new Map<string, Promise<void>>();
+  /** Stop-summary runs in flight by run id; they never hold the steering lock, so they overlap neither owner nor scheduled runs' admission. */
+  readonly #stopSummaryActive = new Map<string, { controller: AbortController; completion: Promise<void> }>();
+  /** Stops a summary run was already started for, so a repeated notification starts nothing. */
+  readonly #stopSummaryStarted = new Set<string>();
   /** A scheduled check may act only on these snapshots; history reads are tracked per run. */
   readonly #scheduledOperatorChecks = new Map<string, ScheduledOperatorCheck>();
   readonly #mcpGrants = new Map<string, McpGrant>();
@@ -584,6 +595,7 @@ export class ConveyorService {
   /** Parked items made due by an answer, approval or other event, not by their wake-up time. */
   readonly #wokenEarly = new Set<string>();
   readonly #harnesses: Record<string, Harness>;
+  readonly #stopSummaryTimeoutMs: number;
   readonly #plugins: PluginRegistry;
   readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
   readonly #manualGateApprovals: ManualGateApprovals;
@@ -624,6 +636,7 @@ export class ConveyorService {
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
     this.#harnesses = implementations.harnesses ?? this.#plugins.harnesses();
+    this.#stopSummaryTimeoutMs = implementations.stopSummaryTimeoutMs ?? STOP_SUMMARY_TIMEOUT_MS;
     this.#manualGateApprovals = store.manualGates();
     this.#advisoryWatches = store.advisoryWatches({
       resolve: (repositoryId) => ({
@@ -1307,8 +1320,9 @@ export class ConveyorService {
       active.controller.abort();
     }
     for (const controller of this.#steeringActive.values()) controller.abort();
+    for (const { controller } of this.#stopSummaryActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
-    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#purges.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#answerFollowUps.size > 0 || this.#startupRunning || this.#tickRunning || this.#advisoryPolling || this.#retentionActive > 0) {
+    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#stopSummaryActive.size > 0 || this.#purges.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#answerFollowUps.size > 0 || this.#startupRunning || this.#tickRunning || this.#advisoryPolling || this.#retentionActive > 0) {
       await Bun.sleep(25);
     }
     this.store.close();
@@ -2026,6 +2040,12 @@ export class ConveyorService {
       if (event.payload.change === "dismissed") {
         const cursor = event.issueId ? this.store.executions().getCursor(event.issueId) : null;
         if (cursor) wakeParkedGate(event.issueId, cursor.stage, null);
+      }
+    });
+    // Every completed stop gets one read-only Operator summary run; the stop itself is already recorded.
+    this.events.subscribe("journey.recorded", "start the stop-summary run", (event) => {
+      if (event.issueId && event.payload.kind === "stopped" && event.payload.status === "completed") {
+        this.startStopSummaryRun(event.issueId, event.payload.transitionId);
       }
     });
     for (const type of SCHEDULING_EVENTS) this.events.subscribe(type, "schedule", () => this.requestSchedule());
@@ -3578,6 +3598,7 @@ export class ConveyorService {
     runId: string,
     workspace: string,
     allowedTools: readonly string[],
+    stopSummary?: { itemId: string; stopId: string },
   ): Promise<ScopedMcpLease> {
     const token = randomBytes(32).toString("base64url");
     this.#mcpGrants.set(token, {
@@ -3587,6 +3608,7 @@ export class ConveyorService {
       allowedTools: new Set(allowedTools.map(canonicalToolName)),
       actor: null,
       calls: new Map(),
+      ...(stopSummary ? { stopSummary } : {}),
     });
     const directory = path.join(this.config.settings.artifacts, runId);
     await mkdir(directory, { recursive: true });
@@ -3772,6 +3794,7 @@ export class ConveyorService {
             issueId: "",
             operator: {
               scheduled,
+              ...(grant.stopSummary ? { stopSummary: grant.stopSummary } : {}),
               board: () => this.operatorBoard(),
               findItem: (reference) => this.operatorFindItem(reference),
               itemHistory: async (input) => {
@@ -4629,6 +4652,112 @@ export class ConveyorService {
     return runId;
   }
 
+
+  /**
+   * Starts the one read-only Operator run that summarises an item's stop. Nothing starts without a
+   * configured steering agent. The run never changes the item and never retries or answers anything;
+   * a run that cannot produce a summary leaves an `operator.stopSummaryFailed` event with its reason.
+   */
+  private startStopSummaryRun(issueId: string, stopId: string): void {
+    const steering = this.config.web?.steering;
+    if (!steering || this.#shuttingDown || this.#stopSummaryStarted.has(stopId)) return;
+    this.#stopSummaryStarted.add(stopId);
+    const runId = randomUUID();
+    const controller = new AbortController();
+    const completion = this.executeStopSummary(runId, issueId, stopId, steering.agent, controller)
+      .catch((error) => log.warn("Stop-summary run failed", { ...this.itemFields(issueId) }, error))
+      .finally(() => { this.#stopSummaryActive.delete(runId); });
+    this.#stopSummaryActive.set(runId, { controller, completion });
+  }
+
+  /** Wait for every running stop-summary run to settle. */
+  async waitForStopSummaryRuns(): Promise<void> {
+    while (this.#stopSummaryActive.size > 0) {
+      await Promise.all([...this.#stopSummaryActive.values()].map((active) => active.completion));
+    }
+  }
+
+  private async executeStopSummary(runId: string, issueId: string, stopId: string, agentId: string, controller: AbortController): Promise<void> {
+    const started = performance.now();
+    this.store.createRun({
+      id: runId, issueId: null, stageId: "steering", attempt: 1, kind: "steering", status: "running",
+      configHash: this.config.hash, startedAt: new Date().toISOString(),
+    });
+    this.store.appendRunEvent(runId, "operator.stopSummary", { issueId, stopId });
+    let failure: { kind: "failed" | "timeout"; reason: string } | null = null;
+    let lease: ScopedMcpLease | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    let sessionId: string | null = null;
+    let usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
+    try {
+      const agent = this.config.agents[agentId];
+      if (!agent) throw new Error(`Unknown steering agent: ${agentId}`);
+      const runner = this.config.runners[agent.runner];
+      if (!runner || (runner.type !== "codex" && runner.type !== "claude-code")) {
+        throw new Error(`The steering agent ${agentId} must use a Codex or Claude Code runner`);
+      }
+      const harness = this.#harnesses[runner.type];
+      if (!harness) throw new Error(`No harness is available for runner type ${runner.type}`);
+      const instructions = await readFile(agent.instructions, "utf8");
+      const scratch = path.join(this.config.settings.artifacts, runId, "scratch");
+      await mkdir(scratch, { recursive: true });
+      lease = await this.steeringMcpLease(runId, scratch, STOP_SUMMARY_TOOLS, { itemId: issueId, stopId });
+      timer = setTimeout(() => { timedOut = true; controller.abort(); }, this.#stopSummaryTimeoutMs);
+      const result = await harness.run({
+        command: runner.command,
+        // Always the run's own empty scratch directory: the same filesystem a confined Operator gets.
+        workspace: scratch,
+        artifactsDirectory: path.join(this.config.settings.artifacts, runId),
+        prompt: [
+          instructions.trim(),
+          conveyorToolGuidance([...STOP_SUMMARY_TOOLS]),
+          "",
+          "You are the Conveyor Operator writing a stop summary. This is a read-only run: you cannot retry, answer, reorder or change anything.",
+          `Read the history of item ${issueId} with operator.getItemHistory, then record the summary of stop ${stopId} with operator.recordStopSummary (itemId ${issueId}, stopId ${stopId}).`,
+          "The summary is one or two short plain sentences naming the exact failing test, command, check or step and, when clear, what unblocks it. No log excerpts, stack traces, links or speculation.",
+          "Finish with a one-line result.",
+        ].join("\n"),
+        ...(agent.model ? { model: agent.model } : {}),
+        ...(agent.effort ? { effort: agent.effort } : {}),
+        sandbox: "read-only",
+        automaticApprovals: runner.type === "codex" ? runner.automaticApprovals : false,
+        ...(runner.type === "claude-code" ? { shell: false as const } : {}),
+        mcp: lease.configuration,
+        timeoutMs: this.#stopSummaryTimeoutMs,
+        interruptGraceMs: this.config.settings.interruptGraceMs,
+        signal: controller.signal,
+        onEvent: (event: unknown) => { this.store.appendRunEvent(runId, "harness", event); },
+      });
+      sessionId = result.sessionId;
+      usage = result.usage;
+      if (result.stageResult.outcome === "failure") {
+        failure = { kind: "failed", reason: result.stageResult.reason ?? result.stageResult.summary };
+      } else if (this.store.currentStopId(issueId) === stopId && this.store.currentStopSummary(issueId) === null) {
+        failure = { kind: "failed", reason: "The run finished without recording a summary for the stop." };
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failure = timedOut || /timed out/i.test(message)
+        ? { kind: "timeout", reason: `The stop-summary run timed out after ${this.#stopSummaryTimeoutMs}ms.` }
+        : { kind: "failed", reason: message };
+    } finally {
+      if (timer) clearTimeout(timer);
+      try { await lease?.close(); } catch { /* a teardown failure must not replace the run's own outcome */ }
+    }
+    if (failure) {
+      // The recording tool may have stored a summary before the run failed; a failed run leaves none.
+      try { this.store.clearStopSummary({ issueId, stopId }); } catch (error) { log.warn("Could not clear the stop summary of a failed run", { ...this.itemFields(issueId) }, error); }
+      this.store.appendRunEvent(runId, "operator.stopSummaryFailed", { issueId, stopId, kind: failure.kind, reason: failure.reason });
+    }
+    this.store.finishRun(runId, {
+      status: failure ? "failed" : "succeeded",
+      exitCode: failure ? 1 : 0,
+      result: failure ? { reason: failure.reason } : { summary: "Stop summary recorded." },
+      sessionId,
+      usage: { ...usage, amount: 0, currency: "USD", source: "unavailable", durationMs: Math.max(0, Math.round(performance.now() - started)) },
+    });
+  }
 
   async startSteering(prompt: string): Promise<string> {
     const request = prompt.trim();

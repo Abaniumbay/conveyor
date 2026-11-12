@@ -2108,6 +2108,11 @@ export class ConveyorStore {
     })();
   }
 
+  /** Removes the summary recorded for one stop of an item (a failed summary run leaves none). */
+  clearStopSummary(input: { issueId: string; stopId: string }): void {
+    this.#database.query("DELETE FROM item_stop_summaries WHERE issue_id = ? AND stop_id = ?").run(input.issueId, input.stopId);
+  }
+
   /** The summary recorded for the item's current stop; null when none was, or the item has moved on. */
   currentStopSummary(issueId: string): string | null {
     const stopId = this.currentStopId(issueId);

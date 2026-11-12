@@ -60,3 +60,9 @@ labels or recorded stop reason, and gates and routing never read it. It is kept 
 `currentStopSummary(itemId)` returns it only while its stop is the item's current one: after the item
 resumes and stops again the read returns nothing until a new summary is recorded. Recording appends the
 event `item.stopSummaryRecorded`, which carries the stop id and never the summary text.
+
+### Every stop starts a summary run
+
+When an item stops and a steering agent is configured, Conveyor starts one Operator run for that stop; with no steering agent nothing starts. The run goes through the harness port of the agent's runner, so it works with Codex and Claude Code alike (the Codex-only check of the scheduled Operator does not apply). Its grant is exactly the read-only tools `operator.getBoard`, `operator.findItem` and `operator.getItemHistory` plus `operator.recordStopSummary`; the control tools are never granted. It reads the item's history and records one or two plain sentences naming what failed and, when clear, what unblocks it. It never retries or answers anything and never changes the item's stage, state, labels or stop reason.
+
+A run that fails, times out (ten minutes by default), cannot start for lack of a usable runner, or ends without recording a summary leaves no summary. The reason is appended to the run as an `operator.stopSummaryFailed` event (`issueId`, `stopId`, `kind` of `failed` or `timeout`, `reason`); the run is not retried.
