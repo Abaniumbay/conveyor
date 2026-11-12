@@ -3,8 +3,7 @@
 // the configuration and the service's live state), never from the service or the whole store.
 
 import { createHash } from "node:crypto";
-import { homedir, tmpdir } from "node:os";
-import path from "node:path";
+import { tmpdir } from "node:os";
 
 import type { DashboardSources, DashboardStore } from "../../app/dashboard-sources";
 import { githubOutageLine } from "../../app/github-outage";
@@ -17,7 +16,6 @@ import { boardStageOrder } from "../../core/pipeline";
 import { stopHeadline, type StoredIssue } from "../../db/store";
 import { summarizeTodos, type TodoItem } from "../../db/todos";
 import { questionConfigurationError, questionOptions } from "../../questions";
-import { readClaudeQuota, readCodexQuota } from "../../usage/quota";
 import { displayName, formatDuration, formatUsage } from "../../web/format";
 import type { DashboardPageSelection, DashboardViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueStageBadgeViewModel, IssueTodosViewModel, IssueTone, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SteeringViewModel, SystemStatusViewModel } from "../../web/types";
 import { collectSystemStatus } from "./system-status";
@@ -117,12 +115,13 @@ export class DashboardViews {
   ): DashboardViewModel {
     const agentRunner = new Map(Object.entries(this.#config.agents ?? {}).map(([agentId, agent]) => [agentId, agent.runner]));
     const harnessUsage = Object.entries(this.#config.runners ?? {}).flatMap(([runnerId, runner]) => {
-      if (runner.type !== "codex" && runner.type !== "claude-code") return [];
-      const windows = runner.type === "codex"
-        ? readCodexQuota(process.env.CODEX_HOME || path.join(homedir(), ".codex"))
-        : readClaudeQuota([...agentRunner.entries()].flatMap(([agentId, configuredRunner]) =>
-            configuredRunner === runnerId ? this.#store.listHarnessRunEvents(agentId) : [],
-          ));
+      const harness = this.#sources.harnesses[runner.type];
+      if (!harness?.quota) return [];
+      const windows = harness.quota({
+        harnessEvents: () => [...agentRunner.entries()].flatMap(([agentId, configuredRunner]) =>
+          configuredRunner === runnerId ? this.#store.listHarnessRunEvents(agentId) : [],
+        ),
+      });
       return [{
         id: runnerId,
         name: runnerId === "codex" ? "Codex" : runnerId === "claude-code" ? "Claude Code" : displayName(runnerId),

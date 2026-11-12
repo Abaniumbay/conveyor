@@ -1,5 +1,15 @@
 import type { HarnessPlugin } from "../../core/plugins";
+import { installedCommandCheck } from "../../harness/doctor";
+import { codexRunnerSchema } from "./config";
 import { codexHarness } from "./harness";
+import { codexProfile } from "./profile";
 
 /** The Codex CLI as an agent harness. */
-export const codexPlugin: HarnessPlugin = { role: "harness", type: "codex", create: () => codexHarness };
+export const codexPlugin: HarnessPlugin = {
+  role: "harness",
+  type: "codex",
+  configSchema: codexRunnerSchema,
+  profile: codexProfile,
+  doctor: installedCommandCheck,
+  create: () => codexHarness,
+};

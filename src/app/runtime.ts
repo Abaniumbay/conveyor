@@ -301,9 +301,10 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
             ),
             ...(agent.model ? { model: agent.model } : {}),
             ...(agent.effort ? { effort: agent.effort } : {}),
+            // The Codex plugin always sets both; an entry no plugin completed runs read-only, without approvals.
             sandbox:
-              agent.workspaceAccess === "read-only" ? "read-only" : runner.sandbox,
-            automaticApprovals: runner.automaticApprovals,
+              agent.workspaceAccess === "read-only" ? "read-only" : runner.sandbox ?? "read-only",
+            automaticApprovals: runner.automaticApprovals ?? false,
             mcp: lease.configuration,
             ...this.egressInput(runner),
             interruptGraceMs: this.config.settings.interruptGraceMs,

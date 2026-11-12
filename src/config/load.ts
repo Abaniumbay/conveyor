@@ -16,7 +16,8 @@ import { ConfigError, safeYamlDiagnostic } from "./errors";
 import { materialiseImport, parseImportSpec, type ImportSpec, type ResolvedImport } from "./import";
 import { protectedServiceLocations, resolveToolchainPaths } from "../isolation/toolchain-paths";
 import { normalizeRoleDocuments } from "./roles";
-import { configSchema, isNativeStage, type ConveyorConfigData, type ProviderEntry } from "./schema";
+import { configSchema, isNativeStage, JSON_PROCESS_RUNNER, type ConveyorConfigData, type ProviderEntry } from "./schema";
+import type { HarnessProfile } from "../harness/types";
 import type { Plugin } from "../core/plugins";
 
 const NAMED_SECTIONS = [
@@ -63,23 +64,28 @@ export interface LoadConfigOptions {
   /** Leave secretPlaceholder(key) where each `!secret` was (readConfiguration only, for migration). */
   secretPlaceholders?: boolean;
   /**
-   * The plugins whose schemas validate and complete the item source, code host and CI provider
-   * entries. Without them an entry is checked only for its `type` (tools that only read paths).
+   * The plugins whose schemas validate and complete the item source, code host, CI provider and
+   * harness runner entries, and whose harness profiles decide which agents a harness can run.
+   * Without them an entry is checked only for its `type` and no harness rule applies: only tools
+   * that read paths load without them.
    */
   plugins?: readonly Plugin[];
 }
 
-const PROVIDER_ROLES = [["items", "sources"], ["code", "codeHosts"], ["ci", "ci"]] as const;
+const PLUGIN_SECTIONS = [["items", "sources"], ["code", "codeHosts"], ["ci", "ci"], ["harness", "runners"]] as const;
 
-/** Validates each provider entry with the schema of the plugin its `type` names, and applies its defaults. */
+/** Validates each provider and harness entry with the schema of the plugin its `type` names, and applies its defaults. */
 function completeProviders(data: ConveyorConfigData, plugins: readonly Plugin[]): LocatedError[] {
   const errors: LocatedError[] = [];
-  for (const [role, key] of PROVIDER_ROLES) {
-    const entries = data[key];
+  for (const [role, key] of PLUGIN_SECTIONS) {
+    const entries: Record<string, ProviderEntry> = data[key];
     for (const [name, entry] of Object.entries(entries)) {
+      // The JSON process is the core's own runner, validated by the core schema.
+      if (role === "harness" && entry.type === JSON_PROCESS_RUNNER) continue;
       const plugin = plugins.find((candidate) => candidate.role === role && candidate.type === entry.type);
-      if (!plugin || plugin.role === "harness" || plugin.role === "presentation") {
+      if (!plugin || plugin.role === "presentation") {
         const known = plugins.filter((candidate) => candidate.role === role).map((candidate) => candidate.type);
+        if (role === "harness") known.push(JSON_PROCESS_RUNNER);
         errors.push({ path: [key, name, "type"], message: `: no ${role} plugin provides type "${entry.type}" (known: ${known.join(", ") || "none"})` });
         continue;
       }
@@ -117,9 +123,6 @@ function normalizeRunPaths(config: ConveyorConfigData): ConveyorConfigData {
   }
   if (config.web.steering?.workspace) {
     config.web.steering.workspace = resolveFilesystemPath(config.web.steering.workspace);
-  }
-  for (const runner of Object.values(config.runners)) {
-    if (runner.type === "claude-code" && runner.configDir) runner.configDir = resolveFilesystemPath(runner.configDir);
   }
   for (const agent of Object.values(config.agents)) {
     agent.instructions = resolveFilesystemPath(agent.instructions);
@@ -319,6 +322,11 @@ function toolchainPathErrors(config: ConveyorConfigData, root: string, home: str
   return errors;
 }
 
+/** The profile of each harness plugin, by runner type. */
+function harnessProfiles(plugins: readonly Plugin[]): Map<string, HarnessProfile> {
+  return new Map(plugins.flatMap((plugin) => (plugin.role === "harness" ? [[plugin.type, plugin.profile] as const] : [])));
+}
+
 function crossReferenceErrors(config: ConveyorConfigData, plugins: readonly Plugin[] | undefined): LocatedError[] {
   const errors: LocatedError[] = [];
   const error = (segments: readonly (string | number)[], message: string) =>
@@ -338,23 +346,28 @@ function crossReferenceErrors(config: ConveyorConfigData, plugins: readonly Plug
   if (config.web.steering && !config.agents[config.web.steering.agent]) {
     error(["web", "steering", "agent"], `references unknown agent "${config.web.steering.agent}"`);
   }
+  // Without the plugins no harness is known, so only the rules that need no profile apply.
+  const profiles = plugins ? harnessProfiles(plugins) : null;
+  const confining = [...profiles?.values() ?? []].filter((profile) => profile.confinedAccess).map((profile) => profile.name);
+  const confiningRunner = confining.length > 0 ? `the ${confining.join(" or ")} runner` : "a harness that can confine it";
   for (const [name, agent] of Object.entries(config.agents)) {
     const runner = config.runners[agent.runner];
+    const profile = runner ? profiles?.get(runner.type) : undefined;
     if (!runner) {
       error(["agents", name, "runner"], `references unknown runner "${agent.runner}"`);
-    } else if (agent.workspaceAccess === "confined" && runner.type !== "codex") {
-      error(["agents", name], "uses access: confined, which requires the Codex runner");
+    } else if (agent.workspaceAccess === "confined" && (profiles ? !profile?.confinedAccess : runner.type === JSON_PROCESS_RUNNER)) {
+      error(["agents", name], `uses access: confined, which requires ${confiningRunner}`);
     } else if (agent.workspaceAccess === "confined" && agent.writableRoots.length > 0) {
       error(["agents", name], "is confined, so writableRoots does not apply");
-    } else if (runner.type === "claude-code" && agent.workspaceAccess === "workspace-write" && !agent.network) {
-      // The Claude CLI needs the network for its own API calls, so its commands cannot be cut off from it.
-      error(["agents", name], "runs on Claude Code with access: workspace-write, which needs network: true (its commands cannot be kept off the network yet)");
-    } else if (runner.type === "claude-code" && agent.workspaceAccess === "read-only" && agent.writableRoots.length > 0) {
+    } else if (profile?.workspaceWriteNeedsNetwork && agent.workspaceAccess === "workspace-write" && !agent.network) {
+      error(["agents", name], `runs on ${profile.name} with access: workspace-write, which needs network: true (its commands cannot be kept off the network yet)`);
+    } else if (profile?.sandbox === "access" && agent.workspaceAccess === "read-only" && agent.writableRoots.length > 0) {
+      // Its sandbox follows the agent's access alone, so a read-only agent's run never writes anywhere.
       error(["agents", name], "is read-only, so writableRoots does not apply");
-    } else if (runner.type === "codex" && !agent.shell) {
-      error(["agents", name], `sets shell: false, but Codex reaches files only through its shell, so agent "${name}" cannot run without one`);
-    } else if (runner.type === "claude-code" && Object.keys(agent.codexConfig).length > 0) {
-      error(["agents", name], "runs on Claude Code, which does not take codexConfig");
+    } else if (profile && !profile.optionalShell && !agent.shell) {
+      error(["agents", name], `sets shell: false, but ${profile.name} reaches files only through its shell, so agent "${name}" cannot run without one`);
+    } else if (profile && !profile.extraSettings && Object.keys(agent.codexConfig).length > 0) {
+      error(["agents", name], `runs on ${profile.name}, which does not take codexConfig`);
     }
   }
   for (const [name, check] of Object.entries(config.checks)) {

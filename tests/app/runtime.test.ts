@@ -10,6 +10,7 @@ import { resolveFilesystemPath } from "../../src/core/paths";
 import { ConveyorStore } from "../../src/db/store";
 import type { CheckRunResult, Harness } from "../../src/harness/types";
 import { codexProfile } from "../../src/plugins/codex/profile";
+import { PLUGINS } from "../../src/plugins";
 import type { RunEnvelope } from "../../src/runner/result";
 
 const directories: string[] = [];
@@ -334,7 +335,7 @@ pipelines:
 repositories:
   repo: { source: github, address: owner/repo, folder: ${repository}, pipeline: default }
 `);
-    const config = await loadConfig(path.join(root, "config.yml"));
+    const config = await loadConfig(path.join(root, "config.yml"), undefined, { plugins: PLUGINS });
     const store = await ConveyorStore.open(config.settings.database);
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: repository, configHash: config.hash });
     store.upsertIssue({

@@ -66,7 +66,7 @@ export interface SurfaceSources {
   events: Record<string, { payload: z.ZodType }>;
   tasks: ReadonlyArray<{ name: string; config?: z.ZodType; input?: z.ZodType }>;
   config: z.ZodType;
-  /** The shipped plugins: their provider schemas add the keys of `sources`, `codeHosts` and `ci` entries. */
+  /** The shipped plugins: their schemas add the keys of `sources`, `codeHosts`, `ci` and `runners` entries. */
   plugins: readonly Plugin[];
   /** A stage of the installation stage list; the config schema accepts stages as opaque values. */
   stage: z.ZodType;
@@ -106,9 +106,9 @@ export function publicSurface(sources: SurfaceSources = defaultSources()): strin
     if (task.input) for (const key of inputKeys(task.input)) lines.add(`task-input ${task.name} ${key}`);
   }
   for (const key of inputKeys(sources.config)) lines.add(`config ${key}`);
-  const section = { items: "sources", code: "codeHosts", ci: "ci" } as const;
+  const section = { items: "sources", code: "codeHosts", ci: "ci", harness: "runners" } as const;
   for (const plugin of sources.plugins) {
-    if (plugin.role === "harness" || plugin.role === "presentation") continue;
+    if (plugin.role === "presentation") continue;
     for (const key of inputKeys(plugin.configSchema)) lines.add(`config ${section[plugin.role]}.<name>.${key}`);
   }
   for (const key of inputKeys(sources.stage)) lines.add(`config stages[].${key}`);

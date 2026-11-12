@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { loadConfig } from "../../src/config/load";
+import { PLUGINS } from "../../src/plugins";
 import { isNativeStage, type NativeStageConfig } from "../../src/config/schema";
 
 const directories: string[] = [];
@@ -37,7 +38,7 @@ async function load(body: string, options: { header?: string } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "conveyor-task-stages-"));
   directories.push(directory);
   await writeFile(path.join(directory, "config.yml"), (options.header ?? HEADER) + body);
-  return { directory, config: await loadConfig(directory, null) };
+  return { directory, config: await loadConfig(directory, null, { plugins: PLUGINS }) };
 }
 
 const NATIVE_PIPELINE = `

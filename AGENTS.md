@@ -59,7 +59,7 @@ Run these from the repository root.
 | `src/core/plugins.ts` | The plugin contract and registry: item source, code host, CI, harness and presentation plugins by `type`. |
 | `src/plugins/` | Plugin implementations, one folder per provider and one per role inside it: `github/{shared,items,code,ci}`, `codex/`, `claude-code/`, and `dashboard/` (the dashboard's view models in `views.ts`, its live feed in `feed.ts`). `index.ts` is the list the composition root registers. |
 | `src/source/`, `src/codehost/` | Item source and code host ports (`types.ts`: `ItemReader`, `ItemSections`, `ItemMarkers`, … combined as `ItemTracker`; `client.ts`: the service-only ports combined as `ItemSourceClient`, the type the service holds instead of a provider client), call metering and the reason each request is made (`calls.ts`), who may act (`trust.ts`), the status comment (`status-comment.ts`), Conveyor's managed-section codec (`managed-sections.ts`), item types and fields (`item-metadata.ts`), and provider-neutral change actions. |
-| `src/harness/`, `src/runner/` | The harness port (`harness/types.ts`: `Harness`, its `HarnessProfile` and the optional legacy-check and Operator runs) and the shared runner pieces (run envelope, output schemas, JSON-process runner). The Codex and Claude Code runners live in their plugins (`src/plugins/codex/`, `src/plugins/claude-code/`). |
+| `src/harness/`, `src/runner/` | The harness port (`harness/types.ts`: `Harness`, its `HarnessProfile` and the optional quota reader, legacy-check and Operator runs; `harness/doctor.ts`: the `conveyor doctor` check a harness plugin supplies) and the shared runner pieces (run envelope, output schemas, JSON-process runner). The Codex and Claude Code runners live in their plugins (`src/plugins/codex/`, `src/plugins/claude-code/`). |
 | `src/isolation/` | Sanitized agent environment, network sandbox, egress proxies. |
 | `src/web/` | `server.ts` (HTTP routes, SSE), `model.ts` (the live dashboard model and its patches), `render.tsx` (Preact markup), `types.ts` (view models), `styles.ts` (CSS), `app/` (the browser application: `main.tsx`, `store.ts`, `derive.ts`, `behaviour.ts`). |
 | `src/cli/` | `main.ts` (command table) and `commands/*.ts`. |
@@ -217,9 +217,9 @@ a service mutation directly.
 ### Configuration field
 
 1. Add it to the zod schema in `src/config/schema.ts` (schemas are `.strict()`; unknown keys are
-   errors). A setting of one provider (an item source, code host or CI provider) goes in that
-   plugin's `configSchema` instead (for GitHub, `src/plugins/github/<role>/config.ts`); the core
-   schema only knows a provider entry's `type`.
+   errors). A setting of one provider (an item source, code host or CI provider) or of one harness
+   goes in that plugin's `configSchema` instead (for GitHub, `src/plugins/github/<role>/config.ts`;
+   for a harness, `src/plugins/<harness>/config.ts`); the core schema only knows an entry's `type`.
 2. Document it in `docs/configuration.md`.
 3. If it has a packaged default, update `examples/config/`.
 4. Test loading and validation errors in `tests/config/`.

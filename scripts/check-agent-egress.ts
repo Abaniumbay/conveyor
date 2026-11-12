@@ -24,6 +24,7 @@ import path from "node:path";
 
 import { resolveFilesystemPath } from "../src/core/paths";
 import { loadConfig, type ConveyorConfig } from "../src/config/load";
+import { PLUGINS } from "../src/plugins";
 import { parseLoopbackTcp } from "../src/isolation/egress-policy";
 import { startEgressProxy } from "../src/isolation/egress-proxy";
 import { agentEgressFor } from "../src/isolation/agent-egress";
@@ -330,9 +331,12 @@ export async function runLiveClaudeCheck(options: {
   }
 }
 
-/** Loads the configuration for the check; with the Conveyor home, `!include builtin:` entrypoints resolve. */
+/**
+ * Loads the configuration for the check with the shipped plugins, which complete the runner settings
+ * it reads; with the Conveyor home, `!include builtin:` entrypoints resolve.
+ */
 export function loadCheckConfig(target: string, home?: string): Promise<ConveyorConfig> {
-  return loadConfig(target, null, home ? { home } : {});
+  return loadConfig(target, null, { ...(home ? { home } : {}), plugins: PLUGINS });
 }
 
 async function main(): Promise<number> {

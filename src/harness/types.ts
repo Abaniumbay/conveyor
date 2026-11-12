@@ -7,6 +7,7 @@ import type { CheckResult } from "../core/pipeline";
 import type { HarnessCapabilities, HarnessResumeInput } from "../tasks/context";
 import type { RunEnvelope } from "../runner/result";
 import type { EgressInput } from "../isolation/run-network";
+import type { QuotaWindows } from "../usage/quota";
 
 type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -125,6 +126,8 @@ export interface SteeringRunResult {
  * control-plane proxy) stays inside its plugin, which picks it from src/isolation.
  */
 export interface HarnessProfile {
+  /** The harness's name in messages to the operator, such as "Codex". */
+  readonly name: string;
   /** Hosts the harness process itself reaches when egress is enforced and the runner names no `controlPlaneHosts`. */
   readonly controlPlaneHosts: readonly string[];
   /** Service environment variables that carry the harness's own login and state: kept for the harness process, never for the agent's commands. */
@@ -141,12 +144,27 @@ export interface HarnessProfile {
   readonly optionalShell: boolean;
   /** Whether the harness takes the agent's extra settings (`codexConfig`). */
   readonly extraSettings: boolean;
+  /** Whether it can run a confined agent (`access: confined`: only a fresh scratch filesystem). */
+  readonly confinedAccess: boolean;
+  /**
+   * Whether a workspace-write agent needs `network: true`: the harness process needs the network for
+   * its own API calls, and its commands cannot yet be cut off from it.
+   */
+  readonly workspaceWriteNeedsNetwork: boolean;
+}
+
+/** What a harness's quota reader may read about the runner it reports for. */
+export interface HarnessQuotaInput {
+  /** The stored harness events of the agents that use the runner; read only when asked for. */
+  harnessEvents(): readonly { payload: unknown; createdAt: string }[];
 }
 
 export interface Harness {
   id: string;
   capabilities: HarnessCapabilities;
   profile: HarnessProfile;
+  /** The remaining usage of a runner of this harness, shown on the dashboard; absent when the harness reports none. */
+  quota?(input: HarnessQuotaInput): QuotaWindows;
   run(input: HarnessRunInput & HarnessResumeInput): Promise<RunEnvelope>;
   /** A legacy stage's producer turn, whose session is not kept; absent when the harness runs no legacy stages. */
   runEphemeral?(input: HarnessRunInput): Promise<RunEnvelope>;

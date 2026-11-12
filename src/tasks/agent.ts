@@ -14,6 +14,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import { isHarnessRunner } from "../config/schema";
 import type { ConversationStore, RunLogStore } from "../db/ports";
 import type { StoredQuestion } from "../db/store";
 import type { Harness, HarnessProfile, HarnessRunInput } from "../harness/types";
@@ -193,7 +194,7 @@ async function runWithCorrection(
     const sessionId = (error as { sessionId?: unknown } | null)?.sessionId;
     if (!isInvalidResult(error) || typeof sessionId !== "string" || args.deps.signal?.aborted) throw error;
     const runner = args.deps.config.runners[args.deps.config.agents[agentId]?.runner ?? ""];
-    if (!runner || runner.type === "json-process" || !args.deps.harnesses?.[runner.type]?.capabilities.sessionResume) throw error;
+    if (!runner || !isHarnessRunner(runner) || !args.deps.harnesses?.[runner.type]?.capabilities.sessionResume) throw error;
     return await runAgent(args, agentId, answered, { message: (error as Error).message, sessionId }, runIds);
   }
 }
@@ -244,7 +245,7 @@ async function runAgent(
   const agent = deps.config.agents[agentId];
   if (!agent) throw new Error(`unknown agent: ${agentId}`);
   const runner = deps.config.runners[agent.runner];
-  if (!runner || runner.type === "json-process") {
+  if (!runner || !isHarnessRunner(runner)) {
     throw new Error(`agent ${agentId} must use a Codex or Claude Code runner`);
   }
   const harness: Harness | undefined = deps.harnesses?.[runner.type];

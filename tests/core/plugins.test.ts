@@ -19,6 +19,9 @@ const config = (sections: Partial<Pick<ConveyorConfig, "codeHosts" | "sources">>
 
 const host = (name: string) => ({ name }) as unknown as CodeHost;
 const harness = (id: string): Harness => ({ id, capabilities: { sessionResume: false }, profile: codexProfile, run: async () => { throw new Error("unused"); } });
+/** A harness plugin of `type` whose runner schema accepts any entry. */
+const harnessPlugin = (type: string, id: string): Plugin =>
+  ({ role: "harness", type, configSchema: z.object({ type: z.string(), command: z.string() }).passthrough(), profile: codexProfile, create: () => harness(id) });
 
 describe("PluginRegistry", () => {
   test("builds a CI provider from the plugin of the configured type", () => {
@@ -38,16 +41,16 @@ describe("PluginRegistry", () => {
 
   test("rejects two plugins of the same role and type", () => {
     const plugins: Plugin[] = [
-      { role: "harness", type: "codex", create: () => harness("a") },
-      { role: "harness", type: "codex", create: () => harness("b") },
+      harnessPlugin("codex", "a"),
+      harnessPlugin("codex", "b"),
     ];
     expect(() => new PluginRegistry(plugins, pluginContext(config()))).toThrow('two harness plugins have the type "codex"');
   });
 
   test("returns every harness by runner type", () => {
     const registry = new PluginRegistry([
-      { role: "harness", type: "codex", create: () => harness("codex") },
-      { role: "harness", type: "pi", create: () => harness("pi") },
+      harnessPlugin("codex", "codex"),
+      harnessPlugin("pi", "pi"),
       { role: "ci", configSchema: anyProvider, type: "fake-ci", create: () => ({}) as CiProvider },
     ], pluginContext(config()));
     expect(Object.keys(registry.harnesses()).sort()).toEqual(["codex", "pi"]);

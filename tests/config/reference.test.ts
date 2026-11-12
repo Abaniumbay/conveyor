@@ -5,6 +5,7 @@ import { parse, stringify } from "yaml";
 
 import { loadConfig, type ConveyorConfig } from "../../src/config/load";
 import { BUILTIN_FILES } from "../../src/config/builtin";
+import { PLUGINS } from "../../src/plugins";
 import { FINDING_TYPES } from "../../src/engine/finding-types";
 import { referenceConfigDirectory, referenceConfigEntrypoint, referenceYamlFiles } from "./reference-fixture";
 
@@ -16,7 +17,7 @@ afterEach(async () => {
 async function loadReference(): Promise<ConveyorConfig> {
   const { entrypoint, base } = await referenceConfigEntrypoint();
   bases.push(base);
-  return loadConfig(entrypoint);
+  return loadConfig(entrypoint, undefined, { plugins: PLUGINS });
 }
 
 const EXAMPLES = path.resolve(import.meta.dir, "../../examples");
@@ -227,7 +228,7 @@ describe("reference configuration", () => {
     const agents = parse(await readFile(agentsFile, "utf8"), { maxAliasCount: -1 }) as Record<string, { access?: string }>;
     agents.shaghayegh!.access = "workspace-write";
     await writeFile(agentsFile, stringify(agents));
-    await expect(loadConfig(entrypoint)).rejects.toThrow("defaults/agents.yaml: shaghayegh runs on Claude Code with access: workspace-write, which needs network: true");
+    await expect(loadConfig(entrypoint, undefined, { plugins: PLUGINS })).rejects.toThrow("defaults/agents.yaml: shaghayegh runs on Claude Code with access: workspace-write, which needs network: true");
   });
 
   test("Kaveh compacts long sessions, and Kaveh and Darya get a code index limited to lookups", async () => {
@@ -250,7 +251,7 @@ describe("reference configuration", () => {
     const agents = parse(await readFile(agentsFile, "utf8"), { maxAliasCount: -1 }) as Record<string, Record<string, unknown>>;
     agents.shaghayegh!.codexConfig = { model_auto_compact_token_limit: 1 };
     await writeFile(agentsFile, stringify(agents));
-    await expect(loadConfig(entrypoint)).rejects.toThrow("defaults/agents.yaml: shaghayegh runs on Claude Code, which does not take codexConfig");
+    await expect(loadConfig(entrypoint, undefined, { plugins: PLUGINS })).rejects.toThrow("defaults/agents.yaml: shaghayegh runs on Claude Code, which does not take codexConfig");
   });
 
   test("implementation falls back from Kaveh on Codex to Jamshid on Claude Code (Haiku), with the same tools and worktree access", async () => {

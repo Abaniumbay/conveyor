@@ -30,7 +30,7 @@ const durationSchema = z
 /** Deliveries newer than this may still be redelivered, so their record must outlive it. */
 export const REDELIVERY_WINDOW_MS = 24 * 60 * 60_000;
 
-const absolutePathSchema = z
+export const absolutePathSchema = z
   .string()
   .min(1)
   .refine((value) => value.startsWith("/"), "must resolve to an absolute path");
@@ -230,7 +230,8 @@ const webSchema = z
 export const providerEntrySchema = z.object({ type: z.string().trim().min(1) }).catchall(z.unknown());
 export type ProviderEntry = z.output<typeof providerEntrySchema>;
 
-const controlPlaneHostsSchema = z
+/** Hosts a harness process itself may reach when egress is enforced: a setting of the harness plugins' runners. */
+export const controlPlaneHostsSchema = z
   .array(z.string())
   .optional()
   .superRefine((hosts, context) => {
@@ -239,39 +240,62 @@ const controlPlaneHostsSchema = z
     }
   });
 
-const codexRunnerSchema = z
-  .object({
-    type: z.literal("codex"),
-    command: z.string().min(1).default("codex"),
-    sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]).default("workspace-write"),
-    automaticApprovals: z.boolean().default(true),
-    /** Hosts the Codex process itself may reach when egress is enforced (default: ChatGPT and OpenAI). */
-    controlPlaneHosts: controlPlaneHostsSchema,
-  })
-  .strict();
-
-const claudeCodeRunnerSchema = z
-  .object({
-    type: z.literal("claude-code"),
-    command: z.string().min(1).default("claude"),
-    /** Claude Code's config directory (login and sessions); defaults to ~/.claude, the service user's login. */
-    configDir: absolutePathSchema.optional(),
-    /** Hosts the Claude Code process itself may reach when egress is enforced (default: Anthropic). */
-    controlPlaneHosts: controlPlaneHostsSchema,
-  })
-  .strict();
+/** The runner type of a JSON process (script stages): a core runner, not an agent harness. */
+export const JSON_PROCESS_RUNNER = "json-process";
 
 const processRunnerSchema = z
   .object({
-    type: z.literal("json-process"),
+    type: z.literal(JSON_PROCESS_RUNNER),
   })
   .strict();
 
-const runnerSchema = z.discriminatedUnion("type", [
-  codexRunnerSchema,
-  claudeCodeRunnerSchema,
-  processRunnerSchema,
-]);
+/**
+ * What the core reads from a harness runner once its plugin's schema completed it; a harness
+ * plugin's schema produces at least this. Which optional settings apply follows the plugin's
+ * profile: `sandbox` and `automaticApprovals` when the run's sandbox comes from the runner,
+ * `configDir` when the profile names a config-directory variable.
+ */
+export type HarnessRunnerConfig = {
+  type: string;
+  /** The harness's executable. */
+  command: string;
+  /** Hosts the harness process itself may reach when egress is enforced; absent: the profile's. */
+  controlPlaneHosts?: string[] | undefined;
+  /** The harness's own configuration directory (its login and sessions). */
+  configDir?: string | undefined;
+  sandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  automaticApprovals?: boolean;
+};
+
+export type JsonProcessRunnerConfig = { type: typeof JSON_PROCESS_RUNNER };
+
+/**
+ * A configured runner. A harness entry is complete only when the configuration was loaded with the
+ * plugins; without them it holds only what was written.
+ */
+export type RunnerConfig = JsonProcessRunnerConfig | HarnessRunnerConfig;
+
+/** Whether a runner is an agent harness rather than the core's JSON process. */
+export function isHarnessRunner(runner: RunnerConfig): runner is HarnessRunnerConfig {
+  return runner.type !== JSON_PROCESS_RUNNER;
+}
+
+/**
+ * A runner as the core sees it: a JSON process, validated here, or an agent harness, whose `type`
+ * picks the harness plugin whose schema validates and completes the rest when the configuration is
+ * loaded. The type is not trimmed: it must name a runner type exactly.
+ */
+const runnerSchema = z
+  .object({ type: z.string().min(1) })
+  .catchall(z.unknown())
+  .superRefine((entry, context) => {
+    if (entry.type !== JSON_PROCESS_RUNNER) return;
+    for (const issue of processRunnerSchema.safeParse(entry).error?.issues ?? []) {
+      context.addIssue({ code: "custom", path: issue.path, message: issue.message });
+    }
+  })
+  // Typed as the loader leaves it once the harness plugins completed the entry.
+  .transform((entry) => entry as RunnerConfig);
 
 /** A value home-expanded like a path when it starts with ~/, kept as is otherwise (environment values). */
 const homeExpandedSchema = z
