@@ -10,9 +10,11 @@ import type { DashboardSources } from "../app/dashboard-sources";
 import type { CodeHost } from "../codehost/types";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ConveyorConfig } from "../config/load";
+import type { HarnessRunnerConfig } from "../config/schema";
 import type { EventBus } from "../events/bus";
 import type { Observation } from "../events/catalogue";
-import type { Harness } from "../harness/types";
+import type { HarnessDoctorCheck, HarnessDoctorInput } from "../harness/doctor";
+import type { Harness, HarnessProfile } from "../harness/types";
 import type { DashboardReads } from "../web/server";
 
 /** What a plugin receives when it is built. */
@@ -109,6 +111,12 @@ export interface CiPlugin {
 export interface HarnessPlugin {
   readonly role: "harness";
   readonly type: string;
+  /** Validates and completes a configured runner of this type (`harnesses.<name>`). */
+  readonly configSchema: z.ZodType<HarnessRunnerConfig>;
+  /** How the core prepares this harness's runs, and which agents it can run (checked when the configuration loads). */
+  readonly profile: HarnessProfile;
+  /** Checks for `conveyor doctor` that a runner of this type can start; absent when there is nothing to check. */
+  doctor?(input: HarnessDoctorInput): HarnessDoctorCheck;
   create(context: PluginContext): Harness;
 }
 

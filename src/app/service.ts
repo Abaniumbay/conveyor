@@ -905,6 +905,7 @@ export class ConveyorService {
     return {
       config: this.config,
       store: this.store,
+      harnesses: this.#harnesses,
       repositorySummaries: (issues) => this.repositorySummaries(issues),
       repositoryErrors: () => [...this.#sync.onboardingErrors.entries(), ...this.#sync.reconcileErrors.entries()],
       lastReconciledAt: () => this.#sync.lastReconciledAt,

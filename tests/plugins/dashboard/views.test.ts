@@ -16,8 +16,14 @@ import { ItemTodos } from "../../../src/db/todos";
 import { ConsoleSink, type LogRecord, log } from "../../../src/log/logger";
 import { parseManagedSections } from "../../../src/source/managed-sections";
 import { dashboardViews, webDependenciesOf } from "../../support/dashboard";
+import { pluginContext, PluginRegistry } from "../../../src/core/plugins";
+import { PLUGINS } from "../../../src/plugins";
 
 const temporaryDirectories: string[] = [];
+
+/** The shipped harnesses, which report each runner's quota, as `conveyor serve` registers them. */
+const shippedHarnesses = (config: ConveyorConfig) =>
+  new PluginRegistry(PLUGINS.filter((plugin) => plugin.role === "harness"), pluginContext(config)).harnesses();
 
 afterEach(async () => {
   log.configure({ sinks: [new ConsoleSink()] });
@@ -130,7 +136,7 @@ describe("ConveyorService dashboard", () => {
       repositories: {}, agents: {}, pipelines: {},
       labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: { closable: "conveyor:closable" } },
     } as unknown as ConveyorConfig;
-    const service = new ConveyorService(config, store, {} as never);
+    const service = new ConveyorService(config, store, {} as never, { harnesses: shippedHarnesses(config) });
     const auth = createWebAuth({
       username: "operator",
       passwordHash: hashPassword("correct horse", { salt: "0123456789abcdef" }),
@@ -567,7 +573,7 @@ describe("ConveyorService dashboard", () => {
       },
     } });
 
-    const service = new ConveyorService(config, store, {} as never);
+    const service = new ConveyorService(config, store, {} as never, { harnesses: shippedHarnesses(config) });
     const html = renderDashboard(dashboardViews(service).dashboard("csrf"));
     expect(html).toContain("82% left");
     expect(html).toContain("94% left");
@@ -2596,7 +2602,7 @@ describe("ConveyorService dashboard", () => {
       deadlineAt: "2099-09-29T12:00:00Z",
     }, epoch);
 
-    const service = new ConveyorService(config, store, {} as never);
+    const service = new ConveyorService(config, store, {} as never, { harnesses: shippedHarnesses(config) });
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.CODEX_HOME = path.join(root, "empty-codex-home");
     const dashboard = dashboardViews(service).dashboard("csrf", {

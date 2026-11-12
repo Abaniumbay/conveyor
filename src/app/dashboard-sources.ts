@@ -5,6 +5,7 @@
 
 import type { ConveyorConfig } from "../config/load";
 import type { StoredIssue } from "../db/store";
+import type { Harness } from "../harness/types";
 import type { AccountStore, ConversationStore, DatabaseStore, EvidenceStore, ItemStore, JournalStore, RunLogStore } from "../db/ports";
 import type { IssueCriterionViewModel, IssueJourneyViewModel, IssueWaitingViewModel, ManualGateViewModel } from "../web/types";
 import type { RepositorySummaries } from "./repository-summary";
@@ -45,6 +46,8 @@ export interface DrainState {
 export interface DashboardSources {
   readonly config: ConveyorConfig;
   readonly store: DashboardStore;
+  /** The registered harnesses by runner type, which report each runner's quota. */
+  readonly harnesses: Readonly<Record<string, Pick<Harness, "quota">>>;
   /** Each repository's health, startup phase and errors, for `issues` (every item when omitted). */
   repositorySummaries(issues?: readonly StoredIssue[]): RepositorySummaries;
   /** Onboarding errors, then reconciliation errors, by repository id. */

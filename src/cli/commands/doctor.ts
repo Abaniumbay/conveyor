@@ -11,8 +11,9 @@ import { publicRepositoryTrustPolicy } from "../../source/trust";
 import { CALL_SOURCES } from "../../source/calls";
 import type { GitHubCallReport } from "../../app/control-sources";
 import { EXIT } from "../args";
+import { isHarnessRunner } from "../../config/schema";
+import type { HarnessPlugin } from "../../core/plugins";
 import { probeAgentMcpServers } from "../../isolation/mcp-probe";
-import { agentLaunchCommand } from "../../isolation/sandbox";
 import { agentEgressFor } from "../../isolation/agent-egress";
 import { protectedServiceLocations, resolveToolchainPaths } from "../../isolation/toolchain-paths";
 import { resolveFilesystemPath } from "../../core/paths";
@@ -70,19 +71,9 @@ function tool(name: string, command: string, install: string, find: ToolFinder =
   return find(command) ? null : { name, status: "fail", detail: `${command} is not on PATH`, fix: install };
 }
 
-/** Agents are launched confined by their resolved path, so a command that does not resolve cannot start. */
-function confinedLaunchFailure(runnerName: string, command: string, found: string): DoctorCheck | null {
-  try {
-    agentLaunchCommand({ command: found, env: {} });
-    return null;
-  } catch {
-    return {
-      name: `harness ${runnerName}`,
-      status: "fail",
-      detail: `${command} (${found}) cannot be resolved to an installed executable for confined launch`,
-      fix: `point the runner's command at a working install: repair or reinstall ${command} (a broken symlink is the usual cause), or set the command to its absolute path`,
-    };
-  }
+/** The shipped plugin of a harness type, which supplies its runners' doctor check. */
+function harnessPlugin(type: string): HarnessPlugin | undefined {
+  return PLUGINS.find((plugin): plugin is HarnessPlugin => plugin.role === "harness" && plugin.type === type);
 }
 
 function codexIsolationConfigured(config: Pick<CodexIsolationConfig, "agents" | "runners">): boolean {
@@ -250,11 +241,9 @@ export async function doctorReport(
     const used = new Set(Object.values(config.agents).map((agent) => agent.runner));
     for (const name of [...used].sort()) {
       const runner = config.runners[name];
-      if (!runner || !("command" in runner)) continue;
-      const missing = tool(`harness ${name}`, runner.command, `install ${runner.command} and authenticate it as the account Conveyor runs under`, find);
-      const found = find(runner.command);
-      const confined = !missing && found && (runner.type === "codex" || runner.type === "claude-code") ? confinedLaunchFailure(name, runner.command, found) : null;
-      checks.push(missing ?? confined ?? { name: `harness ${name}`, status: "ok", detail: found! });
+      if (!runner || !isHarnessRunner(runner)) continue;
+      const check = harnessPlugin(runner.type)?.doctor?.({ runnerName: name, runner, findTool: find });
+      if (check) checks.push(check);
     }
     checks.push(...await mcpServerChecks(config, runtime.probeMcp, config));
     for (const command of scriptInterpreters(config)) {

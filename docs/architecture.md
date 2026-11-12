@@ -105,14 +105,17 @@ the rule new code follows; the current state is tracked by the boundary test.
   becomes one with its ports.
   `src/plugins/index.ts` lists them and the composition root (`src/cli/commands/serve.ts`) is the
   only place that registers them. Plugins of one provider share a client through the plugin
-  context, never by importing each other. Each item source, code host and CI plugin owns its
-  configuration schema: the core schema knows only an entry's `type`, and loading the configuration
-  validates the rest with the plugin's schema. A harness plugin (`src/plugins/codex/`,
-  `src/plugins/claude-code/`) holds its runner and declares a `HarnessProfile`: where a run's
-  sandbox mode and approvals come from, whether an agent may withhold the shell, which variable
-  names the runner's config directory, whether it takes extra settings, its control-plane hosts
-  and credential variables. The core prepares runs from the profile and reaches legacy producers,
-  legacy checks and the Operator through the harness, never by importing a runner. Each plugin
+  context, never by importing each other. Each item source, code host, CI and harness plugin owns
+  its configuration schema: the core schema knows only an entry's `type` (and the core's own
+  `json-process` runner), and loading the configuration validates the rest with the plugin's
+  schema. A harness plugin (`src/plugins/codex/`, `src/plugins/claude-code/`) holds its runner and
+  declares a `HarnessProfile`: where a run's sandbox mode and approvals come from, whether an agent
+  may withhold the shell, which variable names the runner's config directory, whether it takes
+  extra settings, whether it can run a confined agent, whether a workspace-write agent needs the
+  network, its control-plane hosts and credential variables. The loader checks agents against the
+  profile; the core prepares runs from it and reaches legacy producers, legacy checks, the
+  Operator, the harness's usage quota (`Harness.quota`, shown on the dashboard) and its
+  `conveyor doctor` check through the plugin, never by importing a runner. Each plugin
   picks its own launch (Codex's shell policy arguments, Claude Code's shell prefix) from
   `src/isolation/`.
 - **Events:** plugins report what they observe as events; the core compares them with what it

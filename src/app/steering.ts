@@ -21,6 +21,7 @@ import { criteriaOf } from "../tasks/item";
 import { latestStopReason } from "./item-history";
 import type { ScheduledRetryCheck } from "./retry";
 import type { ScopedMcpLease } from "./runtime";
+import { isHarnessRunner, type HarnessRunnerConfig } from "../config/schema";
 
 /** The read-only Operator tools plus the recorder; a stop-summary run is granted exactly these. */
 const STOP_SUMMARY_TOOLS = ["operator.getBoard", "operator.findItem", "operator.getItemHistory", "operator.recordStopSummary"] as const;
@@ -38,7 +39,7 @@ type ScheduledOperatorCheck = {
   outcomes: Map<string, ScheduledOperatorOutcome>;
 };
 type ItemReference = { id: string; repositoryId: string; number: number; url: string; title: string };
-type CodexRunner = Extract<ConveyorConfig["runners"][string], { type: "codex" }>;
+type CodexRunner = HarnessRunnerConfig;
 
 export interface SteeringDeps {
   config: ConveyorConfig;
@@ -321,7 +322,7 @@ export class Steering {
       const agent = config.agents[agentId];
       if (!agent) throw new Error(`Unknown steering agent: ${agentId}`);
       const runner = config.runners[agent.runner];
-      if (!runner || runner.type === "json-process") {
+      if (!runner || !isHarnessRunner(runner)) {
         throw new Error(`The steering agent ${agentId} must use a Codex or Claude Code runner`);
       }
       const harness = this.#deps.harnesses[runner.type];
@@ -427,9 +428,9 @@ export class Steering {
         ].join("\n"),
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
-        sandbox: agent.workspaceAccess === "workspace-write" ? runner.sandbox : "read-only",
+        sandbox: agent.workspaceAccess === "workspace-write" ? runner.sandbox ?? "read-only" : "read-only",
         ...(agent.workspaceAccess === "confined" ? { filesystem: "scratch" as const } : {}),
-        automaticApprovals: runner.automaticApprovals,
+        automaticApprovals: runner.automaticApprovals ?? false,
         mcp: lease.configuration,
         interruptGraceMs: config.settings.interruptGraceMs,
         signal,

@@ -323,13 +323,13 @@ repositories:
     async function load(agentLines: string) {
       const directory = await temporaryDirectory();
       await writeFile(path.join(directory, "conveyor.yml"), configWith(agentLines));
-      return loadConfig(directory);
+      return loadConfig(directory, undefined, { plugins: PLUGINS });
     }
     async function rejectionMessage(config: string) {
       const directory = await temporaryDirectory();
       await writeFile(path.join(directory, "conveyor.yml"), config);
       try {
-        await loadConfig(directory);
+        await loadConfig(directory, undefined, { plugins: PLUGINS });
       } catch (error) {
         if (error instanceof Error) return error.message;
         throw error;
@@ -686,5 +686,79 @@ repositories:
       - { id: implementation, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }`),
     );
     await expect(loadConfig(withoutMerge)).rejects.toThrow(/repositories.sample.inFlight requires pipeline "default" to include a stage with the change.merge action/);
+  });
+});
+
+describe("harness runners", () => {
+  const RUNNERS = "runners:\n  codex: { type: codex }\n  claude: { type: claude-code }\n  process: { type: json-process }\n";
+
+  async function loadWith(body: string, options: { plugins?: boolean } = {}) {
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, "conveyor.yaml"), `${LABELS}${body}`);
+    return loadConfig(directory, null, options.plugins === false ? {} : { plugins: PLUGINS });
+  }
+
+  /** The runners above and one agent `worker` on `runner`, with extra agent lines. */
+  const agentOn = (runner: string, ...lines: string[]) =>
+    `${RUNNERS}agents:\n  worker:\n    runner: ${runner}\n    instructions: /tmp/worker.md\n${lines.map((line) => `    ${line}\n`).join("")}`;
+
+  test("each harness plugin's schema completes its runners with their defaults", async () => {
+    const config = await loadWith(RUNNERS);
+    expect(config.runners.codex).toEqual({ type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true });
+    expect(config.runners.claude).toEqual({ type: "claude-code", command: "claude" });
+    expect(config.runners.process).toEqual({ type: "json-process" });
+  });
+
+  test("a runner completed with its defaults hashes like one written out in full", async () => {
+    const directory = await temporaryDirectory();
+    const hashOf = async (body: string) => {
+      await writeFile(path.join(directory, "conveyor.yaml"), `${LABELS}${body}`);
+      return (await loadConfig(directory, null, { plugins: PLUGINS })).hash;
+    };
+    const written = await hashOf("runners:\n  codex: { type: codex, command: codex, sandbox: workspace-write, automaticApprovals: true }\n  claude: { type: claude-code, command: claude }\n  process: { type: json-process }\n");
+    expect(await hashOf(RUNNERS)).toBe(written);
+  });
+
+  test("a setting the runner's harness does not take is refused", async () => {
+    await expect(loadWith("runners:\n  codex: { type: codex, configDir: /tmp/codex }\n")).rejects.toThrow(/runners\.codex.*Unrecognized key: "configDir"/s);
+    await expect(loadWith("runners:\n  claude: { type: claude-code, sandbox: read-only }\n")).rejects.toThrow(/runners\.claude.*Unrecognized key: "sandbox"/s);
+    await expect(loadWith("runners:\n  process: { type: json-process, command: run }\n")).rejects.toThrow(/runners\.process.*Unrecognized key: "command"/s);
+  });
+
+  test("the harness plugin validates a runner's settings", async () => {
+    await expect(loadWith("runners:\n  claude: { type: claude-code, configDir: relative/claude }\n")).rejects.toThrow(/runners\.claude\.configDir.*must resolve to an absolute path/s);
+  });
+
+  test("a runner type no harness plugin provides is an error naming the known types", async () => {
+    await expect(loadWith("runners:\n  pi: { type: pi }\n")).rejects.toThrow(/runners\.pi\.type.*no harness plugin provides type "pi" \(known: codex, claude-code, json-process\)/s);
+    await expect(loadWith("runners:\n  codex: { type: \" codex\" }\n")).rejects.toThrow(/runners\.codex\.type.*no harness plugin provides type " codex"/s);
+  });
+
+  test("without plugins a harness runner is checked only for its type and kept as written", async () => {
+    const config = await loadWith("runners:\n  codex: { type: codex, extra: 1 }\n", { plugins: false });
+    // Typed as a completed runner, but no plugin completed it.
+    const written: unknown = config.runners.codex;
+    expect(written).toEqual({ type: "codex", extra: 1 });
+    await expect(loadWith("runners:\n  process: { type: json-process, command: run }\n", { plugins: false })).rejects.toThrow(/Unrecognized key: "command"/);
+  });
+
+  test("an agent's access must suit its runner's harness", async () => {
+    await expect(loadWith(agentOn("claude", "workspaceAccess: confined"))).rejects.toThrow("agents.worker uses access: confined, which requires the Codex runner");
+    await expect(loadWith(agentOn("process", "workspaceAccess: confined"))).rejects.toThrow("agents.worker uses access: confined, which requires the Codex runner");
+    await expect(loadWith(agentOn("process", "workspaceAccess: confined"), { plugins: false })).rejects.toThrow("agents.worker uses access: confined, which requires a harness that can confine it");
+    await expect(loadWith(agentOn("codex", "workspaceAccess: confined", "writableRoots: [/tmp/cache]"))).rejects.toThrow("agents.worker is confined, so writableRoots does not apply");
+    await expect(loadWith(agentOn("claude", "workspaceAccess: workspace-write"))).rejects.toThrow("agents.worker runs on Claude Code with access: workspace-write, which needs network: true (its commands cannot be kept off the network yet)");
+    await expect(loadWith(agentOn("claude", "workspaceAccess: read-only", "writableRoots: [/tmp/cache]"))).rejects.toThrow("agents.worker is read-only, so writableRoots does not apply");
+    await expect(loadWith(agentOn("codex", "shell: false"))).rejects.toThrow('agents.worker sets shell: false, but Codex reaches files only through its shell, so agent "worker" cannot run without one');
+    await expect(loadWith(agentOn("claude", "workspaceAccess: read-only", "codexConfig: { model_auto_compact_token_limit: 1 }"))).rejects.toThrow("agents.worker runs on Claude Code, which does not take codexConfig");
+  });
+
+  test("an agent its runner's harness can run is accepted", async () => {
+    expect((await loadWith(agentOn("codex", "workspaceAccess: confined"))).agents.worker?.workspaceAccess).toBe("confined");
+    expect((await loadWith(agentOn("codex", "workspaceAccess: workspace-write"))).agents.worker?.network).toBe(false);
+    expect((await loadWith(agentOn("codex", "workspaceAccess: read-only", "writableRoots: [/tmp/cache]"))).agents.worker?.writableRoots).toEqual(["/tmp/cache"]);
+    expect((await loadWith(agentOn("claude", "workspaceAccess: workspace-write", "network: true"))).agents.worker?.network).toBe(true);
+    expect((await loadWith(agentOn("claude", "workspaceAccess: read-only", "shell: false"))).agents.worker?.shell).toBe(false);
+    expect((await loadWith(agentOn("codex", "codexConfig: { model_auto_compact_token_limit: 1 }"))).agents.worker?.codexConfig).toEqual({ model_auto_compact_token_limit: 1 });
   });
 });
