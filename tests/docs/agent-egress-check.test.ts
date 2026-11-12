@@ -10,3 +10,10 @@ test("operations guide shows how to run the egress check against an installed ho
   expect(operations).toMatch(/--runner <runner-id> --live/);
   expect(operations).toMatch(/before turning on `agentEgress` for\s+Claude Code agents/i);
 });
+
+test("operations guide says --live uses the runner's sign-in and runs as the service account", async () => {
+  const operations = await readFile(path.join(import.meta.dir, "../../docs/operations.md"), "utf8");
+
+  expect(operations).toMatch(/with the runner's sign-in/);
+  expect(operations).toMatch(/Run it as the account the service runs as/);
+});
