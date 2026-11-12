@@ -3,11 +3,16 @@
 import { z } from "zod";
 
 import { defineGroup, pass, type TaskDefinition } from "./contract";
-import type { TaskDeps } from "./deps";
+import type { TaskDeps, TaskStore } from "./deps";
+
+/** What the conversation group uses: the item's conversation messages. */
+export interface ConversationTaskDeps extends Pick<TaskDeps, "issueId"> {
+  store: Pick<TaskStore, "listConversationMessages">;
+}
 
 const getInput = z.object({ limit: z.number().optional() });
 
-const get: TaskDefinition<unknown, z.output<typeof getInput>, TaskDeps> = {
+const get: TaskDefinition<unknown, z.output<typeof getInput>, ConversationTaskDeps> = {
   name: "conversation.get",
   kind: "tool",
   description: "Read the shared conversation of the current item (the latest 100 messages at most).",
@@ -23,4 +28,4 @@ const get: TaskDefinition<unknown, z.output<typeof getInput>, TaskDeps> = {
   },
 };
 
-export const conversationGroup = defineGroup("conversation", [get]);
+export const conversationGroup = defineGroup<ConversationTaskDeps>("conversation", [get]);

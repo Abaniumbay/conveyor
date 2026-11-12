@@ -185,7 +185,12 @@ a service mutation directly.
 1. Define it in the right group file in `src/tasks/` with `defineGroup`. Declare `kind`
    (`load`, `check`, `act`, `tool`), `reads`, `writes`, `invalidates`, its zod `config` / `input`
    schema and a precise `description` (it becomes documentation and the agent-facing tool text).
-2. A new group is registered in `src/tasks/catalogue.ts`.
+2. Type the task's `deps` with its group's narrow dependency type (`ItemTaskDeps`, `ChangeTaskDeps`,
+   `CiTaskDeps`, …): a `Pick` of `TaskDeps` and only the store and port methods the group calls
+   (`Pick<TaskStore, …>`, `Pick<CodeHost, …>`). Add a field there when a task needs it; never type a
+   task or helper with the whole `TaskDeps`. A new group declares its own type, passes it to
+   `defineGroup<…>`, and is registered in `src/tasks/catalogue.ts` (native groups in
+   `NATIVE_GROUPS`, where the compiler checks that `TaskDeps` satisfies it).
 3. `tool` tasks are named in camelCase (`change.setMetadata`) and must check their preconditions
    through the dispatcher (an input `headSha` must equal the live change head).
 4. Run `bun run docs:tasks` and commit `docs/tasks.md`. `tests/tasks/docs.test.ts` fails otherwise.

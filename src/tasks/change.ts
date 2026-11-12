@@ -10,11 +10,20 @@ import { changeTopic } from "../events/topics";
 import { parseManagedSections } from "../source/managed-sections";
 import type { ChangeContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
-import { checkCriterion, criterionTestsPassed, criterionTestsVerified, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, recordCriterionTests, syncChecklist, uncheckCriterion } from "./change-criteria";
-import { findingsResolved, findingsView, reviewThreadsResolved, findingTools, importNativeReview } from "./change-findings";
-import type { TaskDeps } from "./deps";
+import { checkCriterion, criterionTestsPassed, criterionTestsVerified, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, recordCriterionTests, syncChecklist, uncheckCriterion, type ChangeCriteriaDeps } from "./change-criteria";
+import { findingsResolved, findingsView, reviewThreadsResolved, findingTools, importNativeReview, type ChangeFindingsDeps } from "./change-findings";
+import type { TaskDeps, TaskStore } from "./deps";
 
-type Deps = TaskDeps;
+/**
+ * What the change group uses: its criterion and finding tasks' dependencies, the stored change and
+ * workspace, the delivery state and the whole code host (opening a change pushes the branch too).
+ */
+export type ChangeTaskDeps = ChangeCriteriaDeps & ChangeFindingsDeps & Pick<TaskDeps, "delivery"> & {
+  store: Pick<TaskStore, "getActiveWorkspace" | "getIssue" | "getCurrentPullRequest" | "reviewThreads" | "upsertPullRequest">;
+  codeHost?: CodeHost | null;
+};
+
+type Deps = ChangeTaskDeps;
 type Args<C = unknown, I = unknown> = TaskArgs<C, I, Deps>;
 
 const NO_CHANGE = "No change request exists yet";
@@ -242,4 +251,4 @@ const setMetadata: TaskDefinition<unknown, z.output<typeof metadataInput>, Deps>
   },
 };
 
-export const changeGroup = defineGroup("change", [load, ensure, merge, headUnchanged, mergeable, merged, criteriaInSync, criteriaChecked, criterionTestsVerified, criterionTestsPassed, get, setMetadata, checkCriterion, uncheckCriterion, recordCriterionTests, findingsResolved, reviewThreadsResolved, ...findingTools]);
+export const changeGroup = defineGroup<ChangeTaskDeps>("change", [load, ensure, merge, headUnchanged, mergeable, merged, criteriaInSync, criteriaChecked, criterionTestsVerified, criterionTestsPassed, get, setMetadata, checkCriterion, uncheckCriterion, recordCriterionTests, findingsResolved, reviewThreadsResolved, ...findingTools]);

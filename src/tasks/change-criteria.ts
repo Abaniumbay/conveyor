@@ -10,10 +10,18 @@ import { criterionTextHash, isCriterionApprovedAt, type CriterionApprovals } fro
 import { formatAcceptanceCriteria, ManagedSectionError, parseManagedSections } from "../source/managed-sections";
 import type { ChangeContext } from "./context";
 import { fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
-import type { TaskDeps } from "./deps";
+import type { TaskDeps, TaskStore } from "./deps";
 import { criteriaOf } from "./item";
 
-type Deps = TaskDeps;
+/** What the criterion tasks of the change group use: approvals, test evidence, the change and the CI provider's test reports. */
+export interface ChangeCriteriaDeps extends Pick<TaskDeps, "config" | "repository" | "issueId" | "run"> {
+  store: Pick<TaskStore, "getIssue" | "getCurrentPullRequest" | "criterionApprovals" | "criterionTestEvidence" | "replaceCriterionTestEvidence" | "refreshCriterionTestEvidence">;
+  codeHost?: Pick<CodeHost, "getChange" | "setChangeChecklist" | "sourceFileUrl" | "readFileAtRevision"> | null;
+  ci?: Pick<NonNullable<TaskDeps["ci"]>, "provider">;
+}
+
+type Deps = ChangeCriteriaDeps;
+type CriteriaHost = NonNullable<Deps["codeHost"]>;
 
 const criterionInput = z.object({ criterionId: z.string().min(1), headSha: z.string().min(1) }).strict();
 type CriterionInput = z.output<typeof criterionInput>;
@@ -135,7 +143,7 @@ export function projectedChecklist(body: string): { checked: Map<string, boolean
 export type SyncResult = { ok: true } | { ok: false; malformed: boolean; message: string };
 
 /** The checklist markdown for the item's criteria, or the reason it cannot be rendered (invalid or duplicate ids). */
-function render(deps: Deps, headSha: string | null, host?: CodeHost): { markdown: string } | { error: string } {
+function render(deps: Deps, headSha: string | null, host?: CriteriaHost): { markdown: string } | { error: string } {
   const approvals = new Map(deps.store.criterionApprovals().list(deps.issueId).map((a) => [a.criterionId, a]));
   const evidence = new Map(deps.store.criterionTestEvidence(deps.issueId).map((entry) => [entry.criterionId, entry]));
   const criteria = criteriaOf(deps.store.getIssue(deps.issueId)?.body ?? "");
@@ -160,7 +168,7 @@ function render(deps: Deps, headSha: string | null, host?: CodeHost): { markdown
 }
 
 /** Renders the item's criteria into the change body, skipping the write when it already matches. Never throws on a malformed body. */
-export async function syncChecklist(host: CodeHost, deps: Deps, changeId: string): Promise<SyncResult> {
+export async function syncChecklist(host: CriteriaHost, deps: Deps, changeId: string): Promise<SyncResult> {
   const address = deps.repository.address;
   const live = await host.getChange({ address, id: changeId });
   const body = live.body ?? "";

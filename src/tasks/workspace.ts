@@ -10,12 +10,20 @@ import { z } from "zod";
 import type { WorkspaceContext } from "./context";
 import { defineGroup, fail, pass, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
+import type { CodeHost } from "../codehost/types";
+import type { ItemStore } from "../db/ports";
 import { ToolRequestError } from "./errors";
 import { linkExistingChange } from "../codehost/actions";
 import { GitPushRejectedError } from "../workspace/git";
 import { ensureWorkspace, removeWorkspace } from "../workspace/lifecycle";
 
-type Deps = TaskDeps;
+/** What the workspace group uses: the stored workspace, git, the worktree manager and branch cleanup on the code host. */
+export interface WorkspaceTaskDeps extends Pick<TaskDeps, "repository" | "issueId" | "git" | "workspaces" | "delivery" | "forgetChange"> {
+  store: ItemStore;
+  codeHost?: Pick<CodeHost, "findOpenChange" | "deleteBranch"> | null;
+}
+
+type Deps = WorkspaceTaskDeps;
 type Args<I = unknown> = TaskArgs<unknown, I, Deps>;
 
 const emptyInput = z.object({});
@@ -213,4 +221,4 @@ const push = unjournaled(tool("workspace.push", "Push the workspace branch to or
     return { accepted: true };
   }, ["workspace"]));
 
-export const workspaceGroup = defineGroup("workspace", [load, ensure, pushed, cleanup, removed, get, fetch, push]);
+export const workspaceGroup = defineGroup<WorkspaceTaskDeps>("workspace", [load, ensure, pushed, cleanup, removed, get, fetch, push]);

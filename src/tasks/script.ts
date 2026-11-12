@@ -10,9 +10,14 @@ import { resolveFilesystemPath } from "../core/paths";
 import { scriptCommand } from "../self";
 import type { ScriptContext, ScriptRecoveryObservation, ScriptRecoveryRequest } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, TransientScriptError, type TaskArgs, type TaskDefinition } from "./contract";
-import type { TaskDeps } from "./deps";
+import type { TaskDeps, TaskStore } from "./deps";
 
-type Deps = TaskDeps;
+/** What the script group uses: the stored item and workspace, the repository folder and the interrupt signal. */
+export interface ScriptTaskDeps extends Pick<TaskDeps, "config" | "repository" | "issueId" | "signal"> {
+  store: Pick<TaskStore, "getIssue" | "getActiveWorkspace">;
+}
+
+type Deps = ScriptTaskDeps;
 type ScriptResult = ScriptContext["results"][string];
 type Recovery = ScriptResult["recovery"];
 
@@ -171,4 +176,4 @@ const succeeded: TaskDefinition<z.output<typeof succeededConfig>> = {
   },
 };
 
-export const scriptGroup = defineGroup("script", [run, succeeded]);
+export const scriptGroup = defineGroup<ScriptTaskDeps>("script", [run, succeeded]);

@@ -6,7 +6,7 @@ import { z } from "zod";
 
 import { STOP_SUMMARY_MAX_LENGTH, stopSummaryFormatError } from "../db/store";
 import { defineGroup, pass, type TaskDefinition } from "./contract";
-import type { TaskDeps } from "./deps";
+import type { TaskDeps, TaskStore } from "./deps";
 
 const emptyInput = z.object({}).strict();
 const findItemInput = z.object({ reference: z.string().min(1) }).strict();
@@ -63,7 +63,12 @@ const moveInput = z.object({
   }
 });
 
-type Deps = TaskDeps;
+/** What the operator group uses: the steering facade, the steering run and its audit events and stop summaries. */
+export interface OperatorTaskDeps extends Pick<TaskDeps, "operator" | "run"> {
+  store: Pick<TaskStore, "appendRunEvent" | "recordStopSummary">;
+}
+
+type Deps = OperatorTaskDeps;
 
 function operator(deps: Deps): NonNullable<Deps["operator"]> {
   if (!deps.operator) throw new Error("operator tools require an active steering run");
@@ -223,7 +228,7 @@ export const OPERATOR_STEERING_TOOLS = new Set([
   "operator.recordStopSummary",
 ]);
 
-export const operatorGroup = defineGroup("operator", [
+export const operatorGroup = defineGroup<OperatorTaskDeps>("operator", [
   board,
   findItem,
   itemHistory,

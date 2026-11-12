@@ -1,5 +1,7 @@
-// The dependencies the engine hands to non-check tasks of native stages. Each task group
-// extends this interface with the fields it needs; the IssueExecutor builds one value per item.
+// The dependencies the engine hands to non-check tasks of native stages. The IssueExecutor and the
+// MCP dispatcher build one value per item; each task group declares the narrow part of it that its
+// tasks use (`ItemTaskDeps`, `ChangeTaskDeps`, …), and src/tasks/catalogue.ts makes the compiler
+// prove this value satisfies every group.
 
 import type { CodeHost } from "../codehost/types";
 import type { ConveyorConfig } from "../config/load";

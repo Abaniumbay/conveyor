@@ -17,9 +17,16 @@ import { changeTopic, ciTopic } from "../events/topics";
 import type { CiGateObservation } from "../db/journal";
 import type { ChangeContext, CiContext } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
-import type { TaskDeps } from "./deps";
+import type { EvidenceStore, JournalStore } from "../db/ports";
+import type { TaskDeps, TaskStore } from "./deps";
 
-type Deps = TaskDeps;
+/** What the ci group uses: the CI provider, the gate's journal marks and indicators, the stored change and the code host's change reads. */
+export interface CiTaskDeps extends Pick<TaskDeps, "config" | "repository" | "issueId" | "ci" | "notify" | "clock"> {
+  store: JournalStore & EvidenceStore & Pick<TaskStore, "getCurrentPullRequest">;
+  codeHost?: Pick<CodeHost, "getChangeDelivery"> | null;
+}
+
+type Deps = CiTaskDeps;
 type Args<C = unknown, I = unknown> = TaskArgs<C, I, Deps>;
 
 const NO_CHANGE = "No change request exists yet";
@@ -367,7 +374,7 @@ async function logs(
   if (!stored) {
     return pass({ change: null, pullRequest: null, checks: [], note: "No pull request exists yet; CI runs after implementation opens it." });
   }
-  const host: CodeHost | null | undefined = deps.codeHost;
+  const host = deps.codeHost;
   if (!host) throw new Error(`no code host configured for ${deps.issueId}`);
   const address = deps.repository.address;
   const delivery = await host.getChangeDelivery({ address, id: stored.id });
@@ -397,4 +404,4 @@ const getLogs: TaskDefinition<unknown, z.output<typeof logsInput>, Deps> = {
   run: logs,
 };
 
-export const ciGroup = defineGroup("ci", [load, start, defined, passed, settled, getLogs]);
+export const ciGroup = defineGroup<CiTaskDeps>("ci", [load, start, defined, passed, settled, getLogs]);

@@ -5,10 +5,18 @@
 import type { CiChange, CiRun } from "../app/ci-provider";
 import { summarizeTodos } from "../db/todos";
 import { inspectWorktree } from "../workspace/git";
-import { importNativeReview } from "./change-findings";
+import { importNativeReview, type ChangeFindingsDeps } from "./change-findings";
 import { agentActor, concise } from "./agent-support";
+import type { CodeHost } from "../codehost/types";
 import type { StoredQuestion } from "../db/store";
-import type { TaskDeps } from "./deps";
+import type { TaskDeps, TaskStore } from "./deps";
+
+/** What the handover reads: todos, answered questions, findings (refreshed from the code host), the change, its CI and earlier runs. */
+export type HandoverDeps = ChangeFindingsDeps & Pick<TaskDeps, "config" | "repository" | "issueId"> & {
+  store: Pick<TaskStore, "todos" | "getIssue" | "getCurrentPullRequest" | "findings" | "listAnsweredQuestionsForStage" | "listRunsForStage" | "listRunEvents">;
+  codeHost?: Pick<CodeHost, "getChangeDelivery"> | null;
+  ci?: Pick<NonNullable<TaskDeps["ci"]>, "provider">;
+};
 
 export const HANDOVER_LIMITS = {
   todos: 40,
@@ -40,7 +48,7 @@ function finishedProgress(items: Parameters<typeof summarizeTodos>[0]): string |
   return `${summary.finished}/${summary.total} finished${summary.skipped > 0 ? `, ${summary.skipped} skipped` : ""}`;
 }
 
-function todosPart(deps: TaskDeps) {
+function todosPart(deps: HandoverDeps) {
   const items = deps.store.todos().get(deps.issueId)?.items ?? [];
   if (items.length === 0) return { present: false, note: "This item has no todo list yet.", items: [], progress: null, truncated: null };
   const { shown, truncated } = bounded(items, HANDOVER_LIMITS.todos, "todos", "todo.get");
@@ -60,7 +68,7 @@ function answerText(question: StoredQuestion): string {
   return typeof answer === "string" ? answer : JSON.stringify(answer);
 }
 
-function answeredQuestionsPart(deps: TaskDeps, stageId: string) {
+function answeredQuestionsPart(deps: HandoverDeps, stageId: string) {
   const questions = deps.store.listAnsweredQuestionsForStage(deps.issueId, stageId);
   if (questions.length === 0) return { count: 0, note: `No earlier answered questions are stored for the ${stageId} stage.`, items: [], truncated: null };
   const shown = questions.slice(-HANDOVER_LIMITS.answeredQuestions);
@@ -86,7 +94,7 @@ function answeredQuestionsPart(deps: TaskDeps, stageId: string) {
   };
 }
 
-async function findingsPart(deps: TaskDeps) {
+async function findingsPart(deps: HandoverDeps) {
   // Same refresh as change.listFindings: threads resolved or added on the host since the last load.
   const stored = deps.store.getCurrentPullRequest(deps.issueId);
   if (stored && deps.codeHost) {
@@ -108,7 +116,7 @@ async function findingsPart(deps: TaskDeps) {
   };
 }
 
-async function changePart(deps: TaskDeps) {
+async function changePart(deps: HandoverDeps) {
   const stored = deps.store.getCurrentPullRequest(deps.issueId);
   if (!stored) return { exists: false, note: "No change request exists yet." };
   if (!deps.codeHost) return { exists: true, available: false, note: "The change request cannot be read: no code host is configured. Use change.get." };
@@ -124,7 +132,7 @@ async function changePart(deps: TaskDeps) {
   }
 }
 
-async function ciPart(deps: TaskDeps, target: CiChange, headSha: string) {
+async function ciPart(deps: HandoverDeps, target: CiChange, headSha: string) {
   if (!deps.ci) return { available: false, note: "CI results are not available: no CI provider is configured. Use change.get." };
   try {
     // The provider lists runs of exactly this head; a later run of a check replaces an earlier one.
@@ -142,7 +150,7 @@ async function ciPart(deps: TaskDeps, target: CiChange, headSha: string) {
 const DISCARD_WARNING = (kind: string, commit: string | null) =>
   `A ${kind} is in progress in this worktree${commit ? ` and stopped on commit ${commit}` : ""}. Inspect it with git status, then finish it or redo it. Its work is intended work: do not discard it (no reset --hard, ${kind} --skip or --abort) without first understanding and preserving what it carries.`;
 
-async function worktreePart(deps: TaskDeps, workspace: { path: string; branch: string }) {
+async function worktreePart(deps: HandoverDeps, workspace: { path: string; branch: string }) {
   const unavailable = "unavailable";
   const state = await inspectWorktree(workspace.path, deps.repository.baseBranch).catch(() => null);
   const base = `origin/${deps.repository.baseBranch}`;
@@ -159,7 +167,7 @@ async function worktreePart(deps: TaskDeps, workspace: { path: string; branch: s
   };
 }
 
-function previousRunPart(deps: TaskDeps, stageId: string, currentRunId: string, agentId: string, kind: string) {
+function previousRunPart(deps: HandoverDeps, stageId: string, currentRunId: string, agentId: string, kind: string) {
   const previous = deps.store.listRunsForStage(deps.issueId, stageId, kind).find((run) => run.id !== currentRunId);
   if (!previous) return { present: false, note: `No earlier run exists on the ${stageId} stage.` };
   const event = deps.store.listRunEvents(previous.id).find((entry) => entry.type === "execution");
@@ -181,7 +189,7 @@ function previousRunPart(deps: TaskDeps, stageId: string, currentRunId: string, 
 
 /** The handover for one run: the same shape for every harness and agent. */
 export async function buildHandover(
-  deps: TaskDeps,
+  deps: HandoverDeps,
   input: { runId: string; stageId: string; agentId: string; kind: string; workspace: { path: string; branch: string } },
 ) {
   const issue = deps.store.getIssue(deps.issueId);

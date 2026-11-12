@@ -27,16 +27,29 @@ import {
   AGENT_STOP_STATUSES, agentActor, agentMessage, conversationForPrompt, conveyorMessage, reportMcpFailures, failedEnvelope, finishRun,
   producerConversationMessage, prompt, startRun, warnOnTokenUsage } from "./agent-support";
 import type { AgentContext } from "./context";
-import { buildHandover } from "./handover";
+import { buildHandover, type HandoverDeps } from "./handover";
 import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition, type TaskResult } from "./contract";
 import type { TaskDeps } from "./deps";
 import { ensureGitExcludes, worktreeGitPaths } from "../workspace/git";
 import { ensureWorkspace } from "../workspace/lifecycle";
 import { WorkspaceError, workspaceScratchPath } from "../workspace/manager";
 import { linkExistingChange } from "../codehost/actions";
+import type { CodeHost } from "../codehost/types";
+import type { ItemStore } from "../db/ports";
 import { normalizedQuestionOptions, questionConfigurationError } from "../questions";
 
-type Deps = TaskDeps;
+/**
+ * What the agent group uses: the item's workspace, runs, questions and conversation, the handover's
+ * reads, the harnesses and the run-scoped MCP endpoint. It never gets git, the CI watch or the operator facade.
+ */
+export type AgentTaskDeps = HandoverDeps
+  & Pick<TaskDeps, "config" | "repository" | "issueId" | "sourceGuidance" | "workspaces" | "mcp" | "harnesses" | "delivery" | "run" | "signal">
+  & {
+    store: ItemStore & RunLogStore & ConversationStore;
+    codeHost?: Pick<CodeHost, "findOpenChange" | "getChangeDelivery"> | null;
+  };
+
+type Deps = AgentTaskDeps;
 
 const KIND = "producer";
 const runConfig = z
@@ -439,7 +452,7 @@ const askQuestion: TaskDefinition<unknown, z.output<typeof askInput>, Deps> = {
   },
 };
 
-export const agentGroup = defineGroup("agent", [
+export const agentGroup = defineGroup<AgentTaskDeps>("agent", [
   run,
   askQuestion,
   reportProgress,
@@ -549,13 +562,13 @@ function withoutCodexConfig<T extends { config?: unknown }>(extensions: T): Omit
  * The repository's declared toolchain directories with symbolic links resolved, refused when one
  * would expose the service's own state. Re-checked per run: a link can change after configuration loads.
  */
-function toolchainFor(deps: TaskDeps): { toolchainPaths?: string[] } {
+function toolchainFor(deps: Deps): { toolchainPaths?: string[] } {
   const declared = deps.config.repositories?.[deps.repository.id]?.agentToolchainPaths?.paths ?? [];
   if (declared.length === 0) return {};
   return { toolchainPaths: resolveToolchainPaths(declared, protectedServiceLocations({ ...deps.config, root: deps.config.root })) };
 }
 
-function egressFor(deps: TaskDeps, runner: { controlPlaneHosts?: string[] | undefined }) {
+function egressFor(deps: Deps, runner: { controlPlaneHosts?: string[] | undefined }) {
   const egress = agentEgressFor(deps.config, deps.repository.id, runner);
   return egress ? { egress } : {};
 }

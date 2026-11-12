@@ -121,18 +121,23 @@ export interface TaskDefinition<C = unknown, I = unknown, D = unknown> {
   mutating?: boolean;
   /** Tools only: false when the tool is state-idempotent (upsert/delete), so the dispatcher runs every call instead of replaying a journaled response. */
   journal?: boolean;
-  run(args: TaskArgs<C, I, D>): TaskResult | Promise<TaskResult>;
+  /**
+   * A property rather than a method, so the dependencies are checked contravariantly: a task that
+   * declares narrow dependencies accepts any value that has at least those fields.
+   */
+  run: (args: TaskArgs<C, I, D>) => TaskResult | Promise<TaskResult>;
 }
 
-export interface TaskGroup {
+/** A named set of tasks that share one dependency type: the ports the group declares it uses. */
+export interface TaskGroup<D = unknown> {
   name: string;
-  definitions: TaskDefinition<any, any, any>[];
+  definitions: TaskDefinition<any, any, D>[];
 }
 
 const isSnapshotKey = (key: string): key is SnapshotKey => (SNAPSHOT_KEYS as readonly string[]).includes(key);
 const isCapturedKey = (key: string): key is CapturedKey => (CAPTURED_KEYS as readonly string[]).includes(key);
 
-export function defineGroup(group: string, definitions: TaskDefinition<any, any, any>[]): TaskGroup {
+export function defineGroup<D>(group: string, definitions: TaskDefinition<any, any, D>[]): TaskGroup<D> {
   const pattern = new RegExp(`^${group.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.[a-z][a-zA-Z0-9]*$`);
   for (const def of definitions) {
     const where = `Task ${def.name}`;
@@ -174,7 +179,7 @@ export class TaskRegistry {
   private readonly byName = new Map<string, TaskDefinition<any, any, any>>();
   private readonly loaders = new Map<SnapshotKey, TaskDefinition<any, any, any>>();
 
-  register(group: TaskGroup): void {
+  register<D>(group: TaskGroup<D>): void {
     for (const def of group.definitions) {
       if (this.byName.has(def.name)) throw new Error(`Duplicate task name ${def.name}`);
       if (def.kind === "load") {
