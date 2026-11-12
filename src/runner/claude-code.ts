@@ -18,6 +18,7 @@ import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scrat
 import { log } from "../log/logger";
 import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type Artifact, type RunEnvelope } from "./result";
 import type { HarnessRunInput } from "../harness/types";
+import { sandboxSetupError } from "./sandbox-failure";
 import { OUTPUT_SCHEMAS } from "./output-schemas";
 
 export interface ClaudeCodeRunInput extends HarnessRunInput {
@@ -25,7 +26,7 @@ export interface ClaudeCodeRunInput extends HarnessRunInput {
   resumeSessionId?: string;
 }
 
-export type ClaudeCodeErrorKind = "usage-limit" | "process" | "protocol" | "invalid-result" | "timeout" | "interrupted";
+export type ClaudeCodeErrorKind = "usage-limit" | "sandbox" | "process" | "protocol" | "invalid-result" | "timeout" | "interrupted";
 
 export class ClaudeCodeRunnerError extends Error {
   override readonly name = "ClaudeCodeRunnerError";
@@ -62,6 +63,7 @@ interface ClaudeEvent {
   is_error?: boolean;
   result?: string;
   structured_output?: unknown;
+  message?: { content?: unknown };
   usage?: {
     input_tokens?: number;
     cache_creation_input_tokens?: number;
@@ -76,6 +78,25 @@ const READ_ONLY_TOOLS = ["Read", "Grep", "Glob", "Bash"];
 /** File tools for a workspace-write agent. Never pre-allowed: acceptEdits scopes them to the worktree. */
 const EDIT_TOOLS = ["Edit", "Write"];
 const WEB_TOOLS = ["WebFetch", "WebSearch"];
+/** Remembers Bash tool calls and returns the sandbox setup error of a failed Bash tool result, if any. */
+function bashSandboxError(event: ClaudeEvent, bashToolUses: Set<string>): string | null {
+  const content = event.message?.content;
+  if (!Array.isArray(content)) return null;
+  let found: string | null = null;
+  for (const block of content as Array<Record<string, unknown>>) {
+    if (event.type === "assistant" && block.type === "tool_use" && block.name === "Bash" && typeof block.id === "string") {
+      bashToolUses.add(block.id);
+    }
+    if (event.type === "user" && block.type === "tool_result" && block.is_error === true && bashToolUses.has(String(block.tool_use_id))) {
+      const body = Array.isArray(block.content)
+        ? (block.content as Array<{ text?: unknown }>).map((part) => (typeof part.text === "string" ? part.text : "")).join("\n")
+        : block.content;
+      found ??= sandboxSetupError(body);
+    }
+  }
+  return found;
+}
+
 async function consumeJsonLines(stream: ReadableStream<Uint8Array>, onEvent: (event: ClaudeEvent) => void) {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -281,10 +302,13 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
 
     let sessionId: string | null = null;
     let result: ClaudeEvent | null = null;
+    let sandboxError: string | null = null;
+    const bashToolUses = new Set<string>();
     const stdoutPromise = consumeJsonLines(child.stdout, (event) => {
       input.onEvent?.(event);
       if (event.session_id) sessionId = event.session_id;
       if (event.type === "result") result = event;
+      sandboxError ??= bashSandboxError(event, bashToolUses);
     });
     const stderrPromise = new Response(child.stderr).text();
 
@@ -317,6 +341,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
 
     if (timedOut) throw new ClaudeCodeRunnerError(`Claude Code timed out after ${input.timeoutMs}ms${detail ? `: ${detail}` : ""}`, "timeout", exitCode, stderr);
     if (interrupted) throw new ClaudeCodeRunnerError(`Claude Code was interrupted${detail ? `: ${detail}` : ""}`, "interrupted", exitCode, stderr);
+    if (sandboxError) throw new ClaudeCodeRunnerError(`Claude Code sandbox could not start commands: ${sandboxError}`, "sandbox", exitCode, stderr);
     if (exitCode !== 0 || final?.is_error) {
       const kind = USAGE_LIMIT_PATTERN.test(`${detail}\n${raw.slice(-4_000)}`) ? "usage-limit" : "process";
       throw new ClaudeCodeRunnerError(`Claude Code exited with code ${exitCode}${detail ? `: ${detail}` : ""}`, kind, exitCode, stderr);

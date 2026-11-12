@@ -207,7 +207,7 @@ function canFallBack(error: unknown, deps: Deps): boolean {
 function asInfrastructure(error: unknown): unknown {
   if (error instanceof InfrastructureError) return error;
   const kind = errorKind(error);
-  if (kind === "protocol" || kind === "invalid-result" || kind === "timeout") {
+  if (kind === "protocol" || kind === "invalid-result" || kind === "timeout" || kind === "sandbox") {
     return new InfrastructureError(error instanceof Error ? error.message : String(error), { cause: error });
   }
   return error;

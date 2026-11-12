@@ -199,6 +199,15 @@ describe("agent.run", () => {
     expect(notes(w)).toEqual([]);
   });
 
+  test("a sandbox setup failure does not run the next agent and is an infrastructure error naming the sandbox error", async () => {
+    const w = await world();
+    w.setBehaviour(() => { throw Object.assign(new Error("Codex sandbox could not start commands: bwrap: No permissions to create a new namespace"), { kind: "sandbox" }); });
+    await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toThrow(/bwrap: No permissions to create a new namespace/);
+    await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toBeInstanceOf(InfrastructureError);
+    expect(w.calls).toHaveLength(2);
+    expect(notes(w)).toEqual([]);
+  });
+
   test("a WorkspaceError preparing the workspace does not run the next agent or post a fallback message", async () => {
     const w = await world({ noWorkspace: true, createFails: new WorkspaceError("cannot fetch origin/main: incorrect old value provided") });
     await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toBeInstanceOf(InfrastructureError);

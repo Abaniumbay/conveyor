@@ -15,6 +15,7 @@ import {
   type RunEnvelope,
 } from "./result";
 import { writeOutputSchema } from "./output-schemas";
+import { sandboxSetupError } from "./sandbox-failure";
 
 export interface CodexMcpConfiguration {
   command: string;
@@ -73,6 +74,7 @@ export { CODEX_CONTROL_PLANE_HOSTS };
 
 export type CodexErrorKind =
   | "usage-limit"
+  | "sandbox"
   | "process"
   | "protocol"
   | "invalid-result"
@@ -148,6 +150,7 @@ interface CodexEvent {
     output_tokens?: number;
   };
   message?: string;
+  item?: { type?: string; aggregated_output?: unknown; exit_code?: number | null; status?: string };
 }
 
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|too many requests|\b429\b|quota/i;
@@ -342,6 +345,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   let sessionId: string | null = null;
   const usage = { ...EMPTY_USAGE };
   const messages: string[] = [];
+  let sandboxError: string | null = null;
   const stdoutPromise = consumeJsonLines(child.stdout, (event) => {
     input.onEvent?.(event);
     if (event.type === "thread.started" && event.thread_id) {
@@ -353,6 +357,10 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
       usage.cachedTokens += event.usage.cached_input_tokens ?? 0;
     }
     if (event.type === "error" && event.message) messages.push(event.message);
+    // Only a failed command can be a sandbox that did not start; output of a succeeding command is just text.
+    if (event.type === "item.completed" && event.item?.type === "command_execution" && event.item.exit_code !== 0) {
+      sandboxError ??= sandboxSetupError(event.item.aggregated_output);
+    }
   });
   const stderrPromise = new Response(child.stderr).text();
 
@@ -408,6 +416,14 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     throw withCleanupError(new CodexRunnerError(
       `Codex was interrupted${failureDetail ? `: ${failureDetail}` : ""}`,
       "interrupted",
+      exitCode,
+      stderr,
+    ), cleanupError);
+  }
+  if (sandboxError) {
+    throw withCleanupError(new CodexRunnerError(
+      `Codex sandbox could not start commands: ${sandboxError}`,
+      "sandbox",
       exitCode,
       stderr,
     ), cleanupError);

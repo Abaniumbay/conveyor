@@ -53,6 +53,8 @@ export interface DeliveryWorld {
   labelWrites: string[][];
   /** The stages the item was executed at, one entry per execute call. */
   executed: string[];
+  /** Executes the item's current stage once, as the scheduler would. */
+  step(): Promise<void>;
   /** Runs the item until it is done (or the step limit); returns the stages it advanced through. */
   drive(limit?: number): Promise<void>;
   /** GitHub closes the source issue, as a person or a late auto-close would, and delivers the signed `issues.closed` webhook. */
@@ -157,6 +159,8 @@ export async function deliveryWorld(options: {
   publicLifecycle?: boolean;
   /** Called with the name of every request the service makes to GitHub, as it is made. */
   onGithubCall?: (method: string) => void | Promise<void>;
+  /** Every agent invocation fails with this error before doing any work, as a crashed runner does. */
+  agentFailure?: Error;
 } = {}): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
@@ -271,6 +275,7 @@ export async function deliveryWorld(options: {
     async run(input: HarnessRunInput): Promise<RunEnvelope> {
       const stage = /"stageId": "([\w-]+)"/.exec(input.prompt)?.[1] ?? "unknown";
       agentRuns.push(stage);
+      if (options.agentFailure) throw options.agentFailure;
       if (stage === "refinement") {
         // darya: criteria, a system label, the type, Effort and the Refinement section, as the item.set* tools would write them.
         const issue = store.getIssue("issue")!;
@@ -401,6 +406,9 @@ export async function deliveryWorld(options: {
     root, config, store, service, host, ci, agentRuns, labelWrites, executed,
     get scriptRuns() {
       try { return readFileSync(scriptLog, "utf8").split("\n").filter(Boolean); } catch { return []; }
+    },
+    async step() {
+      await (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, new AbortController().signal);
     },
     async drive(limit = 40) {
       const controller = new AbortController();

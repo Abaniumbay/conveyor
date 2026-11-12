@@ -176,6 +176,27 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-i
     });
   });
 
+  const bashRun = (output: string) => `#!/bin/sh
+cat > /dev/null
+cat <<'EVENTS'
+{"type":"assistant","session_id":"s","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","session_id":"s","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","is_error":true,"content":${JSON.stringify(output)}}]}}
+${successfulResult}
+EVENTS
+`;
+
+  test("a Bash tool result with a bubblewrap setup error is a sandbox error naming it", async () => {
+    for (const error of ["bwrap: No permissions to create a new namespace", "bwrap: Can't mount proc on /newroot/proc: Operation not permitted", "error building bubblewrap command: x"]) {
+      const run = await runnable(bashRun(`Exit code 1\n${error}`));
+      await expect(run.run()).rejects.toMatchObject({ kind: "sandbox", message: expect.stringContaining(error) });
+    }
+  });
+
+  test("an ordinary failing Bash command still returns the agent's result", async () => {
+    const run = await runnable(bashRun("Exit code 2\nls: cannot access 'x': No such file or directory"));
+    await expect(run.run()).resolves.toMatchObject({ stageResult: { status: "done" } });
+  });
+
   test("a malformed JSONL stream stays a protocol error", async () => {
     const run = await runnable(`#!/bin/sh
 cat > /dev/null
