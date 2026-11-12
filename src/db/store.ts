@@ -34,6 +34,12 @@ export function stopSummaryFormatError(summary: string): string | null {
   return null;
 }
 
+/** The deterministic stand-in for a stop summary: the first line of the recorded reason, cut to the summary length limit. */
+export function stopHeadline(reason: string): string {
+  const firstLine = reason.trim().split(/\r\n|[\r\n\u2028\u2029]/)[0]!.replace(/\s+/g, " ").trim();
+  return firstLine.slice(0, STOP_SUMMARY_MAX_LENGTH).trimEnd();
+}
+
 export interface RepositoryRecord {
   id: string;
   configName: string;

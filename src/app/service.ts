@@ -20,7 +20,7 @@ import { inFlightAdmission, inFlightHolders, inFlightInterval, inFlightWaitReaso
 import { RepositoryPausedError } from "../core/repository-pause";
 import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
 import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../core/transition";
-import { ConveyorStore, type StoredIssue, type StoredQuestion } from "../db/store";
+import { ConveyorStore, stopHeadline, type StoredIssue, type StoredQuestion } from "../db/store";
 import type { Harness } from "../harness/types";
 import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt } from "../core/plugins";
 import { GitHubAdapter, GitHubTransportError } from "../plugins/github/shared/adapter";
@@ -5223,6 +5223,8 @@ export class ConveyorService {
         resumable,
         resumableRollup,
         stoppedRollup: stopped && children.length > 0,
+        stopSummary: stopped ? this.store.currentStopSummary(issue.id) : null,
+        stopHeadline: stopped && stopReason ? stopHeadline(stopReason) : null,
       };
     };
     const stageNames = new Map<string, string>();
@@ -6030,6 +6032,8 @@ export class ConveyorService {
       resumable,
       resumableRollup,
       stoppedRollup: stopped && children.length > 0,
+      stopSummary: stopped ? this.store.currentStopSummary(issue.id) : null,
+      stopHeadline: stopped && stopReason ? stopHeadline(stopReason) : null,
     };
   }
 
