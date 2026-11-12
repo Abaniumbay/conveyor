@@ -153,6 +153,8 @@ export async function deliveryWorld(options: {
   requireDescription?: boolean;
   pauseBeforeChangeEnsure?: boolean;
   pauseBeforeCiStart?: boolean;
+  /** CI fails the first head with this log; the implementation attempt that follows pushes a new head, which passes. */
+  ciFailsFirstHead?: string;
   deployScript?: string;
   interruptGrace?: string;
   /** GitHub closes the issue after the merge, as `Closes #n` does. False models a dropped auto-close. Default true. */
@@ -220,7 +222,7 @@ export async function deliveryWorld(options: {
     },
   });
   const ci = {
-    runs: [{ id: "1", name: "Tests", url: "https://ci.test/1", state: "passed", canRerun: false, hasLog: true }] as CiRun[],
+    runs: [{ id: "1", name: "Tests", url: "https://ci.test/1", state: options.ciFailsFirstHead === undefined ? "passed" : "failed", canRerun: false, hasLog: true }] as CiRun[],
     starts: 0,
     reruns: 0,
   };
@@ -229,7 +231,7 @@ export async function deliveryWorld(options: {
     async list(_change: CiChange, _commit: string) { return ci.runs; },
     async rerun() { ci.reruns += 1; },
     async definitions() { return { defined: true, provable: true, summary: "Tests workflow" }; },
-    async log() { return ""; },
+    async log() { return options.ciFailsFirstHead ?? ""; },
     async reports(_change: CiChange, _commit: string, _runs: readonly CiRun[], locator: CiTestReportLocator) {
       return [{ runId: "1", artifactId: "1", path: locator.path, content: '<testsuite><testcase name="feature"/></testsuite>' }];
     },
@@ -323,6 +325,15 @@ export async function deliveryWorld(options: {
           await git(input.workspace, "push", "--set-upstream", "origin", branch);
           host.headSha = await git(input.workspace, "rev-parse", "HEAD");
           if (options.pauseBeforeChangeEnsure) store.pauseRepository("conveyor", "operator", "Pause before opening change");
+        } else if (options.ciFailsFirstHead !== undefined && implementationRuns === 2) {
+          // kaveh: fixes the failing check and pushes new work, which is a new head whose CI passes.
+          await writeFile(path.join(input.workspace, "fix.txt"), "fix\n");
+          await git(input.workspace, "add", "fix.txt");
+          await git(input.workspace, "commit", "-m", "Fix the failing check");
+          const branch = await git(input.workspace, "rev-parse", "--abbrev-ref", "HEAD");
+          await git(input.workspace, "push", "origin", branch);
+          host.headSha = await git(input.workspace, "rev-parse", "HEAD");
+          ci.runs = [{ id: "2", name: "Tests", url: "https://ci.test/2", state: "passed", canRerun: false, hasLog: true }];
         } else if (options.requireDescription) {
           // kaveh: follows the criterion's request through the granted agent tool, not a human body edit.
           const run = store.listRunsForStage("issue", "implementation", "producer")[0];
