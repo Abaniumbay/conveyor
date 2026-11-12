@@ -117,17 +117,6 @@ export async function configuredCodexIsolationChecks(
           fix: "allow bwrap to create the bind, proc, and tmpfs mounts in its mount namespace (for example: grant bwrap mount permissions in the host's AppArmor profile)",
         });
   }
-  if (repositories.some((repository) => !repository.agentEgress)) {
-    const namespaces = await execute(["bwrap", "--unshare-user", "--die-with-parent", "--ro-bind", "/", "/", "--", "true"]);
-    checks.push(namespaces.code === 0
-      ? { name: "Codex sandbox namespaces", status: "ok", detail: "bwrap can create the user namespace required by the Codex sandbox" }
-      : {
-          name: "Codex sandbox namespaces",
-          status: "fail",
-          detail: `bwrap cannot create the user namespace required by the Codex sandbox: ${namespaces.output}`,
-          fix: "allow unprivileged user namespaces for Codex (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)",
-        });
-  }
   return checks;
 }
 

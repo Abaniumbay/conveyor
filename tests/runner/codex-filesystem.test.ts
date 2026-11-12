@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -38,6 +39,24 @@ const packedRef = Bun.spawnSync(["git", "rev-parse", "refs/heads/packed-ref"], {
 result.gitPackedRefReadable = packedRef.exitCode === 0;
 const gitWrite = Bun.spawnSync(["git", "update-ref", "refs/heads/agent-filesystem-test", headSha], { cwd: checks.workspace });
 result.gitMetadataWritable = gitWrite.exitCode === 0;
+await Bun.write(process.env.CAPTURE, JSON.stringify(result));
+await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({ version: 1, outcome: "success", status: "done", summary: "ok", reason: null, metrics: {}, artifacts: [] }));
+`;
+
+// Writes through the sandbox; the real codex binary would run the same commands as child processes.
+const WRITE_PROBE = `#!/usr/bin/env bun
+const args = process.argv.slice(2);
+const checks = JSON.parse(process.env.CHECKS);
+const attempt = async (file) => {
+  try { await Bun.write(file, "probe"); return true; } catch { return false; }
+};
+const result = {
+  args,
+  workspace: await attempt(checks.workspace + "/probe"),
+  writableRoot: await attempt(checks.writableRoot + "/probe"),
+  outside: await attempt(checks.outside + "/probe"),
+  privateTmp: await attempt(checks.tmpFile),
+};
 await Bun.write(process.env.CAPTURE, JSON.stringify(result));
 await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({ version: 1, outcome: "success", status: "done", summary: "ok", reason: null, metrics: {}, artifacts: [] }));
 `;
@@ -231,5 +250,71 @@ describeSandbox("Codex filesystem confinement", () => {
       env: { STARTED: started },
     })).rejects.toThrow("cannot confine a command that is not installed");
     expect(await Bun.file(started).exists()).toBe(false);
+  });
+
+  describe("Conveyor's wrapper as Codex's only sandbox without agentEgress", () => {
+    async function probe(sandbox: "read-only" | "workspace-write") {
+      const files = await fixture();
+      const root = path.dirname(files.workspace);
+      const writableRoot = path.join(root, "writable-root");
+      const outside = path.join(root, "outside");
+      const tmpFile = `/tmp/codex-private-tmp-${crypto.randomUUID()}`;
+      await Promise.all([mkdir(writableRoot), mkdir(outside)]);
+      await writeFile(files.executable, WRITE_PROBE);
+      await runCodex({
+        command: files.executable,
+        workspace: files.workspace,
+        artifactsDirectory: files.artifacts,
+        prompt: "probe writes",
+        sandbox,
+        automaticApprovals: true,
+        mcp: { command: "bun", args: ["x"] },
+        writableRoots: [writableRoot],
+        env: {
+          CAPTURE: files.capture,
+          CHECKS: JSON.stringify({ workspace: files.workspace, writableRoot, outside, tmpFile }),
+          CODEX_HOME: path.join(root, "credentials"),
+        },
+      });
+      const result = JSON.parse(await readFile(files.capture, "utf8")) as Record<string, any>;
+      return { result, hostTmpFile: tmpFile, writableRoot, outside, workspace: files.workspace };
+    }
+
+    test("a read-only Codex run cannot write to its worktree", async () => {
+      const { result, workspace } = await probe("read-only");
+      expect(result.args[result.args.indexOf("--sandbox") + 1]).toBe("danger-full-access");
+      expect(result.workspace).toBe(false);
+      expect(result.writableRoot).toBe(false);
+      expect(existsSync(path.join(workspace, "probe"))).toBe(false);
+    });
+
+    test("a workspace-write Codex run writes to its worktree and writable roots", async () => {
+      const { result, workspace, writableRoot } = await probe("workspace-write");
+      expect(result.args[result.args.indexOf("--sandbox") + 1]).toBe("danger-full-access");
+      expect(result.workspace).toBe(true);
+      expect(result.writableRoot).toBe(true);
+      expect(existsSync(path.join(workspace, "probe"))).toBe(true);
+      expect(existsSync(path.join(writableRoot, "probe"))).toBe(true);
+    });
+
+    test("a workspace-write Codex run cannot write outside its worktree and writable roots", async () => {
+      const { result, outside } = await probe("workspace-write");
+      expect(result.outside).toBe(false);
+      expect(existsSync(path.join(outside, "probe"))).toBe(false);
+    });
+
+    test.each(["read-only", "workspace-write"] as const)("a %s Codex run has a private, writable /tmp", async (sandbox) => {
+      const { result, hostTmpFile } = await probe(sandbox);
+      expect(result.privateTmp).toBe(true);
+      expect(existsSync(hostTmpFile)).toBe(false);
+    });
+
+    test.each(["read-only", "workspace-write"] as const)("a %s Codex run needs no nested user namespace: only the wrapper's namespace is created", async (sandbox) => {
+      // The probe is started by the wrapper's bwrap and must run to completion; Codex is told not to
+      // start a sandbox of its own, which is what would fail where nested namespaces are refused.
+      const { result } = await probe(sandbox);
+      expect(result.args).toContain("danger-full-access");
+      expect(result.args).not.toContain("--approve-for-me");
+    });
   });
 });
