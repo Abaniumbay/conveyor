@@ -8,6 +8,8 @@ runs:
       run: |
         set -euo pipefail
         sudo apt-get update
-        sudo apt-get install --yes bubblewrap
+        # zsh: Claude Code runs its command strings with the user's shell, and the egress prefix tests
+        # run a zsh string; CI must not skip them.
+        sudo apt-get install --yes bubblewrap zsh
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
         bwrap --unshare-net --dev-bind / / true
