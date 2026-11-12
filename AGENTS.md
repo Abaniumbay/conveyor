@@ -209,7 +209,9 @@ a service mutation directly.
 ### Configuration field
 
 1. Add it to the zod schema in `src/config/schema.ts` (schemas are `.strict()`; unknown keys are
-   errors).
+   errors). A setting of one provider (an item source, code host or CI provider) goes in that
+   plugin's `configSchema` instead (for GitHub, `src/plugins/github/<role>/config.ts`); the core
+   schema only knows a provider entry's `type`.
 2. Document it in `docs/configuration.md`.
 3. If it has a packaged default, update `examples/config/`.
 4. Test loading and validation errors in `tests/config/`.

@@ -31,7 +31,7 @@ const IMPLEMENTATIONS = [
 ];
 
 /** The composition root builds implementations and hands their ports to the core. */
-const COMPOSITION_ROOTS = new Set(["src/cli/commands/serve.ts", "src/plugins/index.ts"]);
+const COMPOSITION_ROOTS = new Set(["src/cli/commands/serve.ts", "src/cli/plugins.ts", "src/plugins/index.ts"]);
 
 const SOURCE = /\.(ts|tsx)$/;
 

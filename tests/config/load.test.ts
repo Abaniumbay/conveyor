@@ -6,7 +6,9 @@ import path from "node:path";
 import { ConfigError, loadConfig } from "../../src/config/load";
 import { configSchema, type StageConfig } from "../../src/config/schema";
 import { resolveFilesystemPath } from "../../src/core/paths";
+import { PLUGINS } from "../../src/plugins";
 
+const LABELS = "labels:\n  enrollment: conveyor\n  stageTemplate: \"conveyor:{stage}\"\n  states: { done: conveyor:done, blocked: conveyor:blocked }\n  metadata: { closable: conveyor:closable, orderTemplate: \"conveyor:order:{number}\" }\n";
 const temporaryDirectories: string[] = [];
 
 async function temporaryDirectory(): Promise<string> {
@@ -237,10 +239,30 @@ repositories:
     const directory = await temporaryDirectory();
     await writeFile(
       path.join(directory, "conveyor.yaml"),
-      "sources:\n  github:\n    type: github\n    allowedHumanLogins: [owner]\n",
+      `${LABELS}sources:\n  github:\n    type: github\n    allowedHumanLogins: [owner]\n`,
     );
 
-    await expect(loadConfig(directory)).rejects.toThrow(/Unrecognized key: "allowedHumanLogins"/);
+    await expect(loadConfig(directory, undefined, { plugins: PLUGINS })).rejects.toThrow(/Unrecognized key: "allowedHumanLogins"/);
+  });
+
+  test("a provider type no plugin provides is an error naming the known types", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, "conveyor.yaml"), `${LABELS}sources:\n  boards:\n    type: azure-boards\n`);
+    await expect(loadConfig(directory, undefined, { plugins: PLUGINS })).rejects.toThrow(/sources\.boards\.type.*no items plugin provides type "azure-boards" \(known: github\)/s);
+  });
+
+  test("the plugin's schema completes a provider entry with its defaults", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, "conveyor.yaml"), `${LABELS}sources:\n  github:\n    type: github\n`);
+    const config = await loadConfig(directory, undefined, { plugins: PLUGINS });
+    expect(config.sources.github).toEqual({ type: "github", webhookPath: "/hooks/github", autoConfigureWebhook: false });
+  });
+
+  test("without plugins a provider entry is checked only for its type and kept as written", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, "conveyor.yaml"), `${LABELS}sources:\n  boards:\n    type: azure-boards\n    organization: example\n`);
+    const config = await loadConfig(directory, null);
+    expect(config.sources.boards).toEqual({ type: "azure-boards", organization: "example" });
   });
 
   test("rejects an agent granting source.set_labels because workflow labels are engine-owned", async () => {
@@ -531,8 +553,8 @@ ci:
     triggers:
       - { label: go, workflow: build.yml, check: Build }
 `);
-    const config = await loadConfig(directory);
-    expect(config.ci.actions?.triggers[0]).toMatchObject({ label: "go", workflow: "build.yml", check: "Build" });
+    const config = await loadConfig(directory, undefined, { plugins: PLUGINS });
+    expect(config.ci.actions).toMatchObject({ triggers: [{ label: "go", workflow: "build.yml", check: "Build", replaces: [] }] });
     expect(config.repositories.sample?.ci).toEqual({ provider: null, mode: "required", ignoreChecks: [] });
   });
 

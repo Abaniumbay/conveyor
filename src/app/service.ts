@@ -22,7 +22,7 @@ import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type Sc
 import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../core/transition";
 import { ConveyorStore, stopHeadline, type StoredIssue, type StoredQuestion } from "../db/store";
 import type { Harness } from "../harness/types";
-import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt } from "../core/plugins";
+import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt, type WebhookSettings } from "../core/plugins";
 import { GitHubAdapter, GitHubTransportError } from "../plugins/github/shared/adapter";
 import { followUpsFromBody } from "../plugins/github/shared/managed-sections";
 import { GitHubRepositoryTrust } from "../plugins/github/shared/trust";
@@ -696,12 +696,18 @@ export class ConveyorService {
     }
   }
 
-  /** The URL GitHub delivers a repository's webhook events to, when Conveyor manages its webhook. */
+  /** The URL a repository's item source delivers webhook events to, when Conveyor manages its webhook. */
   private webhookUrl(repositoryId: string): string | null {
     const repository = this.config.repositories[repositoryId];
-    const source = repository ? this.config.sources?.[repository.source] : undefined;
-    if (source?.type !== "github" || !source.autoConfigureWebhook || !this.config.web?.publicUrl) return null;
-    return new URL(source.webhookPath, this.config.web.publicUrl).href;
+    const settings = repository ? this.webhookSettings(repository.source) : null;
+    if (!settings?.managed || !this.config.web?.publicUrl) return null;
+    return new URL(settings.path, this.config.web.publicUrl).href;
+  }
+
+  /** The webhook settings of an item source, as its plugin reads them; null when its plugin takes no webhooks. */
+  private webhookSettings(sourceName: string): WebhookSettings | null {
+    const type = this.config.sources?.[sourceName]?.type;
+    return type ? this.#plugins.itemSource(type)?.webhook?.settings(sourceName) ?? null : null;
   }
 
   /** Whether a repository's webhook delivers events, so waits may rely on them. */
@@ -1189,12 +1195,11 @@ export class ConveyorService {
     if (this.store.repositoryPause(id)) return;
     try {
       await this.executionGitHub(id).ensureLabels(repository.address, labelDefinitions(this.config, id));
-      const source = this.config.sources[repository.source];
-      if (source?.type === "github" && source.autoConfigureWebhook && this.config.web.publicUrl) {
-        const secret = this.webhookSecretFor(repository.source);
-        if (!secret) throw new Error("a webhook secret is required for webhooks: set webhookSecret on the GitHub items provider (or CONVEYOR_GITHUB_WEBHOOK_SECRET)");
-        const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
-        this.#webhookIds.set(id, await this.executionGitHub(id).ensureWebhook({ address: repository.address, url, secret }));
+      const webhook = this.webhookSettings(repository.source);
+      const url = this.webhookUrl(id);
+      if (webhook && url) {
+        if (!webhook.secret) throw new Error(`a webhook secret is required for webhooks: set webhookSecret on the items provider ${repository.source}`);
+        this.#webhookIds.set(id, await this.executionGitHub(id).ensureWebhook({ address: repository.address, url, secret: webhook.secret }));
       }
       if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
     } catch (error) {
@@ -4003,10 +4008,9 @@ export class ConveyorService {
     };
   }
 
-  /** A GitHub items provider's webhook secret: its `webhookSecret`, else CONVEYOR_GITHUB_WEBHOOK_SECRET. */
+  /** An item source's webhook secret, as its plugin reads it; empty when it has none. */
   private webhookSecretFor(sourceName: string): string {
-    const source = this.config.sources[sourceName];
-    return (source?.type === "github" ? source.webhookSecret : undefined) ?? process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET ?? "";
+    return this.webhookSettings(sourceName)?.secret ?? "";
   }
 
   async handleWebhook(rawBody: Uint8Array, headers: Headers): Promise<void> {
@@ -6941,7 +6945,8 @@ export class ConveyorService {
   }
 
   webDependencies(auth: WebAuthApi, username: string, push: PushConfiguration | null = null): WebHandlerDependencies {
-    const githubSource = Object.values(this.config.sources).find((source) => source.type === "github");
+    // The dashboard serves one webhook route: the first item source that receives webhooks names it.
+    const webhookPath = Object.keys(this.config.sources).map((name) => this.webhookSettings(name)?.path).find((path) => path !== undefined);
     return {
       auth,
       username,
@@ -6968,7 +6973,7 @@ export class ConveyorService {
         .filter((item) => item.placement === "done")
         .sort((left, right) => left.order - right.order),
       isReady: () => this.isReady(),
-      webhookPath: githubSource?.webhookPath ?? "/hooks/github",
+      webhookPath: webhookPath ?? "/hooks/github",
       handleWebhook: (body, headers) => this.handleWebhook(body, headers),
       handleMcp: (body, token, callId) => this.handleMcp(body, token, callId),
       getSteeringRun: (runId) => this.getSteeringRun(runId),

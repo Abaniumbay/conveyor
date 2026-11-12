@@ -4,6 +4,7 @@ import { ConfigError, loadConfig, type ConveyorConfig } from "../config/load";
 import type { TaskRegistry } from "../tasks/contract";
 import { CliError, EXIT, type ExitCode, type OptionSpecs } from "./args";
 import type { HomePaths } from "./home";
+import { PLUGINS } from "./plugins";
 
 export const GLOBAL_OPTIONS: OptionSpecs = {
   home: { type: "string", value: "<dir>", description: "Conveyor home (default: $CONVEYOR_HOME, else ~/.conveyor)" },
@@ -61,7 +62,7 @@ export async function loadCommandConfig(
   path = context.paths.config,
 ): Promise<ConveyorConfig> {
   try {
-    const config = await loadConfig(path, registry, { home: context.paths.home });
+    const config = await loadConfig(path, registry, { home: context.paths.home, plugins: PLUGINS });
     for (const warning of config.warnings ?? []) context.err(`warning: ${warning}`);
     return config;
   } catch (error) {

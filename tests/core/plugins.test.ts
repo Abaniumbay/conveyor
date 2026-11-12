@@ -5,6 +5,10 @@ import type { CodeHost } from "../../src/codehost/types";
 import type { ConveyorConfig } from "../../src/config/load";
 import { pluginContext, PluginRegistry, type CiPluginOptions, type Plugin } from "../../src/core/plugins";
 import type { Harness } from "../../src/harness/types";
+import { z } from "zod";
+
+/** A provider schema that accepts any entry: these tests are not about provider configuration. */
+const anyProvider = z.object({ type: z.string() }).passthrough();
 
 const config = (sections: Partial<Pick<ConveyorConfig, "codeHosts" | "sources">> = {}) =>
   ({ codeHosts: {}, sources: {}, ...sections }) as unknown as ConveyorConfig;
@@ -16,7 +20,7 @@ describe("PluginRegistry", () => {
   test("builds a CI provider from the plugin of the configured type", () => {
     const seen: CiPluginOptions[] = [];
     const provider = {} as CiProvider;
-    const registry = new PluginRegistry([{ role: "ci", type: "fake-ci", create: (_context, options) => { seen.push(options); return provider; } }], pluginContext(config()));
+    const registry = new PluginRegistry([{ role: "ci", configSchema: anyProvider, type: "fake-ci", create: (_context, options) => { seen.push(options); return provider; } }], pluginContext(config()));
     const options = { repositoryId: "app", providerName: "main", provider: { type: "fake-ci" }, stageInput: undefined };
     expect(registry.ciProvider("fake-ci", options)).toBe(provider);
     expect(seen).toEqual([options]);
@@ -40,20 +44,20 @@ describe("PluginRegistry", () => {
     const registry = new PluginRegistry([
       { role: "harness", type: "codex", create: () => harness("codex") },
       { role: "harness", type: "pi", create: () => harness("pi") },
-      { role: "ci", type: "fake-ci", create: () => ({}) as CiProvider },
+      { role: "ci", configSchema: anyProvider, type: "fake-ci", create: () => ({}) as CiProvider },
     ], pluginContext(config()));
     expect(Object.keys(registry.harnesses()).sort()).toEqual(["codex", "pi"]);
   });
 
   test("registers each configured code host by its type", () => {
-    const registry = new PluginRegistry([{ role: "code", type: "gitlab", create: (_context, name) => host(name) }], pluginContext(config({
+    const registry = new PluginRegistry([{ role: "code", configSchema: anyProvider, type: "gitlab", create: (_context, name) => host(name) }], pluginContext(config({
       codeHosts: { review: { type: "gitlab" } } as never,
     })));
     expect(registry.codeHosts().get("review")).toEqual(host("review"));
   });
 
   test("gives an item source without a code host of its name one of the source's own type", () => {
-    const registry = new PluginRegistry([{ role: "code", type: "github", create: (_context, name) => host(name) }], pluginContext(config({
+    const registry = new PluginRegistry([{ role: "code", configSchema: anyProvider, type: "github", create: (_context, name) => host(name) }], pluginContext(config({
       sources: { github: { type: "github" } } as never,
     })));
     expect(registry.codeHosts().get("github")).toEqual(host("github"));
@@ -75,7 +79,7 @@ describe("PluginRegistry", () => {
 
   test("builds one item source module per type and none for an unknown type", () => {
     let built = 0;
-    const registry = new PluginRegistry([{ role: "items", type: "jira", create: () => { built += 1; return {}; } }], pluginContext(config()));
+    const registry = new PluginRegistry([{ role: "items", configSchema: anyProvider, type: "jira", create: () => { built += 1; return {}; } }], pluginContext(config()));
     expect(registry.itemSource("jira")).toBe(registry.itemSource("jira"));
     expect(built).toBe(1);
     expect(registry.itemSource("github")).toBeNull();

@@ -798,6 +798,8 @@ A `workspace-write` Codex run can write its own `HOME`, and gets a temporary dir
 
 The canonical configuration names the three provider roles and the harnesses: `providers.items` (issue trackers), `providers.code`, `providers.ci`, `harnesses`, agent `harness` and `access`, and repository `items` and `code`. The loader translates them to the older names (`sources`, `codeHosts`, `ci`, `runners`, `runner`, `workspaceAccess`, `source`, `codeHost`), which keep working. `labels` may sit on the item providers (all of them must carry an identical block, which a YAML alias gives you) or at the top level. Using the old and the new name for the same thing is an error, and equivalent documents produce the same configuration hash.
 
+Each provider entry's `type` names a plugin, and that plugin defines the entry's other settings: `webhookPath`, `autoConfigureWebhook` and `webhookSecret` belong to the `github` item source, `triggers` to the `github-actions` CI provider. The plugin validates the entry when the configuration loads, so a misspelled setting is an error naming the entry, and a `type` no plugin provides is an error that lists the types this build knows.
+
 The packaged defaults replace the Git-pinned `import` of earlier versions, which still loads with a deprecation warning; `conveyor config migrate` inlines it.
 
 ### CI providers

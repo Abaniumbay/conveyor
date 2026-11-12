@@ -95,7 +95,9 @@ the rule new code follows; the current state is tracked by the boundary test.
   host, CI and harness roles are plugins today, and the item source becomes one with its ports.
   `src/plugins/index.ts` lists them and the composition root (`src/cli/commands/serve.ts`) is the
   only place that registers them. Plugins of one provider share a client through the plugin
-  context, never by importing each other.
+  context, never by importing each other. Each item source, code host and CI plugin owns its
+  configuration schema: the core schema knows only an entry's `type`, and loading the configuration
+  validates the rest with the plugin's schema.
 - **Events:** plugins report what they observe as events; the core compares them with what it
   knows, records the change, and emits its own events, which other modules (the dashboard among
   them) consume. Writes stay direct calls through ports, and every write is recorded as an event.

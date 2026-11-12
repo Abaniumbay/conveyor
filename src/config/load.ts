@@ -16,7 +16,8 @@ import { ConfigError, safeYamlDiagnostic } from "./errors";
 import { materialiseImport, parseImportSpec, type ImportSpec, type ResolvedImport } from "./import";
 import { protectedServiceLocations, resolveToolchainPaths } from "../isolation/toolchain-paths";
 import { normalizeRoleDocuments } from "./roles";
-import { configSchema, isNativeStage, type ConveyorConfigData } from "./schema";
+import { configSchema, isNativeStage, type ConveyorConfigData, type ProviderEntry } from "./schema";
+import type { Plugin } from "../core/plugins";
 
 const NAMED_SECTIONS = [
   "sources",
@@ -61,6 +62,36 @@ export interface LoadConfigOptions {
   home?: string;
   /** Leave secretPlaceholder(key) where each `!secret` was (readConfiguration only, for migration). */
   secretPlaceholders?: boolean;
+  /**
+   * The plugins whose schemas validate and complete the item source, code host and CI provider
+   * entries. Without them an entry is checked only for its `type` (tools that only read paths).
+   */
+  plugins?: readonly Plugin[];
+}
+
+const PROVIDER_ROLES = [["items", "sources"], ["code", "codeHosts"], ["ci", "ci"]] as const;
+
+/** Validates each provider entry with the schema of the plugin its `type` names, and applies its defaults. */
+function completeProviders(data: ConveyorConfigData, plugins: readonly Plugin[]): LocatedError[] {
+  const errors: LocatedError[] = [];
+  for (const [role, key] of PROVIDER_ROLES) {
+    const entries = data[key];
+    for (const [name, entry] of Object.entries(entries)) {
+      const plugin = plugins.find((candidate) => candidate.role === role && candidate.type === entry.type);
+      if (!plugin || plugin.role === "harness") {
+        const known = plugins.filter((candidate) => candidate.role === role).map((candidate) => candidate.type);
+        errors.push({ path: [key, name, "type"], message: `: no ${role} plugin provides type "${entry.type}" (known: ${known.join(", ") || "none"})` });
+        continue;
+      }
+      const parsed = plugin.configSchema.safeParse(entry);
+      if (!parsed.success) {
+        errors.push(...parsed.error.issues.map((issue) => ({ path: [key, name, ...issue.path.map(String)], message: `: ${issue.message}` })));
+        continue;
+      }
+      entries[name] = parsed.data as ProviderEntry;
+    }
+  }
+  return errors;
 }
 
 export { ConfigError };
@@ -288,7 +319,7 @@ function toolchainPathErrors(config: ConveyorConfigData, root: string, home: str
   return errors;
 }
 
-function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
+function crossReferenceErrors(config: ConveyorConfigData, plugins: readonly Plugin[] | undefined): LocatedError[] {
   const errors: LocatedError[] = [];
   const error = (segments: readonly (string | number)[], message: string) =>
     errors.push({ path: segments.map(String), message: ` ${message}` });
@@ -459,20 +490,19 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
     if (ciName && !config.ci[ciName]) {
       error(["repositories", name, "ci"], `references unknown CI provider "${ciName}"`);
     }
-    if (ciName && config.ci[ciName]?.type !== "github-actions" && config.sources[repository.source]?.type === "github") {
-      error(["repositories", name, "ci"], `is incompatible with sources.${repository.source}`);
-    }
     {
       const providerName = ciName;
       const provider = providerName ? config.ci[providerName] : undefined;
       for (const [index, stage] of config.pipelines[repository.pipeline]?.stages.entries() ?? []) {
         if (isNativeStage(stage) || stage.run.type !== "source-action" || stage.run.input?.triggers === undefined) continue;
-        if (provider && provider.triggers.length > 0) error(["pipelines", repository.pipeline, "stages", index, "run", "with", "triggers"], `conflicts with ci.${providerName}.triggers`);
+        if (Array.isArray(provider?.triggers) && provider.triggers.length > 0) error(["pipelines", repository.pipeline, "stages", index, "run", "with", "triggers"], `conflicts with ci.${providerName}.triggers`);
       }
     }
     const codeHost = repository.codeHost ?? repository.source;
     if (config.codeHosts[codeHost]) continue;
-    if (codeHost === repository.source && config.sources[repository.source]?.type === "github") continue;
+    // An item source without a code host of its own name is its own code host when a code plugin of its type exists.
+    const sourceType = config.sources[repository.source]?.type;
+    if (codeHost === repository.source && sourceType && (!plugins || plugins.some((plugin) => plugin.role === "code" && plugin.type === sourceType))) continue;
     error(["repositories", name, "codeHost"], `references unknown or unsupported code host "${codeHost}"`);
   }
   return errors;
@@ -752,12 +782,16 @@ export async function loadConfig(
   }
 
   const data = normalizeRunPaths(parsed.data);
+  if (options.plugins) {
+    const providerErrors = completeProviders(data, options.plugins);
+    if (providerErrors.length > 0) throw new ConfigError(formatErrors("configuration is invalid:", providerErrors, locate));
+  }
   for (const [id, repository] of Object.entries(data.repositories)) {
     if (repository.ci.junit === undefined && repository.ci.mode !== "disabled") {
       warnings.push(`repositories.${id}.ci.junit is not configured: linked criterion tests are checked in source text but are not proven to have run or passed in CI`);
     }
   }
-  const referenceErrors = crossReferenceErrors(data);
+  const referenceErrors = crossReferenceErrors(data, options.plugins);
   if (referenceErrors.length > 0) {
     throw new ConfigError(formatErrors("configuration references are invalid:", referenceErrors, locate));
   }

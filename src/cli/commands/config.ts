@@ -12,10 +12,11 @@ import type { TaskRegistry } from "../../tasks/contract";
 import { renderPlan } from "../../tasks/plan";
 import { CliError, EXIT } from "../args";
 import { loadCommandConfig, positional, printJson, stringOption, type Command } from "../command";
+import { PLUGINS } from "../plugins";
 
 /** The check report: the hash, then the expanded plan of each compilable repository. */
 export async function checkConfig(configPath: string, registry?: TaskRegistry, home?: string): Promise<string> {
-  const config = await loadConfig(configPath, registry, home ? { home } : {});
+  const config = await loadConfig(configPath, registry, { ...(home ? { home } : {}), plugins: PLUGINS });
   return checkReport(config);
 }
 
@@ -129,7 +130,7 @@ export const configMigrate: Command = {
     const from = path.resolve(stringOption(context, "from") ?? context.paths.config);
     if (context.options.stages === true) {
       try {
-        const migrated = await migrateStages(from, { home: context.paths.home });
+        const migrated = await migrateStages(from, { home: context.paths.home, plugins: PLUGINS });
         if (context.json) printJson(context, migrated);
         else {
           context.out([`Wrote ${migrated.output}`, ...migrated.comparisons.map((entry) => `Repository ${entry.repository}:\n${entry.report}`)].join("\n\n"));
@@ -144,7 +145,7 @@ export const configMigrate: Command = {
     if (!to) throw new CliError("--to is required", EXIT.usage);
     let result;
     try {
-      result = await migrateConfiguration(from, to, { home: context.paths.home });
+      result = await migrateConfiguration(from, to, { home: context.paths.home, plugins: PLUGINS });
     } catch (error) {
       if (error instanceof ConfigError) throw new CliError(error.message, EXIT.config);
       throw error;
