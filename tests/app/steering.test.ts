@@ -6,6 +6,8 @@ import path from "node:path";
 import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import type { Harness, SteeringRunInput } from "../../src/harness/types";
+import { codexProfile } from "../../src/plugins/codex/profile";
 import { githubPlugins } from "../support/plugins";
 import { dashboardViews } from "../support/dashboard";
 
@@ -101,6 +103,48 @@ describe("ConveyorService steering", () => {
     expect(store.listRunEvents(runId).some((event) => event.type === "report_rationale")).toBe(true);
     expect(store.costSummary()).toMatchObject({ runs: 1, unavailableRuns: 1 });
     await service.close();
+  });
+
+  test("runs the steering agent on its runner's harness, and fails the run clearly when the harness cannot steer", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-steering-harness-"));
+    temporaryDirectories.push(root);
+    const instructions = path.join(root, "operator.md");
+    await writeFile(instructions, "Inspect first.");
+    const config = {
+      hash: "config-hash", root,
+      settings: { workspaces: path.join(root, "worktrees"), artifacts: path.join(root, "artifacts"), interruptGraceMs: 100 },
+      web: { listen: "127.0.0.1:4300", steering: { agent: "operator", workspace: root } },
+      runners: { codex: { type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true } },
+      agents: { operator: { runner: "codex", instructions, workspaceAccess: "read-only", tasks: ["agent.reportProgress"] } },
+      pipelines: {}, repositories: {}, sources: {}, checks: {},
+    } as unknown as ConveyorConfig;
+    const steered: SteeringRunInput[] = [];
+    const base: Harness = { id: "codex", capabilities: { sessionResume: true }, profile: codexProfile, run: async () => { throw new Error("not an agent turn"); } };
+    const steering = async (harness: Harness) => {
+      const store = await ConveyorStore.open(path.join(root, `${steered.length}-${harness.steer ? "steer" : "none"}.sqlite`));
+      const service = new ConveyorService(config, store, {} as never, { harnesses: { codex: harness } });
+      const runId = await service.startSteering("Check the board");
+      await service.waitForSteeringRun(runId);
+      const outcome = { run: dashboardViews(service).getSteeringRun(runId), events: store.listRunEvents(runId).map((event) => [event.type, (event.payload as { text?: string }).text]) };
+      await service.close();
+      return outcome;
+    };
+
+    const capable = await steering({
+      ...base,
+      steer: async (input) => {
+        steered.push(input);
+        return { summary: "The board is healthy.", sessionId: null, usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, durationMs: 1, exitCode: 0, stderr: "" };
+      },
+    });
+    expect(capable.run).toMatchObject({ status: "succeeded" });
+    expect(steered).toHaveLength(1);
+    expect(steered[0]).toMatchObject({ command: "codex", sandbox: "read-only", automaticApprovals: true });
+    expect(capable.events.at(-1)).toEqual(["report", "The board is healthy."]);
+
+    const incapable = await steering(base);
+    expect(incapable.run).toMatchObject({ status: "failed" });
+    expect(incapable.events.at(-1)).toEqual(["error", "No harness can run the steering agent for runner type codex"]);
   });
 
   test("runs a configured periodic Operator only for reconciled stopped board items", async () => {

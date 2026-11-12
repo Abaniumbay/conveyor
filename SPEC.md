@@ -99,6 +99,8 @@ Starts, observes, interrupts, and reports a unit of agent or process execution. 
 - `codex`: an agent harness using Codex CLI in non-interactive mode. It advertises a `sessionResume` capability, so an agent that asked a question can continue its session with the answer.
 - `json-process`: a generic command runner whose stdout is one validated JSON result, used by `script.run`.
 
+Each agent harness is a plugin (`src/plugins/<harness>/`) that implements the `Harness` port (`src/harness/types.ts`) and declares a `HarnessProfile`, which tells the core how to prepare its runs (sandbox mode and approvals, optional shell, config directory, extra settings) without branching on the runner type; the plugin picks its own launch and environment from the shared isolation code. Legacy stage producers, legacy verifier checks and the Operator run only on a harness that offers them (today Codex).
+
 Harness-native subagents are allowed within an agent run, but they remain part of the lead run and do not become independent Conveyor runs.
 
 ### Task

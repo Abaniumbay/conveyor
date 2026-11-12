@@ -55,4 +55,40 @@ describeSandbox("codexHarness", () => {
     expect(resumed.slice(0, 2)).toEqual(["exec", "resume"]);
     expect(resumed).toContain("sess-1");
   });
+
+  test("runs legacy producers ephemeral, legacy checks against the check schema and the Operator without one", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-harness-legacy-"));
+    directories.push(directory);
+    const executable = path.join(directory, "fake-codex");
+    const artifactsDirectory = path.join(directory, "a");
+    const capture = path.join(artifactsDirectory, "capture.json");
+    await mkdir(path.join(directory, "workspace"));
+    await mkdir(artifactsDirectory);
+    await writeFile(executable, `#!/usr/bin/env bun
+      const args = process.argv.slice(2);
+      await Bun.write(process.env.CAPTURE!, JSON.stringify(args));
+      const schema = args.includes("--output-schema") ? await Bun.file(args[args.indexOf("--output-schema") + 1]).json() : null;
+      if (schema?.properties?.decision) {
+        await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({ version: 1, decision: "pass", status: "ready", reason: null, evidence: [], requiredFixes: [], criteria: [] }));
+      } else if (schema) {
+        await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({ version: 1, outcome: "success", status: "done", summary: "ok", reason: null, metrics: {}, artifacts: [] }));
+      }
+      console.log(JSON.stringify({ type: "thread.started", thread_id: "t-2" }));
+      console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Board checked." } }));
+    `);
+    await chmod(executable, 0o755);
+    const input = {
+      command: executable, workspace: path.join(directory, "workspace"), artifactsDirectory,
+      prompt: "go", sandbox: "read-only" as const, automaticApprovals: false,
+      mcp: { command: "bun", args: [] }, env: { CAPTURE: capture },
+    };
+    const captured = async () => JSON.parse(await readFile(capture, "utf8")) as string[];
+
+    expect((await codexHarness.runEphemeral!(input)).stageResult.summary).toBe("ok");
+    expect(await captured()).toContain("--ephemeral");
+    expect(await codexHarness.check!(input)).toMatchObject({ decision: "pass", status: "ready" });
+    expect(await captured()).toContain("--output-schema");
+    expect(await codexHarness.steer!(input)).toMatchObject({ summary: "Board checked.", sessionId: "t-2" });
+    expect(await captured()).not.toContain("--output-schema");
+  });
 });

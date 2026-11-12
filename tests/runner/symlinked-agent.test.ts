@@ -4,8 +4,8 @@ import net from "node:net";
 import path from "node:path";
 
 import { agentFilesystemCommand, verifyAgentWrapper } from "../../src/isolation/sandbox";
-import { runClaudeCode } from "../../src/runner/claude-code";
-import { runCodex } from "../../src/runner/codex";
+import { runClaudeCode } from "../../src/plugins/claude-code/claude-code";
+import { runCodex } from "../../src/plugins/codex/codex";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 

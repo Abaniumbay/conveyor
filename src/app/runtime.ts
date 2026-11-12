@@ -15,12 +15,7 @@ import type { StoredIssue } from "../db/store";
 import { verifierToolGrant } from "../mcp/tools";
 import type { EgressInput } from "../isolation/run-network";
 import { agentEgressFor } from "../isolation/agent-egress";
-import { runCodex, type CodexMcpConfiguration, type CodexRunInput } from "../runner/codex";
-import {
-  runCodexCheck,
-  type CodexCheckInput,
-  type CodexCheckRunResult,
-} from "../runner/codex-check";
+import type { CheckRunInput, CheckRunResult, Harness, HarnessMcpConfiguration, HarnessRunInput } from "../harness/types";
 import { runJsonProcess, runProcess } from "../runner/json-process";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../runner/result";
 import {
@@ -59,7 +54,7 @@ export interface RuntimeIssueContext {
 export type RuntimeDeliveryState = NonNullable<RuntimeIssueContext["delivery"]>;
 
 export interface ScopedMcpLease {
-  configuration: CodexMcpConfiguration;
+  configuration: HarnessMcpConfiguration;
   close(): Promise<void> | void;
 }
 
@@ -81,8 +76,12 @@ export interface SourceActionHandler {
 }
 
 export interface RuntimeImplementations {
-  codex?: (input: CodexRunInput) => Promise<RunEnvelope>;
-  codexCheck?: (input: CodexCheckInput) => Promise<CodexCheckRunResult>;
+  /** Agent harnesses by runner type: legacy producers and verifier checks run on the runner's harness. */
+  harnesses?: Record<string, Harness>;
+  /** Runs a legacy producer instead of the runner's harness. */
+  codex?: (input: HarnessRunInput) => Promise<RunEnvelope>;
+  /** Runs a legacy verifier check instead of the runner's harness. */
+  codexCheck?: (input: CheckRunInput) => Promise<CheckRunResult>;
   jsonProcess?: typeof runJsonProcess;
 }
 
@@ -130,8 +129,9 @@ async function evidenceScript(
 }
 
 export class ConfiguredStageRuntime implements PipelineDependencies {
-  readonly #codex: (input: CodexRunInput) => Promise<RunEnvelope>;
-  readonly #codexCheck: (input: CodexCheckInput) => Promise<CodexCheckRunResult>;
+  readonly #harnesses: Record<string, Harness>;
+  readonly #codex: ((input: HarnessRunInput) => Promise<RunEnvelope>) | undefined;
+  readonly #codexCheck: ((input: CheckRunInput) => Promise<CheckRunResult>) | undefined;
   readonly #jsonProcess: typeof runJsonProcess;
 
   constructor(
@@ -144,9 +144,26 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     implementations: RuntimeImplementations = {},
     private readonly signal?: AbortSignal,
   ) {
-    this.#codex = implementations.codex ?? runCodex;
-    this.#codexCheck = implementations.codexCheck ?? runCodexCheck;
+    this.#harnesses = implementations.harnesses ?? {};
+    this.#codex = implementations.codex;
+    this.#codexCheck = implementations.codexCheck;
     this.#jsonProcess = implementations.jsonProcess ?? runJsonProcess;
+  }
+
+  /** The runner's harness, run ephemeral for a legacy producer. */
+  private producer(runnerType: string): (input: HarnessRunInput) => Promise<RunEnvelope> {
+    if (this.#codex) return this.#codex;
+    const harness = this.#harnesses[runnerType];
+    if (!harness?.runEphemeral) throw new Error(`no harness runs legacy stages for runner type ${runnerType}`);
+    return harness.runEphemeral.bind(harness);
+  }
+
+  /** The runner's harness, for a legacy verifier check. */
+  private checker(runnerType: string): (input: CheckRunInput) => Promise<CheckRunResult> {
+    if (this.#codexCheck) return this.#codexCheck;
+    const harness = this.#harnesses[runnerType];
+    if (!harness?.check) throw new Error(`no harness runs legacy checks for runner type ${runnerType}`);
+    return harness.check.bind(harness);
   }
 
   private egressInput(runner: { controlPlaneHosts?: string[] | undefined }): { egress?: EgressInput } {
@@ -246,6 +263,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         if (!runner || runner.type !== "codex") {
           throw new Error(`agent ${stage.run.agent} must use a Codex runner in v0.1`);
         }
+        const produce = this.producer(runner.type);
         const workspace = this.context.workspace?.path;
         if (!workspace) throw new Error(`agent stage ${stage.id} requires a workspace`);
         this.conveyorMessage(
@@ -263,7 +281,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         });
         try {
           const instructions = await readFile(agent.instructions, "utf8");
-          result = await this.#codex({
+          result = await produce({
             command: runner.command,
             workspace,
             temporaryDirectory: workspaceScratchPath(workspace),
@@ -345,6 +363,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     if (!runner || runner.type !== "codex") {
       throw new Error(`verifier ${definition.verifier} must use a Codex runner in v0.1`);
     }
+    const check = this.checker(runner.type);
     const issue = issueFrom(context);
     const workspace = this.context.workspace?.path ?? this.context.repository.folder;
     if (this.refreshDeliveryState) {
@@ -389,7 +408,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         actor: this.agentActor(definition.verifier),
       });
       const instructions = await readFile(agent.instructions, "utf8");
-      const result = await this.#codexCheck({
+      const result = await check({
         command: runner.command,
         workspace,
         ...(this.context.workspace ? { temporaryDirectory: workspaceScratchPath(this.context.workspace.path) } : {}),

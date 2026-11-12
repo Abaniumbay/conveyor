@@ -9,6 +9,7 @@ import type { ConveyorConfig } from "../../src/config/load";
 import { configSchema } from "../../src/config/schema";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness } from "../../src/harness/types";
+import { codexProfile } from "../../src/plugins/codex/profile";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { TaskContext } from "../../src/tasks/context";
 import { InfrastructureError } from "../../src/tasks/contract";
@@ -57,7 +58,7 @@ describe("agent.run under the stage executor", () => {
       plans: [],
     };
     let harnessRuns = 0;
-    const harness: Harness = { id: "fake", capabilities: { sessionResume: false }, async run() { harnessRuns++; throw new Error("must not run"); } };
+    const harness: Harness = { id: "fake", capabilities: { sessionResume: false }, profile: codexProfile, async run() { harnessRuns++; throw new Error("must not run"); } };
     const deps = {
       store, config, items: {} as never, git: {} as never,
       workspaces: { create: async () => { throw new WorkspaceError("cannot fetch origin/main: incorrect old value provided"); } },

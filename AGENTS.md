@@ -59,7 +59,7 @@ Run these from the repository root.
 | `src/core/plugins.ts` | The plugin contract and registry: item source, code host, CI, harness and presentation plugins by `type`. |
 | `src/plugins/` | Plugin implementations, one folder per provider and one per role inside it: `github/{shared,items,code,ci}`, `codex/`, `claude-code/`, and `dashboard/` (the dashboard's view models in `views.ts`, its live feed in `feed.ts`). `index.ts` is the list the composition root registers. |
 | `src/source/`, `src/codehost/` | Item source and code host ports (`types.ts`: `ItemReader`, `ItemSections`, `ItemMarkers`, … combined as `ItemTracker`; `client.ts`: the service-only ports combined as `ItemSourceClient`, the type the service holds instead of a provider client), call metering and the reason each request is made (`calls.ts`), who may act (`trust.ts`), the status comment (`status-comment.ts`), Conveyor's managed-section codec (`managed-sections.ts`), item types and fields (`item-metadata.ts`), and provider-neutral change actions. |
-| `src/harness/`, `src/runner/` | The harness port (`harness/types.ts`) and the process runners behind the Codex and Claude Code plugins. |
+| `src/harness/`, `src/runner/` | The harness port (`harness/types.ts`: `Harness`, its `HarnessProfile` and the optional legacy-check and Operator runs) and the shared runner pieces (run envelope, output schemas, JSON-process runner). The Codex and Claude Code runners live in their plugins (`src/plugins/codex/`, `src/plugins/claude-code/`). |
 | `src/isolation/` | Sanitized agent environment, network sandbox, egress proxies. |
 | `src/web/` | `server.ts` (HTTP routes, SSE), `model.ts` (the live dashboard model and its patches), `render.tsx` (Preact markup), `types.ts` (view models), `styles.ts` (CSS), `app/` (the browser application: `main.tsx`, `store.ts`, `derive.ts`, `behaviour.ts`). |
 | `src/cli/` | `main.ts` (command table) and `commands/*.ts`. |
@@ -202,7 +202,9 @@ a service mutation directly.
 3. Put the implementation in its plugin folder (`src/plugins/<provider>/<role>/`), declare it with
    the contract in `src/core/plugins.ts`, and add it to `src/plugins/index.ts`; the composition
    root (`src/cli/commands/serve.ts`) registers it. Plugins of one provider share a client through
-   `PluginContext.shared`, never by importing another plugin.
+   `PluginContext.shared`, never by importing another plugin. A harness plugin keeps its runner in
+   its folder, declares a `HarnessProfile` (how the core prepares its runs) and picks its own launch
+   and environment from `src/isolation/`; the core never branches on the runner type to launch it.
 4. Fake the port in tests, not the provider's transport, unless you are testing the provider
    module itself.
 5. `bun test tests/scripts/architecture-boundaries.test.ts` passes without new allowlist entries.
@@ -276,8 +278,8 @@ a service mutation directly.
 - A bug fix comes with a test that fails without the fix.
 - Changed production code that no test executes is a missing test case. Test its behaviour with real
   assertions; never add a test solely to raise coverage.
-- Bubblewrap suites: `tests/isolation/sandbox.test.ts`, `tests/runner/codex-egress.test.ts`,
-  `tests/runner/codex-steering.test.ts` and `tests/runner/claude-code.test.ts` exercise a real `bwrap`.
+- Bubblewrap suites: `tests/isolation/sandbox.test.ts`, `tests/plugins/codex/codex-egress.test.ts`,
+  `tests/plugins/codex/codex-steering.test.ts` and `tests/plugins/claude-code/claude-code.test.ts` exercise a real `bwrap`.
   `tests/support/bwrap.ts` is the single place that decides availability. Outside CI they skip when
   `bwrap --unshare-net` does not work; in CI (`CI` set) an unavailable `bwrap` fails the run, and the
   Check job installs and probes bubblewrap before the tests. These suites must never be skipped in CI.

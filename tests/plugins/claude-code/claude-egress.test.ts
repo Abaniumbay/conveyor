@@ -3,11 +3,11 @@ import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises
 import net from "node:net";
 import path from "node:path";
 
-import { resolveBash } from "../../src/isolation/environment";
-import { runClaudeCode } from "../../src/runner/claude-code";
-import { CLAUDE_CONTROL_PLANE_HOSTS, writeClaudeShellPrefix } from "../../src/isolation/run-network";
-import { bwrapUnavailableReason } from "../support/bwrap";
-import { shortTemporaryDirectory } from "../support/short-temporary-directory";
+import { resolveBash } from "../../../src/isolation/environment";
+import { runClaudeCode } from "../../../src/plugins/claude-code/claude-code";
+import { CLAUDE_CONTROL_PLANE_HOSTS, writeClaudeShellPrefix } from "../../../src/isolation/run-network";
+import { bwrapUnavailableReason } from "../../support/bwrap";
+import { shortTemporaryDirectory } from "../../support/short-temporary-directory";
 
 const unavailable = bwrapUnavailableReason();
 if (unavailable) console.warn(`SKIPPED Claude egress tests: \`bwrap --unshare-net\` is unavailable (${unavailable})`);

@@ -20,6 +20,8 @@ import { DEFAULT_CI_TYPE } from "../../src/core/plugins";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 import { CriterionApprovals, criterionTextHash } from "../../src/db/review-records";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
+import { codexProfile } from "../../src/plugins/codex/profile";
+import { claudeCodeProfile } from "../../src/plugins/claude-code/profile";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import { parseManagedSections, upsertManagedSection } from "../../src/source/managed-sections";
 import type { SourceIssue } from "../../src/source/types";
@@ -280,6 +282,7 @@ export async function deliveryWorld(options: {
   const harness: Harness = {
     id: "fake",
     capabilities: { sessionResume: false },
+    profile: codexProfile,
     async run(input: HarnessRunInput): Promise<RunEnvelope> {
       const stage = /"stageId": "([\w-]+)"/.exec(input.prompt)?.[1] ?? "unknown";
       agentRuns.push(stage);
@@ -400,7 +403,7 @@ export async function deliveryWorld(options: {
     : githubPlugins(config, observed as never, undefined, [{ role: "ci", configSchema: anyProvider, type: DEFAULT_CI_TYPE, create: () => provider }]);
   const service = new ConveyorService(config, store, observed as never, {
     plugins,
-    harnesses: { codex: harness, "claude-code": harness },
+    harnesses: { codex: harness, "claude-code": { ...harness, profile: claudeCodeProfile } },
     codeHosts: new CodeHostRegistry().register("github", host),
   });
   if (!options.publicLifecycle) {

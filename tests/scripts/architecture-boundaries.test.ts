@@ -14,7 +14,7 @@ const FILES = new Set([
   "src/plugins/codex/harness.ts",
   "src/plugins/index.ts",
   "src/harness/types.ts",
-  "src/runner/claude-code.ts",
+  "src/plugins/claude-code/claude-code.ts",
   "src/cli/commands/serve.ts",
   "src/db/store.ts",
   "src/plugins/github/items/index.ts",

@@ -4,8 +4,8 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { claudeArguments, claudeSchema, clearClaudeCodeHome, runClaudeCode, type ClaudeCodeRunInput } from "../../src/runner/claude-code";
-import { bwrapUnavailableReason } from "../support/bwrap";
+import { claudeArguments, claudeSchema, clearClaudeCodeHome, runClaudeCode, type ClaudeCodeRunInput } from "../../../src/plugins/claude-code/claude-code";
+import { bwrapUnavailableReason } from "../../support/bwrap";
 
 const directories: string[] = [];
 const bwrapUnavailable = bwrapUnavailableReason();
@@ -73,7 +73,7 @@ describe("claude code runner", () => {
   });
 
   test("passes the result schema without the $schema reference Claude Code rejects", async () => {
-    const raw = await readFile(path.join(import.meta.dir, "../../src/runner/schemas/producer-result.json"), "utf8");
+    const raw = await readFile(path.join(import.meta.dir, "../../../src/runner/schemas/producer-result.json"), "utf8");
     expect(raw).toContain("$schema");
     const schema = JSON.parse(claudeSchema(raw));
     expect(schema.$schema).toBeUndefined();

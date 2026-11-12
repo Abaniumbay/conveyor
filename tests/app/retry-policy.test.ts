@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { infrastructureRetry, isUsageLimitError } from "../../src/app/retry-policy";
-import { CodexRunnerError } from "../../src/runner/codex";
+import { CodexRunnerError } from "../../src/plugins/codex/codex";
 
 const retries = { infrastructureAttempts: 3, usageLimitAttempts: "unlimited" as const, minBackoff: 1_000, maxBackoff: 5_000 };
 

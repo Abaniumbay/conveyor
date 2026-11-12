@@ -27,7 +27,6 @@ export const RULES: Record<BoundaryRule, string> = {
 /** Provider and harness implementations (every plugin is one): reached only through ports. */
 const IMPLEMENTATIONS = [
   /^src\/plugins\/[^/]+\//,
-  /^src\/runner\/(codex|codex-check|codex-steering|claude-code)\.ts$/,
 ];
 
 /** The composition root builds implementations and hands their ports to the core. */

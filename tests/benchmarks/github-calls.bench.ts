@@ -20,6 +20,8 @@ import { githubPlugins } from "../support/plugins";
 import { GitHubSimulator } from "../support/github-simulator";
 import { GitHubReadCache } from "../../src/plugins/github/shared/read-cache";
 import type { Harness } from "../../src/harness/types";
+import { codexProfile } from "../../src/plugins/codex/profile";
+import { claudeCodeProfile } from "../../src/plugins/claude-code/profile";
 import { EMPTY_USAGE, UNAVAILABLE_COST } from "../../src/runner/result";
 
 const ADDRESS = "owner/my-app";
@@ -187,7 +189,7 @@ async function scenario(
     await ensureRuntimeDirectories(w.config);
     const store = await ConveyorStore.open(w.config.settings.database);
     const harness = options.agent(() => service);
-    service = new ConveyorService(w.config, store, w.github, { plugins: githubPlugins(w.config, w.github, w.meter), githubCalls: w.meter, harnesses: { codex: harness, "claude-code": harness } });
+    service = new ConveyorService(w.config, store, w.github, { plugins: githubPlugins(w.config, w.github, w.meter), githubCalls: w.meter, harnesses: { codex: { ...harness, profile: codexProfile }, "claude-code": { ...harness, profile: claudeCodeProfile } } });
     await service.onboardRepositories();
     await service.reconcileAll();
   } else {
@@ -420,6 +422,7 @@ describe("GitHub calls per scenario", () => {
         agent: (service) => ({
           id: "fake-reviewer",
           capabilities: { sessionResume: false },
+          profile: codexProfile,
           async run(input) {
             const context = JSON.parse(await readFile(path.join(input.artifactsDirectory, "mcp-context.json"), "utf8")) as { control: { token: string } };
             const call = async (tool: string, toolInput: Record<string, unknown> = {}) => {

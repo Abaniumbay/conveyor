@@ -1,45 +1,15 @@
 import { existsSync } from "node:fs";
 
-import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
-import { prepareCodexEnvironment } from "../isolation/environment";
-import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
-import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
-import { CodexRunnerError, cleanupCodexRun, type CodexMcpConfiguration, withCleanupError } from "./codex";
-import { EMPTY_USAGE } from "./result";
+import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
+import { prepareCodexEnvironment } from "../../isolation/environment";
+import { acquireScratch, assertNoHostTmpWritableRoots } from "../../isolation/scratch";
+import { codexLaunch, type RunNetwork } from "../../isolation/run-network";
+import { CodexRunnerError, cleanupCodexRun, withCleanupError } from "./codex";
+import { EMPTY_USAGE } from "../../runner/result";
+import type { SteeringRunInput, SteeringRunResult } from "../../harness/types";
 
-export interface CodexSteeringInput {
-  command: string;
-  workspace: string;
-  /** Per-run directory that hosts the sanitized home. */
-  artifactsDirectory: string;
-  prompt: string;
-  model?: string;
-  effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
-  sandbox: "read-only" | "workspace-write" | "danger-full-access";
-  automaticApprovals: boolean;
-  mcp?: CodexMcpConfiguration;
-  env?: Record<string, string>;
-  timeoutMs?: number;
-  interruptGraceMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: unknown) => void;
-  egress?: EgressInput;
-  writableRoots?: string[];
-  /** Run with only a fresh scratch filesystem instead of a steering workspace mount. */
-  filesystem?: "scratch";
-  /** Omit for disposable workspace-free scratch. */
-  temporaryDirectory?: string;
-}
-
-export interface CodexSteeringResult {
-  summary: string;
-  sessionId: string | null;
-  usage: typeof EMPTY_USAGE;
-  durationMs: number;
-  exitCode: number;
-  stderr: string;
-  cleanupError?: string;
-}
+export type CodexSteeringInput = SteeringRunInput;
+export type CodexSteeringResult = SteeringRunResult;
 
 interface CodexEvent {
   type?: string;

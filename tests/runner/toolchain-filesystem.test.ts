@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { runClaudeCode } from "../../src/runner/claude-code";
-import { runCodex } from "../../src/runner/codex";
+import { runClaudeCode } from "../../src/plugins/claude-code/claude-code";
+import { runCodex } from "../../src/plugins/codex/codex";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 

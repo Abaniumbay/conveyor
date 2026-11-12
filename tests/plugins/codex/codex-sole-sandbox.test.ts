@@ -3,10 +3,10 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
-import { runCodex } from "../../src/runner/codex";
-import { runCodexCheck } from "../../src/runner/codex-check";
-import { bwrapUnavailableReason } from "../support/bwrap";
-import { shortTemporaryDirectory } from "../support/short-temporary-directory";
+import { runCodex } from "../../../src/plugins/codex/codex";
+import { runCodexCheck } from "../../../src/plugins/codex/codex-check";
+import { bwrapUnavailableReason } from "../../support/bwrap";
+import { shortTemporaryDirectory } from "../../support/short-temporary-directory";
 
 type Mode = "read-only" | "workspace-write" | "danger-full-access";
 

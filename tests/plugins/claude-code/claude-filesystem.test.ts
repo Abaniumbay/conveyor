@@ -2,9 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { runClaudeCode } from "../../src/runner/claude-code";
-import { bwrapUnavailableReason } from "../support/bwrap";
-import { shortTemporaryDirectory } from "../support/short-temporary-directory";
+import { runClaudeCode } from "../../../src/plugins/claude-code/claude-code";
+import { bwrapUnavailableReason } from "../../support/bwrap";
+import { shortTemporaryDirectory } from "../../support/short-temporary-directory";
 
 const directories: string[] = [];
 const unavailable = bwrapUnavailableReason();
