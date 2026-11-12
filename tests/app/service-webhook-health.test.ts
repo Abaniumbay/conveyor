@@ -9,7 +9,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
-import { GitHubTransportError } from "../../src/source/github/adapter";
+import { GitHubTransportError } from "../../src/plugins/github/shared/adapter";
 
 const directories: string[] = [];
 afterEach(async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { GitHubCodeHost } from "../../src/source/github/codehost";
-import type { GitHubAdapter } from "../../src/source/github/adapter";
+import { GitHubCodeHost } from "../../src/plugins/github/code/codehost";
+import type { GitHubAdapter } from "../../src/plugins/github/shared/adapter";
 
 type Mode = "aligned" | "behind" | "diverged" | "dirty" | "missing";
 

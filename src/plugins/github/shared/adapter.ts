@@ -1,0 +1,1562 @@
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+
+import { z } from "zod";
+
+import type { GitHubCacheLifetimes, GitHubMirrorStorage } from "./read-cache";
+import type { PullRequestReference, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../../../source/types";
+import type { IssueFieldDataType, IssueFieldDefinition, ResolvedFieldValue } from "../items/issue-metadata";
+import {
+  parseManagedSections,
+  upsertManagedSection,
+  type ManagedSectionName,
+} from "./managed-sections";
+
+export interface GitHubTransportRequest {
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  path: string;
+  body?: unknown;
+  paginate?: boolean;
+  /** Return stdout as text instead of parsing JSON (e.g. job logs). */
+  raw?: boolean;
+  /** Return the response bytes instead of parsing JSON (e.g. artifact archives). */
+  binary?: boolean;
+  /**
+   * For a create: looks for the resource a failed attempt may already have made. The retry wrapper
+   * calls it before every retry and returns what it finds instead of creating a duplicate.
+   */
+  recover?: () => Promise<unknown | undefined>;
+}
+
+export interface GitHubTransport {
+  request<T>(request: GitHubTransportRequest): Promise<T>;
+}
+
+export interface GitHubRateLimit {
+  limit: number;
+  remaining: number;
+  resetAt: string;
+}
+
+export interface GitHubRateLimits {
+  core: GitHubRateLimit | null;
+  graphql: GitHubRateLimit | null;
+}
+
+export class GitHubTransportError extends Error {
+  override readonly name = "GitHubTransportError";
+
+  constructor(
+    message: string,
+    readonly exitCode: number,
+    readonly stderr: string,
+  ) {
+    super(message);
+  }
+}
+
+/** GitHub answered 404 or 410 for an issue read by number: the issue was deleted or transferred away. */
+export class GitHubIssueGoneError extends GitHubTransportError {
+  readonly issueGone = true;
+}
+
+/** How long requests pause after a rate-limit refusal when GitHub does not say when the limit resets. */
+const RATE_LIMIT_PAUSE_MS = 60_000;
+/** The longest pause: GitHub's primary limit resets hourly. */
+const RATE_LIMIT_MAX_PAUSE_MS = 60 * 60_000;
+
+export class GhCliTransport implements GitHubTransport {
+  /** While set, GitHub has refused requests for a rate limit: further requests fail at once until then. */
+  #pausedUntil = 0;
+
+  constructor(private readonly command = "gh") {}
+
+  async request<T>(request: GitHubTransportRequest): Promise<T> {
+    if (Date.now() < this.#pausedUntil) {
+      throw new GitHubTransportError(
+        `GitHub API ${request.method} ${request.path} skipped: GitHub rate limit, paused until ${new Date(this.#pausedUntil).toISOString()}`,
+        1,
+        "",
+      );
+    }
+    const args = [this.command, "api", request.path, "--method", request.method];
+    if (request.paginate) args.push("--paginate", "--slurp");
+    // CI job logs carry ANSI colour codes, which gh refuses to print otherwise.
+    if (request.raw) args.push("--allow-escape-sequences");
+    if (request.body !== undefined) args.push("--input", "-");
+
+    const child = Bun.spawn(args, {
+      stdin: request.body === undefined ? "ignore" : "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, GH_PROMPT_DISABLED: "1" },
+    });
+    if (request.body !== undefined && child.stdin !== undefined) {
+      child.stdin.write(JSON.stringify(request.body));
+      child.stdin.end();
+    }
+    const [stdout, stderr, exitCode] = await Promise.all([
+      request.binary ? new Response(child.stdout).arrayBuffer() : new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    if (exitCode !== 0) {
+      if (/rate limit/i.test(stderr)) await this.pauseForRateLimit();
+      throw new GitHubTransportError(
+        `GitHub API ${request.method} ${request.path} failed: ${stderr.trim() || `exit ${exitCode}`}`,
+        exitCode,
+        stderr,
+      );
+    }
+    if (request.binary) return new Uint8Array(stdout as ArrayBuffer) as T;
+    const text = stdout as string;
+    if (request.raw) return text as T;
+    if (text.trim().length === 0) return null as T;
+    const decoded = JSON.parse(text) as unknown;
+    if (request.paginate && Array.isArray(decoded)) {
+      return decoded.flat() as T;
+    }
+    return decoded as T;
+  }
+
+  /**
+   * Pauses requests until the exhausted limit resets, read from `rate_limit` (which does not count
+   * against it); a secondary limit, or an unreadable reset, pauses for a minute.
+   */
+  private async pauseForRateLimit(): Promise<void> {
+    let until = Date.now() + RATE_LIMIT_PAUSE_MS;
+    try {
+      const child = Bun.spawn([this.command, "api", "rate_limit"], {
+        stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { ...process.env, GH_PROMPT_DISABLED: "1" },
+      });
+      const [stdout, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      if (exitCode === 0) {
+        const resources = (JSON.parse(stdout) as { resources?: Record<string, { remaining?: number; reset?: number }> }).resources ?? {};
+        const resets = Object.values(resources)
+          .filter((resource) => resource.remaining === 0 && typeof resource.reset === "number")
+          .map((resource) => resource.reset! * 1_000);
+        if (resets.length > 0) until = Math.max(until, ...resets);
+      }
+    } catch {
+      // The one-minute pause stands.
+    }
+    this.#pausedUntil = Math.min(until, Date.now() + RATE_LIMIT_MAX_PAUSE_MS);
+  }
+}
+
+export type IssueMetadataAccess = "ok" | "none" | "denied" | "error";
+
+interface GitHubLabel {
+  name: string;
+}
+
+export interface GitHubIssue {
+  id: number;
+  number: number;
+  html_url: string;
+  title: string;
+  body: string | null;
+  state: "open" | "closed";
+  state_reason?: string | null;
+  labels: Array<GitHubLabel | string>;
+  updated_at: string;
+  type?: { name: string } | null;
+  pull_request?: unknown;
+}
+
+interface GitHubIssueEvent {
+  id?: number;
+  created_at?: string;
+  event: string;
+  actor?: { login?: unknown } | null;
+  label?: { name?: unknown } | null;
+  rename?: { from?: unknown; to?: unknown } | null;
+}
+
+function eventActor(event: GitHubIssueEvent): SourceEventActor {
+  return { login: typeof event.actor?.login === "string" ? event.actor.login : null };
+}
+
+export function sourceIssue(address: string, issue: GitHubIssue): SourceIssue {
+  return {
+    id: `github:${address}#${issue.number}`,
+    number: issue.number,
+    url: issue.html_url,
+    title: issue.title,
+    body: issue.body ?? "",
+    state: issue.state,
+    stateReason: issue.state_reason ?? null,
+    labels: issue.labels.map(labelName).sort((left, right) => left.localeCompare(right)),
+    updatedAt: issue.updated_at,
+    ...(issue.type !== undefined ? { type: issue.type?.name ?? null } : {}),
+  };
+}
+
+interface GitHubComment {
+  id: number;
+  body: string | null;
+}
+
+interface GitHubPullRequest {
+  number: number;
+  html_url: string;
+  state: string;
+  merged?: boolean;
+  merged_at?: string | null;
+  body?: string | null;
+  merge_commit_sha?: string | null;
+  draft?: boolean;
+  mergeable_state?: string;
+  head?: { ref: string; sha: string };
+  base?: { ref: string };
+}
+
+export interface GitHubCheckRun {
+  app?: { slug?: string } | null;
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  details_url: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface GitHubActionsJob {
+  runner_name?: string | null;
+  steps?: Array<{ status?: string | null }> | null;
+  run_id?: number;
+}
+
+export interface GitHubActionsWorkflowRun {
+  id: number;
+  head_sha: string;
+  status: string;
+}
+
+export interface GitHubActionsArtifact {
+  id: number;
+  name: string;
+  expired: boolean;
+}
+
+export interface GitHubCheckRunAnnotation {
+  message?: string | null;
+}
+
+export interface GitHubDeliveryState {
+  pullRequest: PullRequestReference & {
+    merged: boolean;
+    mergedAt: string | null;
+    mergeCommitSha: string | null;
+    draft: boolean;
+    mergeState: string | null;
+    headBranch: string;
+    headSha: string;
+    baseBranch: string;
+    body?: string;
+  };
+  checks: Array<{
+    id: number;
+    name: string;
+    status: string;
+    conclusion: string | null;
+    url: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+  }>;
+}
+
+interface GitHubHook {
+  id: number;
+  active: boolean;
+  events?: string[];
+  config: { url?: string };
+  last_response?: { code?: number | null; status?: string | null } | null;
+}
+
+const hookDeliveriesSchema = z.array(z.object({
+  id: z.string().regex(/^\d+$/),
+  guid: z.string(),
+  delivered_at: z.string(),
+  status_code: z.number(),
+  redelivery: z.boolean(),
+}));
+
+/** One delivery attempt of a webhook, newest first in GitHub's list. */
+export interface GitHubHookDelivery {
+  /** Kept as text: GitHub's delivery ids are larger than a JavaScript number holds exactly. */
+  id: string;
+  /** The delivery's id (`X-GitHub-Delivery`); a redelivery keeps it. */
+  guid: string;
+  deliveredAt: string;
+  statusCode: number;
+  redelivery: boolean;
+}
+
+/** Conveyor's webhook on a repository as GitHub reports it. */
+export interface GitHubWebhookStatus {
+  id: number;
+  active: boolean;
+  /** The HTTP status of the last delivery; null before the first one. */
+  lastResponseCode: number | null;
+}
+
+const WEBHOOK_EVENTS = [
+  "issues",
+  "issue_comment",
+  "pull_request",
+  "pull_request_review",
+  "pull_request_review_comment",
+  "pull_request_review_thread",
+  "workflow_run",
+  "check_suite",
+  "check_run",
+  "sub_issues",
+  "issue_dependencies",
+  "member",
+];
+
+export interface GitHubReviewThread {
+  id: string;
+  isResolved: boolean;
+  comments: { nodes: Array<{
+    id: string;
+    databaseId: number;
+    author: { login: string; __typename?: string } | null;
+    body: string;
+    url: string;
+    path: string | null;
+    line: number | null;
+    createdAt: string;
+    pullRequestReview: { databaseId: number } | null;
+  }> };
+}
+
+export interface GitHubReview {
+  id: number;
+  state: string;
+  user: { login: string } | null;
+  body: string | null;
+  html_url: string;
+  submitted_at?: string;
+}
+
+export type GitHubRepositoryPermission = "admin" | "maintain" | "write" | "triage" | "read" | "none";
+
+const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          comments(first: 100) {
+            nodes { id databaseId author { login __typename } body url path line createdAt pullRequestReview { databaseId } }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+const STATUS_MARKER = "<!-- conveyor:status -->";
+
+/** Whether a comment body is Conveyor's status comment. */
+export function isStatusComment(body: unknown): boolean {
+  return typeof body === "string" && body.includes(STATUS_MARKER);
+}
+
+function labelName(label: GitHubLabel | string): string {
+  return typeof label === "string" ? label : label.name;
+}
+
+/** A transport that keeps cached reads, and can be told what a delivery changed. */
+interface CachingTransport extends GitHubTransport {
+  applyDelivery(eventType: string, payload: unknown): void;
+  forgetRepository(address: string): void;
+  forgetChange(address: string, number: number): void;
+  forgetIssue(address: string, number: number): void;
+  useStorage(storage: GitHubMirrorStorage, lifetimes?: GitHubCacheLifetimes): void;
+}
+
+const caching = (transport: GitHubTransport): transport is CachingTransport =>
+  "applyDelivery" in transport && "forgetRepository" in transport && "forgetChange" in transport && "forgetIssue" in transport;
+
+export class GitHubAdapter {
+  constructor(
+    private readonly transport: GitHubTransport,
+    private readonly labelPrefix: string,
+  ) {}
+
+  /** Tells the read cache, when there is one, what a verified webhook delivery changed. */
+  applyDelivery(eventType: string, payload: unknown): void {
+    if (caching(this.transport)) this.transport.applyDelivery(eventType, payload);
+  }
+
+  /** Keeps the read cache, when there is one, in `storage` (the database), so it outlives a restart. */
+  useMirror(storage: GitHubMirrorStorage, lifetimes?: GitHubCacheLifetimes): void {
+    if (caching(this.transport)) this.transport.useStorage(storage, lifetimes);
+  }
+
+  /** Drops a repository's cached reads, when there is a cache, so its next reads go to GitHub. */
+  forgetRepository(address: string): void {
+    if (caching(this.transport)) this.transport.forgetRepository(address);
+  }
+
+  /** Drops a pull request's cached reads, when there is a cache, so the next read goes to GitHub. */
+  forgetChange(address: string, number: number): void {
+    if (caching(this.transport)) this.transport.forgetChange(address, number);
+  }
+
+  /** Drops an issue's cached reads and its listing entries, when there is a cache, so the next read goes to GitHub. */
+  forgetIssue(address: string, number: number): void {
+    if (caching(this.transport)) this.transport.forgetIssue(address, number);
+  }
+
+  async listConveyorIssues(address: string): Promise<SourceIssue[]> {
+    return (await this.listIssues(address)).filter((issue) =>
+      issue.labels.some((label) => this.isConveyorLabel(label)),
+    );
+  }
+
+  async listIssues(address: string, options: { since?: string } = {}): Promise<SourceIssue[]> {
+    const since = options.since !== undefined ? `&since=${encodeURIComponent(options.since)}` : "";
+    const issues = await this.transport.request<GitHubIssue[]>({
+      method: "GET",
+      path: `repos/${address}/issues?state=all&per_page=100&sort=created&direction=asc${since}`,
+      paginate: true,
+    });
+    return issues
+      .filter((issue) => issue.pull_request === undefined)
+      .map((issue) => sourceIssue(address, issue));
+  }
+
+  async getIssueProvenance(address: string, issueNumber: number, enrollmentLabel: string): Promise<SourceIssueProvenance> {
+    const events = await this.transport.request<GitHubIssueEvent[]>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/events?per_page=100`,
+      paginate: true,
+    });
+    // The events API returns newest-first today, but provenance is defined by the
+    // effective event rather than that response ordering.
+    const chronological = events.map((event, index) => ({ event, index })).sort((left, right) => {
+      const byTime = (left.event.created_at ?? "").localeCompare(right.event.created_at ?? "");
+      if (byTime !== 0) return byTime;
+      const byId = (left.event.id ?? left.index) - (right.event.id ?? right.index);
+      return byId !== 0 ? byId : left.index - right.index;
+    });
+    let enrollment: SourceEventActor | null = null;
+    let title: SourceEventActor | null = null;
+    let body: SourceEventActor | null = null;
+    for (const { event } of chronological) {
+      if (event.event === "labeled" && event.label?.name === enrollmentLabel) enrollment = eventActor(event);
+      if (event.event === "unlabeled" && event.label?.name === enrollmentLabel) enrollment = null;
+      // REST issue events record title changes as `renamed`; webhook-only
+      // `edited.changes` payloads are never returned by this endpoint.
+      if (event.event === "renamed" && event.rename !== undefined) title = eventActor(event);
+    }
+    const [owner, name] = address.split("/");
+    if (!owner || !name) throw new Error(`Invalid GitHub repository address ${address}`);
+    type BodyEdit = { editedAt?: unknown; editor?: { login?: unknown } | null };
+    type BodyEditConnection = { nodes?: BodyEdit[]; pageInfo?: { hasNextPage?: unknown; endCursor?: unknown } | null };
+    type BodyEditHistory = { repository?: { issue?: { userContentEdits?: BodyEditConnection | null } | null } | null };
+    let cursor: string | null = null;
+    let latest: BodyEdit | null = null;
+    let latestEditedAt = -Infinity;
+    let ambiguousLatest = false;
+    let incompleteHistory = false;
+    do {
+      const history: BodyEditHistory = await this.#graphql<BodyEditHistory>(
+        "query($owner: String!, $name: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $name) { issue(number: $number) { userContentEdits(first: 100, after: $cursor) { nodes { editedAt editor { login } } pageInfo { hasNextPage endCursor } } } } }",
+        { owner, name, number: issueNumber, cursor },
+      );
+      const edits: BodyEditConnection | null | undefined = history.repository?.issue?.userContentEdits;
+      for (const edit of edits?.nodes ?? []) {
+        const editedAt = typeof edit.editedAt === "string" ? Date.parse(edit.editedAt) : Number.NaN;
+        if (!Number.isFinite(editedAt)) {
+          incompleteHistory = true;
+          continue;
+        }
+        if (editedAt > latestEditedAt) {
+          latest = edit;
+          latestEditedAt = editedAt;
+          ambiguousLatest = false;
+        } else if (editedAt === latestEditedAt && edit.editor?.login !== latest?.editor?.login) {
+          ambiguousLatest = true;
+        }
+      }
+      const pageInfo: BodyEditConnection["pageInfo"] | undefined = edits?.pageInfo;
+      if (pageInfo?.hasNextPage === false) break;
+      if (pageInfo?.hasNextPage !== true || typeof pageInfo.endCursor !== "string") {
+        incompleteHistory = true;
+        break;
+      }
+      cursor = pageInfo.endCursor;
+    } while (true);
+    if (latest !== null || ambiguousLatest || incompleteHistory) {
+      const editor = latest?.editor;
+      body = { login: !ambiguousLatest && !incompleteHistory && typeof editor?.login === "string" ? editor.login : null };
+    }
+    return { enrollment, title, body };
+  }
+
+  async ensureLabels(
+    address: string,
+    labels: ReadonlyArray<{ name: string; color: string; description: string }>,
+  ): Promise<void> {
+    const existing = await this.transport.request<GitHubLabel[]>({
+      method: "GET",
+      path: `repos/${address}/labels?per_page=100`,
+      paginate: true,
+    });
+    const names = new Set(existing.map((label) => label.name.toLocaleLowerCase()));
+    for (const label of labels) {
+      if (names.has(label.name.toLocaleLowerCase())) continue;
+      await this.transport.request<GitHubLabel>({
+        method: "POST",
+        path: `repos/${address}/labels`,
+        body: label,
+      });
+      names.add(label.name.toLocaleLowerCase());
+    }
+  }
+
+  /** Makes sure Conveyor's webhook exists, is active and has every event it needs; returns its id. */
+  async ensureWebhook(input: {
+    address: string;
+    url: string;
+    secret: string;
+  }): Promise<number> {
+    const hooks = await this.transport.request<GitHubHook[]>({
+      method: "GET",
+      path: `repos/${input.address}/hooks?per_page=100`,
+      paginate: true,
+    });
+    const existing = hooks.find((hook) => hook.config.url === input.url);
+    const missingEvents = existing ? WEBHOOK_EVENTS.filter((event) => !(existing.events ?? []).includes(event)) : [];
+    if (existing?.active && missingEvents.length === 0) return existing.id;
+    if (existing) {
+      await this.transport.request<GitHubHook>({
+        method: "PATCH",
+        path: `repos/${input.address}/hooks/${existing.id}`,
+        body: { active: true, events: [...new Set([...(existing.events ?? []), ...WEBHOOK_EVENTS])] },
+      });
+      return existing.id;
+    }
+    const created = await this.transport.request<GitHubHook>({
+      method: "POST",
+      path: `repos/${input.address}/hooks`,
+      body: {
+        name: "web",
+        active: true,
+        events: WEBHOOK_EVENTS,
+        config: {
+          url: input.url,
+          content_type: "json",
+          insecure_ssl: "0",
+          secret: input.secret,
+        },
+      },
+    });
+    return created.id;
+  }
+
+  /** Asks GitHub to send the webhook a ping delivery, which shows that deliveries arrive. */
+  async pingHook(address: string, hookId: number): Promise<void> {
+    await this.transport.request<unknown>({ method: "POST", path: `repos/${address}/hooks/${hookId}/pings` });
+  }
+
+  /** Conveyor's webhook (the one delivering to `url`) and how its last delivery went; null when there is none. */
+  async webhookStatus(input: { address: string; url: string }): Promise<GitHubWebhookStatus | null> {
+    const hooks = await this.transport.request<GitHubHook[]>({
+      method: "GET",
+      path: `repos/${input.address}/hooks?per_page=100`,
+      paginate: true,
+    });
+    const hook = hooks.find((candidate) => candidate.config.url === input.url);
+    if (!hook) return null;
+    const code = hook.last_response?.code;
+    return { id: hook.id, active: hook.active, lastResponseCode: typeof code === "number" ? code : null };
+  }
+
+  /** The latest delivery attempts of a webhook (one page, newest first). */
+  async listHookDeliveries(address: string, hookId: number): Promise<GitHubHookDelivery[]> {
+    // Read as text and quote the ids before parsing: JSON.parse would round them to a wrong id.
+    const text = await this.transport.request<string>({
+      method: "GET",
+      path: `repos/${address}/hooks/${hookId}/deliveries?per_page=100`,
+      raw: true,
+    });
+    const deliveries = hookDeliveriesSchema.parse(JSON.parse(text.replace(/("id"\s*:\s*)(\d+)/g, '$1"$2"')));
+    return deliveries.map((delivery) => ({
+      id: delivery.id, guid: delivery.guid, deliveredAt: delivery.delivered_at, statusCode: delivery.status_code, redelivery: delivery.redelivery,
+    }));
+  }
+
+  /** Asks GitHub to send a delivery again. */
+  async redeliverHookDelivery(address: string, hookId: number, deliveryId: string): Promise<void> {
+    await this.transport.request<unknown>({ method: "POST", path: `repos/${address}/hooks/${hookId}/deliveries/${deliveryId}/attempts` });
+  }
+
+  async getIssue(address: string, issueNumber: number): Promise<SourceIssue> {
+    let issue: GitHubIssue;
+    try {
+      issue = await this.transport.request<GitHubIssue>({
+        method: "GET",
+        path: `repos/${address}/issues/${issueNumber}`,
+      });
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /HTTP (?:404|410)\b/.test(`${error.stderr} ${error.message}`)) {
+        throw new GitHubIssueGoneError(error.message, error.exitCode, error.stderr);
+      }
+      throw error;
+    }
+    return sourceIssue(address, issue);
+  }
+
+  /** Close an issue only when GitHub still reports it as open. */
+  async closeIssue(address: string, issueNumber: number): Promise<SourceIssue> {
+    const current = await this.getIssue(address, issueNumber);
+    if (current.state === "closed") return current;
+    const issue = await this.transport.request<GitHubIssue>({
+      method: "PATCH",
+      path: `repos/${address}/issues/${issueNumber}`,
+      body: { state: "closed", state_reason: "completed" },
+    });
+    return sourceIssue(address, issue);
+  }
+
+  /** Creates a top-level issue with the given labels. */
+  async createIssue(input: { address: string; title: string; body: string; labels: readonly string[] }): Promise<SourceIssue> {
+    const issue = await this.transport.request<GitHubIssue>({
+      method: "POST",
+      path: `repos/${input.address}/issues`,
+      body: { title: input.title, body: input.body, labels: [...new Set(input.labels)] },
+    });
+    return sourceIssue(input.address, issue);
+  }
+
+  async createChildIssue(input: {
+    address: string;
+    parentNumber: number;
+    title: string;
+    body: string;
+    labels: readonly string[];
+    /** Issue type to create the child with (already validated). */
+    type?: string;
+    /** Field values to set on the child (already validated). */
+    fields?: readonly ResolvedFieldValue[];
+  }): Promise<SourceIssue> {
+    const parent = await this.transport.request<GitHubIssue>({
+      method: "GET",
+      path: `repos/${input.address}/issues/${input.parentNumber}`,
+    });
+    // The field endpoint is a second write. Reuse a child from a previous
+    // attempt so a retry after that write fails does not create a duplicate.
+    const createMarker = /<!-- conveyor:child-create:([a-f0-9]{64}) -->/.exec(input.body)?.[0];
+    const keyMarker = `<!-- conveyor:child-of:${input.parentNumber}:key:${createHash("sha256").update(input.title).digest("hex").slice(0, 16)} -->`;
+    // A body with its own child-create marker is created exactly as given: callers
+    // check later managed-section writes against the body they sent.
+    const body = createMarker || input.body.includes(keyMarker) ? input.body : `${input.body}\n\n${keyMarker}`;
+    const findExisting = async () => (await this.transport.request<GitHubIssue[]>({
+      method: "GET",
+      path: `repos/${input.address}/issues/${input.parentNumber}/sub_issues?per_page=100`,
+      paginate: true,
+    })).find((issue) => issue.pull_request === undefined
+      // A supplied child-create marker is authoritative: same title with a different marker is a different child.
+      && (issue.body ?? "").includes(createMarker ?? keyMarker));
+    const found = await findExisting();
+    const existing = found ? sourceIssue(input.address, found) : undefined;
+    if (existing) {
+      if (input.fields && input.fields.length > 0) {
+        await this.setIssueFieldValues(input.address, existing.number, input.fields);
+      }
+      return existing;
+    }
+    const child = await this.transport.request<GitHubIssue>({
+      method: "POST",
+      path: `repos/${input.address}/issues`,
+      body: {
+        title: input.title,
+        body,
+        labels: [...new Set(input.labels)],
+        parent_issue_id: parent.id,
+        ...(input.type ? { type: input.type } : {}),
+      },
+      recover: findExisting,
+    });
+    if (input.fields && input.fields.length > 0) {
+      await this.setIssueFieldValues(input.address, child.number, input.fields);
+    }
+    return sourceIssue(input.address, child);
+  }
+
+  /** Issue types the owner defines; null when the owner has none (a personal account) or hides them. */
+  async listIssueTypes(owner: string): Promise<string[] | null> {
+    const types = await this.optional(() => this.transport.request<Array<{ name: string }>>({
+      method: "GET",
+      path: `orgs/${owner}/issue-types`,
+      paginate: true,
+    }));
+    return types === null ? null : types.map((type) => type.name);
+  }
+
+  /** Issue fields the owner defines; null when the owner has none or hides them. */
+  async listIssueFields(owner: string): Promise<IssueFieldDefinition[] | null> {
+    const fields = await this.optional(() => this.transport.request<Array<{
+      id: number;
+      name: string;
+      data_type: IssueFieldDataType;
+      options?: Array<{ name: string }> | null;
+    }>>({ method: "GET", path: `orgs/${owner}/issue-fields?per_page=100`, paginate: true }));
+    return fields === null ? null : fields.map((field) => ({
+      id: field.id,
+      name: field.name,
+      dataType: field.data_type,
+      options: (field.options ?? []).map((option) => option.name),
+    }));
+  }
+
+  /** The values currently set on an issue, by field name. */
+  async getIssueFieldValues(address: string, issueNumber: number): Promise<Record<string, string>> {
+    const values = await this.transport.request<Array<{ issue_field_name: string; value: string | number | null }>>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/issue-field-values?per_page=100`,
+      paginate: true,
+    });
+    return Object.fromEntries(values.flatMap((entry) => entry.value === null || entry.value === undefined
+      ? [] : [[entry.issue_field_name, String(entry.value)] as const]));
+  }
+
+  async setIssueType(address: string, issueNumber: number, type: string): Promise<void> {
+    await this.transport.request<unknown>({
+      method: "PATCH",
+      path: `repos/${address}/issues/${issueNumber}`,
+      body: { type },
+    });
+  }
+
+  /** Adds or updates the given fields; other fields (dates, lifecycle values) are left alone. */
+  async setIssueFieldValues(address: string, issueNumber: number, values: readonly ResolvedFieldValue[]): Promise<void> {
+    if (values.length === 0) return;
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${address}/issues/${issueNumber}/issue-field-values`,
+      body: { issue_field_values: values.map(({ fieldId, value }) => ({ field_id: fieldId, value })) },
+    });
+  }
+
+  /**
+   * What the credentials can do with issue types and issue fields for a repository, read-only:
+   * "ok" (readable), "none" (the owner defines none), "denied" (no permission) or "error".
+   */
+  async probeIssueMetadata(address: string): Promise<{
+    types: IssueMetadataAccess;
+    fields: IssueMetadataAccess;
+    canWrite: boolean | null;
+  }> {
+    const owner = address.split("/")[0]!;
+    const probe = async (path: string): Promise<IssueMetadataAccess> => {
+      try {
+        const found = await this.transport.request<unknown[]>({ method: "GET", path, paginate: true });
+        return Array.isArray(found) && found.length === 0 ? "none" : "ok";
+      } catch (error) {
+        if (!(error instanceof GitHubTransportError)) return "error";
+        const text = `${error.stderr} ${error.message}`;
+        if (/HTTP 404/.test(text)) return "none";
+        return /HTTP 40[13]/.test(text) ? "denied" : "error";
+      }
+    };
+    const [types, fields] = [await probe(`orgs/${owner}/issue-types`), await probe(`orgs/${owner}/issue-fields?per_page=100`)];
+    let canWrite: boolean | null = null;
+    try {
+      const repository = await this.transport.request<{ permissions?: { push?: boolean; triage?: boolean; maintain?: boolean; admin?: boolean } }>({ method: "GET", path: `repos/${address}` });
+      const permissions = repository.permissions;
+      canWrite = permissions === undefined ? null : Boolean(permissions.push || permissions.triage || permissions.maintain || permissions.admin);
+    } catch {
+      canWrite = null;
+    }
+    return { types, fields, canWrite };
+  }
+
+  private async optional<T>(read: () => Promise<T>): Promise<T | null> {
+    try {
+      return await read();
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /HTTP (?:404|403|410)/.test(`${error.stderr} ${error.message}`)) return null;
+      throw error;
+    }
+  }
+
+  async setTitle(address: string, issueNumber: number, title: string): Promise<void> {
+    await this.transport.request<unknown>({
+      method: "PATCH",
+      path: `repos/${address}/issues/${issueNumber}`,
+      body: { title },
+    });
+  }
+
+  async setParent(input: {
+    address: string;
+    childNumber: number;
+    parentNumber: number;
+  }): Promise<void> {
+    const child = await this.transport.request<GitHubIssue>({
+      method: "GET",
+      path: `repos/${input.address}/issues/${input.childNumber}`,
+    });
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${input.address}/issues/${input.parentNumber}/sub_issues`,
+      body: { sub_issue_id: child.id, replace_parent: true },
+    });
+  }
+
+  async setDependencies(input: {
+    address: string;
+    issueNumber: number;
+    blockerNumbers: readonly number[];
+  }): Promise<void> {
+    const base = `repos/${input.address}/issues/${input.issueNumber}/dependencies/blocked_by`;
+    const current = await this.listBlockedBy(input.address, input.issueNumber);
+    const wanted = new Set(input.blockerNumbers);
+    const present = new Set(current.map((issue) => issue.number));
+    for (const issue of current) {
+      if (wanted.has(issue.number)) continue;
+      await this.transport.request<unknown>({ method: "DELETE", path: `${base}/${issue.id}` });
+    }
+    for (const blockerNumber of wanted) {
+      if (present.has(blockerNumber)) continue;
+      const blocker = await this.transport.request<GitHubIssue>({
+        method: "GET",
+        path: `repos/${input.address}/issues/${blockerNumber}`,
+      });
+      try {
+        await this.transport.request<unknown>({
+          method: "POST",
+          path: base,
+          body: { issue_id: blocker.id },
+        });
+      } catch (error) {
+        // A concurrent writer already created the link.
+        if (error instanceof GitHubTransportError && /\(HTTP 422\)/.test(error.stderr)) continue;
+        throw error;
+      }
+    }
+  }
+
+  async listSubIssues(address: string, issueNumber: number): Promise<SourceIssue[]> {
+    const issues = await this.transport.request<GitHubIssue[]>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/sub_issues?per_page=100`,
+      paginate: true,
+    });
+    return issues
+      .filter((issue) => issue.pull_request === undefined)
+      .map((issue) => sourceIssue(address, issue));
+  }
+
+  async listDependencies(address: string, issueNumber: number): Promise<SourceIssue[]> {
+    const issues = await this.listBlockedBy(address, issueNumber);
+    return issues.map((issue) => sourceIssue(address, issue));
+  }
+
+  private async listBlockedBy(address: string, issueNumber: number): Promise<GitHubIssue[]> {
+    const issues = await this.transport.request<GitHubIssue[]>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/dependencies/blocked_by?per_page=100`,
+      paginate: true,
+    });
+    return issues.filter((issue) => issue.pull_request === undefined);
+  }
+
+  async replaceConveyorLabels(
+    address: string,
+    issueNumber: number,
+    conveyorLabels: readonly string[],
+    preserveLabels: readonly string[] = [],
+  ): Promise<void> {
+    const preserve = new Set(preserveLabels);
+    const issue = await this.transport.request<Pick<GitHubIssue, "labels">>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}`,
+    });
+    const projectLabels = issue.labels
+      .map(labelName)
+      .filter((label) => !this.isConveyorLabel(label) || preserve.has(label));
+    const labels = [...new Set([
+      ...projectLabels,
+      ...conveyorLabels.filter((label) => !preserve.has(label)),
+    ])].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    await this.transport.request<unknown>({
+      method: "PUT",
+      path: `repos/${address}/issues/${issueNumber}/labels`,
+      body: { labels },
+    });
+  }
+
+  async replaceManagedProjectLabels(
+    address: string,
+    issueNumber: number,
+    managedProjectLabels: readonly string[],
+    selectedLabels: readonly string[],
+  ): Promise<void> {
+    const issue = await this.transport.request<Pick<GitHubIssue, "labels">>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}`,
+    });
+    const managed = new Set(managedProjectLabels);
+    const preserved = issue.labels
+      .map(labelName)
+      .filter((label) => !managed.has(label));
+    const labels = [...new Set([...preserved, ...selectedLabels])].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    await this.transport.request<unknown>({
+      method: "PUT",
+      path: `repos/${address}/issues/${issueNumber}/labels`,
+      body: { labels },
+    });
+  }
+
+  /**
+   * Writes the issue's status comment and returns its id. With the id of the comment written last
+   * time it is updated directly; the comments are listed only when that id is unknown or gone.
+   */
+  async upsertStatusComment(
+    address: string,
+    issueNumber: number,
+    markdown: string,
+    knownCommentId?: number,
+  ): Promise<number> {
+    if (knownCommentId !== undefined) {
+      try {
+        const updated = await this.transport.request<GitHubComment>({
+          method: "PATCH",
+          path: `repos/${address}/issues/comments/${knownCommentId}`,
+          body: { body: `${STATUS_MARKER}\n${markdown.trim()}` },
+        });
+        return updated.id;
+      } catch (error) {
+        if (!(error instanceof GitHubTransportError && /\(HTTP 404\)/.test(error.message))) throw error;
+      }
+    }
+    const comments = await this.transport.request<GitHubComment[]>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/comments?per_page=100`,
+      paginate: true,
+    });
+    const body = `${STATUS_MARKER}\n${markdown.trim()}`;
+    const existing = comments.find((comment) => comment.body?.includes(STATUS_MARKER));
+    const comment = existing
+      ? await this.transport.request<GitHubComment>({
+          method: "PATCH",
+          path: `repos/${address}/issues/comments/${existing.id}`,
+          body: { body },
+        })
+      : await this.transport.request<GitHubComment>({
+          method: "POST",
+          path: `repos/${address}/issues/${issueNumber}/comments`,
+          body: { body },
+        });
+    return comment.id;
+  }
+
+  async addComment(
+    address: string,
+    issueNumber: number,
+    markdown: string,
+  ): Promise<number> {
+    const comment = await this.postComment(address, issueNumber, markdown);
+    return comment.id;
+  }
+
+  /** Finds a prior Conveyor comment by its durable marker before retrying a source mutation. */
+  async hasCommentWithMarker(
+    address: string,
+    issueNumber: number,
+    marker: string,
+  ): Promise<boolean> {
+    const comments = await this.transport.request<GitHubComment[]>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/comments?per_page=100`,
+      paginate: true,
+    });
+    return comments.some((comment) => comment.body?.includes(marker));
+  }
+
+  /** Creates an issue/pull request comment and returns where it lives. */
+  async createComment(address: string, issueNumber: number, markdown: string): Promise<{ id: number; url: string }> {
+    const comment = await this.postComment(address, issueNumber, markdown);
+    return { id: comment.id, url: comment.html_url };
+  }
+
+  /** Posts a comment tagged with a hidden marker, so a retry after a lost response finds it instead of posting twice. */
+  private postComment(address: string, issueNumber: number, markdown: string): Promise<GitHubComment & { html_url: string }> {
+    const marker = `<!-- conveyor:comment:${randomUUID()} -->`;
+    const path = `repos/${address}/issues/${issueNumber}/comments`;
+    return this.transport.request<GitHubComment & { html_url: string }>({
+      method: "POST",
+      path,
+      body: { body: `${markdown}\n\n${marker}` },
+      recover: async () => (await this.transport.request<Array<GitHubComment & { html_url: string }>>({
+        method: "GET",
+        path: `${path}?per_page=100`,
+        paginate: true,
+      })).find((comment) => comment.body?.includes(marker)),
+    });
+  }
+
+  async updateComment(address: string, commentId: number, markdown: string): Promise<void> {
+    await this.transport.request<unknown>({ method: "PATCH", path: `repos/${address}/issues/comments/${commentId}`, body: { body: markdown } });
+  }
+
+  /** An inline review comment on the pull request diff (right side) at `commitId`. */
+  async createReviewComment(address: string, pullRequestNumber: number, input: {
+    body: string; commitId: string; path: string; line: number;
+  }): Promise<{ id: number; url: string }> {
+    const comment = await this.transport.request<{ id: number; html_url: string }>({
+      method: "POST",
+      path: `repos/${address}/pulls/${pullRequestNumber}/comments`,
+      body: { body: input.body, commit_id: input.commitId, path: input.path, line: input.line, side: "RIGHT" },
+    });
+    return { id: comment.id, url: comment.html_url };
+  }
+
+  /** Deletes a branch ref; false when it does not exist. */
+  async deleteBranchRef(address: string, branch: string): Promise<boolean> {
+    try {
+      await this.transport.request<unknown>({ method: "DELETE", path: `repos/${address}/git/refs/heads/${branch.split("/").map(encodeURIComponent).join("/")}` });
+      return true;
+    } catch (error) {
+      // GitHub answers 422 "Reference does not exist" (or 404) for a branch that is already gone.
+      if (error instanceof GitHubTransportError && /HTTP 404|HTTP 422/.test(error.stderr)) return false;
+      throw error;
+    }
+  }
+
+  /** Finds the open pull request whose head is this repository branch. */
+  async findOpenPullRequest(address: string, branch: string): Promise<PullRequestReference | null> {
+    const [owner] = address.split("/");
+    const open = await this.transport.request<GitHubPullRequest[]>({
+      method: "GET",
+      path: `repos/${address}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`,
+    });
+    const pullRequest = open[0];
+    return pullRequest ? { number: pullRequest.number, url: pullRequest.html_url, state: pullRequest.state } : null;
+  }
+
+  /** Whether an open pull request has this branch of the repository as its head. */
+  async hasOpenPullRequestFor(address: string, branch: string): Promise<boolean> {
+    return (await this.findOpenPullRequest(address, branch)) !== null;
+  }
+
+  async replyToReviewComment(address: string, pullRequestNumber: number, commentId: number, markdown: string): Promise<void> {
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${address}/pulls/${pullRequestNumber}/comments/${commentId}/replies`,
+      body: { body: markdown },
+    });
+  }
+
+  /** A reaction on an inline review comment (REST id). */
+  async reactToReviewComment(address: string, commentId: number, content: "+1" | "-1"): Promise<void> {
+    await this.transport.request<unknown>({ method: "POST", path: `repos/${address}/pulls/comments/${commentId}/reactions`, body: { content } });
+  }
+
+  /** A reaction on a pull request (issue) comment (REST id). */
+  async reactToIssueComment(address: string, commentId: number, content: "+1" | "-1"): Promise<void> {
+    await this.transport.request<unknown>({ method: "POST", path: `repos/${address}/issues/comments/${commentId}/reactions`, body: { content } });
+  }
+
+  /** Replies in a review thread (GraphQL node id). */
+  async replyToReviewThread(threadId: string, markdown: string): Promise<void> {
+    await this.#graphql(
+      `mutation($thread: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) { comment { id } } }`,
+      { thread: threadId, body: markdown },
+    );
+  }
+
+  /** Marks a review thread resolved (GraphQL node id). */
+  async resolveReviewThread(threadId: string): Promise<void> {
+    await this.#graphql(`mutation($thread: ID!) { resolveReviewThread(input: {threadId: $thread}) { thread { isResolved } } }`, { thread: threadId });
+  }
+
+  /** Adds a reaction to the first comment of a review thread. */
+  async reactToReviewThread(threadId: string, content: "+1" | "-1"): Promise<void> {
+    const found = await this.#graphql<{ node?: { comments?: { nodes?: Array<{ id: string }> } } | null }>(
+      `query($thread: ID!) { node(id: $thread) { ... on PullRequestReviewThread { comments(first: 1) { nodes { id } } } } }`,
+      { thread: threadId },
+    );
+    const subject = found.node?.comments?.nodes?.[0]?.id;
+    if (!subject) throw new Error(`review thread ${threadId} has no comment to react to`);
+    await this.#graphql(
+      `mutation($subject: ID!, $content: ReactionContent!) { addReaction(input: {subjectId: $subject, content: $content}) { reaction { content } } }`,
+      { subject, content: content === "+1" ? "THUMBS_UP" : "THUMBS_DOWN" },
+    );
+  }
+
+  async #graphql<T = unknown>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const response = await this.transport.request<{ data?: T; errors?: Array<{ message?: string }> }>({
+      method: "POST", path: "graphql", body: { query, variables },
+    });
+    if (response.errors?.length) {
+      throw new Error(`GitHub GraphQL failed: ${response.errors.map((error) => error.message ?? "error").join("; ")}`);
+    }
+    return response.data as T;
+  }
+
+  /** All of the pull request's review threads with their comments, through paginated GraphQL; throws unless every page was read. */
+  async listReviewThreads(address: string, pullRequestNumber: number): Promise<GitHubReviewThread[]> {
+    const [owner, name] = address.split("/");
+    const threads: GitHubReviewThread[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 100; page += 1) {
+      const response: {
+        data?: { repository?: { pullRequest?: { reviewThreads?: {
+          nodes?: GitHubReviewThread[]; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        } } | null } | null };
+        errors?: Array<{ message?: string }>;
+      } = await this.transport.request({
+        method: "POST",
+        path: "graphql",
+        body: { query: REVIEW_THREADS_QUERY, variables: { owner, name, number: pullRequestNumber, cursor } },
+      });
+      if (response.errors?.length) {
+        throw new Error(`GitHub GraphQL failed: ${response.errors.map((error) => error.message ?? "error").join("; ")}`);
+      }
+      const connection = response.data?.repository?.pullRequest?.reviewThreads;
+      if (!connection?.nodes) throw new Error(`GitHub GraphQL returned no review threads for ${address}#${pullRequestNumber}`);
+      threads.push(...connection.nodes);
+      if (!connection.pageInfo?.hasNextPage) return threads;
+      if (!connection.pageInfo.endCursor) throw new Error(`GitHub GraphQL review threads of ${address}#${pullRequestNumber} cannot be paginated`);
+      cursor = connection.pageInfo.endCursor;
+    }
+    throw new Error(`GitHub pull request ${address}#${pullRequestNumber} has too many review threads to import`);
+  }
+
+  async listReviews(address: string, pullRequestNumber: number): Promise<GitHubReview[]> {
+    return this.transport.request<GitHubReview[]>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}/reviews?per_page=100`,
+      paginate: true,
+    });
+  }
+
+  /** The account's current repository permission; an absent collaborator is not trusted. */
+  async collaboratorPermission(address: string, login: string): Promise<GitHubRepositoryPermission> {
+    const result = await this.transport.request<{ permission?: unknown }>({
+      method: "GET",
+      path: `repos/${address}/collaborators/${encodeURIComponent(login)}/permission`,
+    });
+    if (result.permission === "admin" || result.permission === "maintain" || result.permission === "write"
+      || result.permission === "triage" || result.permission === "read" || result.permission === "none") {
+      return result.permission;
+    }
+    throw new Error(`GitHub returned no usable repository permission for ${login}`);
+  }
+
+  /** The authenticated login, used for capability probes that need a valid user account. */
+  async authenticatedLogin(): Promise<string> {
+    const result = await this.transport.request<{ login?: unknown }>({ method: "GET", path: "user" });
+    if (typeof result.login === "string" && result.login.length > 0) return result.login;
+    throw new Error("GitHub returned no usable authenticated login");
+  }
+
+  /** The REST and GraphQL rate limits of the token; reading them does not count against them. */
+  async rateLimit(): Promise<GitHubRateLimits> {
+    const result = await this.transport.request<{ resources?: Record<string, { limit?: unknown; remaining?: unknown; reset?: unknown }> }>({
+      method: "GET",
+      path: "rate_limit",
+    });
+    const read = (name: string): GitHubRateLimit | null => {
+      const resource = result.resources?.[name];
+      if (!resource || typeof resource.limit !== "number" || typeof resource.remaining !== "number" || typeof resource.reset !== "number") return null;
+      return { limit: resource.limit, remaining: resource.remaining, resetAt: new Date(resource.reset * 1_000).toISOString() };
+    };
+    return { core: read("core"), graphql: read("graphql") };
+  }
+
+  /** The repository's visibility, read from GitHub rather than the local projection. */
+  async repositoryVisibility(address: string): Promise<"public" | "private"> {
+    const result = await this.transport.request<{ private?: unknown; visibility?: unknown }>({
+      method: "GET",
+      path: `repos/${address}`,
+    });
+    if (result.visibility === "public" || result.visibility === "private") return result.visibility;
+    if (result.private === false) return "public";
+    if (result.private === true) return "private";
+    throw new Error(`GitHub returned no usable repository visibility for ${address}`);
+  }
+
+  async updateManagedSection(input: {
+    address: string;
+    issueNumber: number;
+    section: ManagedSectionName;
+    markdown: string;
+    expectedRevision: string;
+    /** The accepted body to update, never a concurrently read source body. */
+    baseBody: string;
+  }): Promise<SourceIssue> {
+    const current = await this.transport.request<GitHubIssue>({
+      method: "GET",
+      path: `repos/${input.address}/issues/${input.issueNumber}`,
+    });
+    const currentRevision = this.managedRevision(current.body ?? "");
+    if (currentRevision !== input.expectedRevision) {
+      throw new Error("The issue body changed while its managed section was being updated.");
+    }
+    const updatedBody = upsertManagedSection(
+      input.baseBody,
+      input.section,
+      input.markdown,
+      input.expectedRevision,
+    );
+    const updated = await this.transport.request<GitHubIssue>({
+      method: "PATCH",
+      path: `repos/${input.address}/issues/${input.issueNumber}`,
+      body: { body: updatedBody },
+    });
+    const labels = updated.labels.map(labelName).sort((left, right) => left.localeCompare(right));
+    return {
+      id: `github:${input.address}#${updated.number}`,
+      number: updated.number,
+      url: updated.html_url,
+      title: updated.title,
+      body: updated.body ?? "",
+      state: updated.state,
+      labels,
+      updatedAt: updated.updated_at,
+    };
+  }
+
+  managedRevision(body: string): string {
+    return parseManagedSections(body).revision;
+  }
+
+  async ensurePullRequest(input: {
+    address: string;
+    issueNumber: number;
+    branch: string;
+    baseBranch: string;
+    title: string;
+    closingReference: boolean;
+  }): Promise<PullRequestReference> {
+    const [owner] = input.address.split("/");
+    const head = `${owner}:${input.branch}`;
+    const findExisting = async () => {
+      const existing = await this.transport.request<GitHubPullRequest[]>({
+        method: "GET",
+        path: `repos/${input.address}/pulls?state=all&head=${encodeURIComponent(head)}&base=${encodeURIComponent(input.baseBranch)}`,
+      });
+      return existing.find((candidate) => candidate.state === "open") ??
+        existing.find((candidate) => candidate.state === "closed" && candidate.merged_at != null);
+    };
+    const pullRequest =
+      (await findExisting()) ??
+      (await this.transport.request<GitHubPullRequest>({
+        method: "POST",
+        path: `repos/${input.address}/pulls`,
+        body: {
+          title: input.title,
+          head: input.branch,
+          base: input.baseBranch,
+          body: input.closingReference
+            ? `Closes #${input.issueNumber}`
+            : `Related to #${input.issueNumber}`,
+        },
+        recover: findExisting,
+      }));
+    return {
+      number: pullRequest.number,
+      url: pullRequest.html_url,
+      state: pullRequest.state,
+    };
+  }
+
+  async getPullRequestDelivery(
+    address: string,
+    pullRequestNumber: number,
+  ): Promise<GitHubDeliveryState> {
+    const pullRequest = await this.transport.request<GitHubPullRequest>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}`,
+    });
+    if (!pullRequest.head?.sha || !pullRequest.head.ref || !pullRequest.base?.ref) {
+      throw new Error(`GitHub pull request #${pullRequestNumber} is missing branch metadata`);
+    }
+    const response = await this.transport.request<{ check_runs: GitHubCheckRun[] }>({
+      method: "GET",
+      path: `repos/${address}/commits/${pullRequest.head.sha}/check-runs?per_page=100`,
+    });
+    return {
+      pullRequest: {
+        number: pullRequest.number,
+        url: pullRequest.html_url,
+        state: pullRequest.merged === true ? "merged" : pullRequest.state,
+        merged: pullRequest.merged === true,
+        mergedAt: pullRequest.merged_at ?? null,
+        mergeCommitSha: pullRequest.merge_commit_sha ?? null,
+        draft: pullRequest.draft === true,
+        mergeState: pullRequest.mergeable_state ?? null,
+        headBranch: pullRequest.head.ref,
+        headSha: pullRequest.head.sha,
+        baseBranch: pullRequest.base.ref,
+        body: pullRequest.body ?? "",
+      },
+      checks: response.check_runs.map((check) => ({
+        id: check.id,
+        name: check.name,
+        status: check.status,
+        conclusion: check.conclusion,
+        url: check.details_url,
+        startedAt: check.started_at,
+        completedAt: check.completed_at,
+      })),
+    };
+  }
+
+  async getPullRequestChange(address: string, pullRequestNumber: number): Promise<{
+    number: number;
+    url: string;
+    state: string;
+    draft: boolean;
+    mergeState: string | null;
+    headSha: string;
+    mergedAt: string | null;
+    body?: string;
+  }> {
+    const pullRequest = await this.transport.request<GitHubPullRequest>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}`,
+    });
+    if (!pullRequest.head?.sha) {
+      throw new Error(`GitHub pull request #${pullRequestNumber} has no head commit`);
+    }
+    return {
+      number: pullRequest.number,
+      url: pullRequest.html_url,
+      state: pullRequest.merged === true ? "merged" : pullRequest.state,
+      draft: pullRequest.draft === true,
+      mergeState: pullRequest.mergeable_state ?? null,
+      headSha: pullRequest.head.sha,
+      mergedAt: pullRequest.merged_at ?? null,
+      body: pullRequest.body ?? "",
+    };
+  }
+
+  /** Upserts the acceptance-criteria managed section in a pull request body, keeping the rest. */
+  async setPullRequestChecklist(address: string, pullRequestNumber: number, markdown: string): Promise<void> {
+    await this.setPullRequestManagedSection(address, pullRequestNumber, "acceptance-criteria", markdown);
+  }
+
+  /** Upserts Conveyor's agent-authored description section in a pull request body, keeping the rest. */
+  async setPullRequestDescription(address: string, pullRequestNumber: number, markdown: string): Promise<void> {
+    await this.setPullRequestManagedSection(address, pullRequestNumber, "description", markdown);
+  }
+
+  private async setPullRequestManagedSection(
+    address: string,
+    pullRequestNumber: number,
+    section: "acceptance-criteria" | "description",
+    markdown: string,
+  ): Promise<void> {
+    const path = `repos/${address}/pulls/${pullRequestNumber}`;
+    const current = await this.transport.request<GitHubPullRequest>({ method: "GET", path });
+    const body = current.body ?? "";
+    const updated = upsertManagedSection(body, section, markdown, parseManagedSections(body).revision);
+    if (updated !== body) await this.transport.request<GitHubPullRequest>({ method: "PATCH", path, body: { body: updated } });
+  }
+
+  async getPullRequestHead(
+    address: string,
+    pullRequestNumber: number,
+  ): Promise<{ sha: string }> {
+    const pullRequest = await this.transport.request<GitHubPullRequest>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}`,
+    });
+    if (!pullRequest.head?.sha) {
+      throw new Error(`GitHub pull request #${pullRequestNumber} has no head commit`);
+    }
+    return { sha: pullRequest.head.sha };
+  }
+
+  async listCheckRuns(address: string, sha: string): Promise<GitHubCheckRun[]> {
+    const pages = await this.transport.request<Array<{ check_runs?: GitHubCheckRun[] }> | { check_runs?: GitHubCheckRun[] }>({
+      method: "GET",
+      path: `repos/${address}/commits/${sha}/check-runs?per_page=100`,
+      paginate: true,
+    });
+    const runs = (Array.isArray(pages) ? pages : [pages]).flatMap((page) => page?.check_runs ?? []);
+    return runs;
+  }
+
+  /** Workflow runs are fetched by commit so report artifacts cannot bleed across change heads. */
+  async listWorkflowRuns(address: string, sha: string): Promise<GitHubActionsWorkflowRun[]> {
+    const response = await this.transport.request<{ workflow_runs?: GitHubActionsWorkflowRun[] }>({
+      method: "GET",
+      path: `repos/${address}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`,
+    });
+    return (response.workflow_runs ?? []).filter((run) => run.head_sha === sha);
+  }
+
+  async listWorkflowArtifacts(address: string, runId: number): Promise<GitHubActionsArtifact[]> {
+    const response = await this.transport.request<{ artifacts?: GitHubActionsArtifact[] }>({
+      method: "GET",
+      path: `repos/${address}/actions/runs/${runId}/artifacts?per_page=100`,
+    });
+    return response.artifacts ?? [];
+  }
+
+  async downloadWorkflowArtifact(address: string, artifactId: number): Promise<Uint8Array> {
+    return this.transport.request<Uint8Array>({ method: "GET", path: `repos/${address}/actions/artifacts/${artifactId}/zip`, binary: true });
+  }
+
+  async githubActionsJob(address: string, jobId: number): Promise<GitHubActionsJob> {
+    return await this.transport.request<GitHubActionsJob>({
+      method: "GET",
+      path: `repos/${address}/actions/jobs/${jobId}`,
+    });
+  }
+
+  async checkRunAnnotations(address: string, checkRunId: number): Promise<GitHubCheckRunAnnotation[]> {
+    const pages = await this.transport.request<GitHubCheckRunAnnotation[][] | GitHubCheckRunAnnotation[]>({
+      method: "GET",
+      path: `repos/${address}/check-runs/${checkRunId}/annotations?per_page=100`,
+      paginate: true,
+    });
+    return pages.flat();
+  }
+
+  async workflowExists(address: string, workflow: string, ref: string): Promise<boolean> {
+    try {
+      await this.transport.request<unknown>({
+        method: "GET",
+        path: `repos/${address}/contents/.github/workflows/${encodeURIComponent(workflow)}?ref=${encodeURIComponent(ref)}`,
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /\b404\b|Not Found/i.test(error.message)) return false;
+      throw error;
+    }
+  }
+
+  /** File names in `.github/workflows` at a ref; null when the directory does not exist. */
+  async listWorkflowFiles(address: string, ref: string): Promise<string[] | null> {
+    try {
+      const entries = await this.transport.request<Array<{ name: string; type?: string }>>({
+        method: "GET",
+        path: `repos/${address}/contents/.github/workflows?ref=${encodeURIComponent(ref)}`,
+      });
+      return (Array.isArray(entries) ? entries : []).filter((entry) => entry.type !== "dir").map((entry) => entry.name);
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /\b404\b|Not Found/i.test(error.message)) return null;
+      throw error;
+    }
+  }
+
+  async workflowSource(address: string, workflow: string, ref: string): Promise<string> {
+    const file = await this.transport.request<{ content?: string; encoding?: string }>({
+      method: "GET",
+      path: `repos/${address}/contents/.github/workflows/${encodeURIComponent(workflow)}?ref=${encodeURIComponent(ref)}`,
+    });
+    if (file.encoding !== "base64" || typeof file.content !== "string") throw new Error(`workflow ${workflow} has no readable content`);
+    return Buffer.from(file.content, "base64").toString("utf8");
+  }
+
+  async fileSource(address: string, filePath: string, ref: string): Promise<string | null> {
+    try {
+      const file = await this.transport.request<{ content?: string; encoding?: string }>({
+        method: "GET",
+        path: `repos/${address}/contents/${filePath.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`,
+      });
+      if (file.encoding !== "base64" || typeof file.content !== "string") throw new Error(`file ${filePath} has no readable content`);
+      return Buffer.from(file.content, "base64").toString("utf8");
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /\b404\b|Not Found/i.test(error.message)) return null;
+      throw error;
+    }
+  }
+
+  /** Remove (if present) and re-add a PR label so a `labeled` workflow runs for the current head. */
+  async retriggerLabel(address: string, pullRequestNumber: number, label: string): Promise<void> {
+    try {
+      await this.transport.request<unknown>({
+        method: "DELETE",
+        path: `repos/${address}/issues/${pullRequestNumber}/labels/${encodeURIComponent(label)}`,
+      });
+    } catch (error) {
+      if (!(error instanceof GitHubTransportError && /\b404\b|Not Found|does not exist/i.test(error.message))) throw error;
+    }
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${address}/issues/${pullRequestNumber}/labels`,
+      body: { labels: [label] },
+    });
+  }
+
+  async rerunJob(address: string, jobId: number): Promise<void> {
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${address}/actions/jobs/${jobId}/rerun`,
+    });
+  }
+
+  async jobLog(address: string, jobId: number): Promise<string> {
+    const text = await this.transport.request<string>({
+      method: "GET",
+      path: `repos/${address}/actions/jobs/${jobId}/logs`,
+      raw: true,
+    });
+    return String(text ?? "");
+  }
+
+  async squashMerge(
+    address: string,
+    pullRequestNumber: number,
+    expectedHeadSha?: string,
+  ): Promise<{ merged: boolean; sha?: string; message?: string }> {
+    const current = await this.transport.request<GitHubPullRequest>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}`,
+    });
+    if (current.merged === true) {
+      return {
+        merged: true,
+        ...(current.merge_commit_sha ? { sha: current.merge_commit_sha } : {}),
+      };
+    }
+    return this.transport.request<{ merged: boolean; sha?: string; message?: string }>({
+      method: "PUT",
+      path: `repos/${address}/pulls/${pullRequestNumber}/merge`,
+      body: expectedHeadSha ? { merge_method: "squash", sha: expectedHeadSha } : { merge_method: "squash" },
+    });
+  }
+
+  private isConveyorLabel(label: string): boolean {
+    return label === this.labelPrefix || label.startsWith(`${this.labelPrefix}:`);
+  }
+}
+
+export function verifyGitHubSignature(
+  body: Uint8Array,
+  signature: string | null,
+  secret: string,
+): boolean {
+  if (!signature?.startsWith("sha256=") || secret.length === 0) return false;
+  const expected = Buffer.from(
+    createHmac("sha256", secret).update(body).digest("hex"),
+    "hex",
+  );
+  let received: Buffer;
+  try {
+    received = Buffer.from(signature.slice("sha256=".length), "hex");
+  } catch {
+    return false;
+  }
+  return expected.length === received.length && timingSafeEqual(expected, received);
+}

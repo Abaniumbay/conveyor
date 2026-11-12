@@ -13,7 +13,7 @@ import type { TaskDeps } from "../../src/tasks/deps";
 import { ToolRequestError } from "../../src/tasks/errors";
 import { parseBreakdownPlan, renderBreakdownPlan, type BreakdownPlan } from "../../src/tasks/breakdown";
 import { criteriaFromBody } from "../../src/tasks/item";
-import { parseManagedSections, renderAcceptanceCriteriaSection, upsertManagedSection, type ManagedSectionName } from "../../src/source/github/managed-sections";
+import { parseManagedSections, renderAcceptanceCriteriaSection, upsertManagedSection, type ManagedSectionName } from "../../src/plugins/github/shared/managed-sections";
 
 const directories: string[] = [];
 afterEach(async () => {

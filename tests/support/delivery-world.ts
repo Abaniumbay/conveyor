@@ -16,16 +16,18 @@ import { ConveyorService } from "../../src/app/service";
 import { CodeHostRegistry } from "../../src/codehost/registry";
 import type { ChangeDelivery, ChangeRequest, CodeHost } from "../../src/codehost/types";
 import { loadConfig } from "../../src/config/load";
+import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry } from "../../src/core/plugins";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 import { CriterionApprovals, criterionTextHash } from "../../src/engine/review-records";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
-import { parseManagedSections, upsertManagedSection } from "../../src/source/github/managed-sections";
+import { parseManagedSections, upsertManagedSection } from "../../src/plugins/github/shared/managed-sections";
 import type { SourceIssue } from "../../src/source/types";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { renderBreakdownPlan } from "../../src/tasks/breakdown";
 import { dispatchTool } from "../../src/tasks/dispatch";
 import { criteriaOf } from "../../src/tasks/item";
+import { githubPlugins } from "./plugins";
 
 const EXAMPLES = path.resolve(import.meta.dir, "../../examples");
 export const REQUIRED_DESCRIPTION = "The implementation explains how the feature satisfies its pull-request criterion.";
@@ -377,14 +379,18 @@ export async function deliveryWorld(options: {
       },
     })
     : github;
+  // The public lifecycle reads CI from the simulated GitHub; otherwise the fake CI provider answers.
+  const plugins = options.publicLifecycle
+    ? githubPlugins(config, observed as never)
+    : new PluginRegistry([{ role: "ci", type: DEFAULT_CI_TYPE, create: () => provider }], pluginContext(config));
   const service = new ConveyorService(config, store, observed as never, {
+    plugins,
     harnesses: { codex: harness, "claude-code": harness },
     codeHosts: new CodeHostRegistry().register("github", host),
   });
   if (!options.publicLifecycle) {
     Object.assign(service as object, {
       reconcileRepository: async () => {}, updateStatusComment: async () => {}, schedule: () => {},
-      ciProvider: () => provider,
     });
   }
 

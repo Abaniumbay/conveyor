@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { CiChange, CiProvider, CiRun } from "../../src/app/ci-provider";
 import { boundLog, boundSnapshotLogs, ciFailureFingerprint, createCiGateMemory, evaluateCiGate, ExternalWaitError, FOCUSED_LOG_BREAK, parseCiGateOptions } from "../../src/app/ci-gate";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
-import { focusGitHubActionsLog } from "../../src/source/github/ci-provider";
+import { focusGitHubActionsLog } from "../../src/plugins/github/ci/actions";
 import { InfrastructureError } from "../../src/tasks/contract";
 
 class FakeProvider implements CiProvider {

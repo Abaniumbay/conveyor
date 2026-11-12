@@ -21,19 +21,17 @@ import { RepositoryPausedError } from "../core/repository-pause";
 import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
 import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue, type StoredQuestion } from "../db/store";
-import { claudeCodeHarness } from "../harness/claude-code";
-import { codexHarness } from "../harness/codex";
 import type { Harness } from "../harness/types";
-import { GitHubAdapter, GitHubTransportError, isStatusComment, verifyGitHubSignature } from "../source/github/adapter";
-import { followUpsFromBody } from "../source/github/managed-sections";
-import { GitHubRepositoryTrust } from "../source/github/trust";
+import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry } from "../core/plugins";
+import { GitHubAdapter, GitHubTransportError, isStatusComment, verifyGitHubSignature } from "../plugins/github/shared/adapter";
+import { followUpsFromBody } from "../plugins/github/shared/managed-sections";
+import { GitHubRepositoryTrust } from "../plugins/github/shared/trust";
 import { isIssueGone, type SourceIssue } from "../source/types";
-import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
 import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
 import { changeAction, pushAndEnsureChange, recoverClosedChange } from "../codehost/actions";
-import { renderStatusComment } from "../source/github/status-comment";
+import { renderStatusComment } from "../plugins/github/items/status-comment";
 import { canonicalToolName } from "../tasks/aliases";
 import type { Feedback } from "../tasks/context";
 import { conveyorToolGuidance } from "../mcp/guidance";
@@ -80,13 +78,13 @@ import { EventBus } from "../events/bus";
 import { JsonlEventSink, SinkRunner, type EventSink } from "../events/sinks";
 import { isEventOf, type EventType, type StoredEvent } from "../events/catalogue";
 import { withEventContext } from "../events/context";
-import { normalizeGitHubEvent } from "../source/github/events";
-import { deliveredIssueChange } from "../source/github/delivery-issue";
+import { normalizeGitHubEvent } from "../plugins/github/shared/events";
+import { deliveredIssueChange } from "../plugins/github/items/delivery-issue";
 import type { WaitKind } from "../events/topics";
 import { WaitDispatcher } from "./wait-dispatcher";
 import { changesDashboard, DashboardFeed } from "./dashboard-feed";
 import { normalizeDashboard } from "../web/model";
-import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../source/github/call-meter";
+import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../plugins/github/shared/call-meter";
 import { ReviewFindings, type FindingType } from "../engine/review-findings";
 import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
 
@@ -153,8 +151,10 @@ export interface GitHubCallReport extends GitHubCallSummary {
 
 interface ServiceImplementations {
   steering?: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
+  /** The registered plugins: CI providers, and the code hosts and harnesses unless given below. */
+  plugins?: PluginRegistry;
   codeHosts?: CodeHostRegistry;
-  /** Agent harnesses by runner type; defaults to Codex. */
+  /** Agent harnesses by runner type; by default the registered harness plugins. */
   harnesses?: Record<string, Harness>;
   /** Counts the GitHub requests of the adapter's transport; a fresh meter when it has none. */
   githubCalls?: GitHubCallMeter;
@@ -579,6 +579,7 @@ export class ConveyorService {
   /** Parked items made due by an answer, approval or other event, not by their wake-up time. */
   readonly #wokenEarly = new Set<string>();
   readonly #harnesses: Record<string, Harness>;
+  readonly #plugins: PluginRegistry;
   readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
   readonly #manualGateApprovals: ManualGateApprovals;
   readonly #issueTrust: GitHubRepositoryTrust;
@@ -592,7 +593,8 @@ export class ConveyorService {
     this.store = store;
     this.github = github;
     this.#issueTrust = new GitHubRepositoryTrust(github);
-    this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
+    this.#plugins = implementations.plugins ?? new PluginRegistry([], pluginContext(config));
+    this.#codeHosts = implementations.codeHosts ?? this.#plugins.codeHosts();
     this.githubCalls = implementations.githubCalls ?? new GitHubCallMeter();
     this.events = new EventBus();
     store.events().attach(this.events);
@@ -615,7 +617,7 @@ export class ConveyorService {
     this.#sinks = sinks.map((sink) => new SinkRunner(store.events(), sink));
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
-    this.#harnesses = implementations.harnesses ?? { codex: codexHarness, "claude-code": claudeCodeHarness };
+    this.#harnesses = implementations.harnesses ?? this.#plugins.harnesses();
     this.#manualGateApprovals = new ManualGateApprovals(store.sqlite());
     this.#advisoryWatches = new AdvisoryCiWatches(store.sqlite(), store.executions(), {
       resolve: (repositoryId) => ({
@@ -646,8 +648,7 @@ export class ConveyorService {
   static async create(
     config: ConveyorConfig,
     github: GitHubAdapter,
-    codeHosts: CodeHostRegistry,
-    githubCalls?: GitHubCallMeter,
+    implementations: Pick<ServiceImplementations, "plugins" | "codeHosts" | "githubCalls"> = {},
   ): Promise<ConveyorService> {
     await ensureRuntimeDirectories(config);
     const store = await ConveyorStore.open(config.settings.database);
@@ -659,12 +660,7 @@ export class ConveyorService {
     store.recordConfigSnapshot(config.hash, redactSecrets(config, config.secrets ?? []));
     // The copy of GitHub lives in the database, so a restart does not read it all again.
     github.useMirror?.(store.githubMirror(), config.settings.githubCache);
-    const service = new ConveyorService(
-      config,
-      store,
-      github,
-      { codeHosts, ...(githubCalls ? { githubCalls } : {}) },
-    );
+    const service = new ConveyorService(config, store, github, implementations);
     const recovered = store.recoverInterruptedExecutions(config.hash);
     if (recovered.runs > 0 || recovered.stages > 0) {
       log.warn("Recovered interrupted work after restart", { runs: recovered.runs, stages: recovered.stages });
@@ -2734,17 +2730,11 @@ export class ConveyorService {
     // Unreferenced named providers are inert. An omitted repository reference
     // selects its source-native provider with no named-provider configuration.
     const configured = repository.ci.provider ? this.config.ci[repository.ci.provider] : undefined;
-    const stageTriggers = stageInput?.triggers;
-    const configuredTriggers = configured?.triggers;
-    const triggers = parseGitHubActionsTriggers(
-      configuredTriggers?.length ? configuredTriggers : stageTriggers,
-      configuredTriggers?.length ? `ci.${providerName}.triggers` : "pullRequest.awaitChecks.with.triggers",
-    );
-    const key = `${repositoryId}:${providerName}:${JSON.stringify(triggers)}`;
+    // A stage's own CI settings (legacy triggers) make a provider of their own.
+    const key = `${repositoryId}:${providerName}:${JSON.stringify(stageInput?.triggers ?? null)}`;
     let provider = this.#ciProviders.get(key);
     if (!provider) {
-      if (configured && configured.type !== "github-actions") throw new Error(`unsupported CI provider: ${providerName}`);
-      provider = new GitHubActionsCiProvider(this.github, triggers);
+      provider = this.#plugins.ciProvider(configured?.type ?? DEFAULT_CI_TYPE, { repositoryId, providerName, provider: configured, stageInput });
       this.#ciProviders.set(key, provider);
     }
     return provider;

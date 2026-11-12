@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { issueMetadataChecks } from "../../src/cli/commands/doctor";
 import type { ConveyorConfig } from "../../src/config/load";
-import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
+import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
 
 const config = (repositories: Record<string, unknown>) => ({ repositories }) as unknown as ConveyorConfig;
 const refinement = { fields: ["Effort"], require: { type: true, fields: ["Effort"], section: true } };

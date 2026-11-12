@@ -7,8 +7,8 @@ import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
-import type { GitHubRateLimits } from "../../src/source/github/adapter";
-import { GitHubCallMeter } from "../../src/source/github/call-meter";
+import type { GitHubRateLimits } from "../../src/plugins/github/shared/adapter";
+import { GitHubCallMeter } from "../../src/plugins/github/shared/call-meter";
 
 const directories: string[] = [];
 afterEach(async () => {

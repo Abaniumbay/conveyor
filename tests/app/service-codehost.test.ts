@@ -9,8 +9,8 @@ import { ConfiguredStageRuntime, type RuntimeIssueContext, type SourceActionHand
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { migrations } from "../../src/db/migrations";
-import { GitHubAdapter, type GitHubTransport } from "../../src/source/github/adapter";
-import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-registry";
+import { GitHubAdapter, type GitHubTransport } from "../../src/plugins/github/shared/adapter";
+import { githubPlugins } from "../support/plugins";
 import { CodeHostRegistry } from "../../src/codehost/registry";
 import type { CodeHost } from "../../src/codehost/types";
 import type { CiProvider } from "../../src/app/ci-provider";
@@ -144,7 +144,7 @@ repositories:
     return [{ id: 7, name: "Tests", status: "completed", conclusion: "success", details_url: "https://checks.test/7", started_at: null, completed_at: null, app: { slug: "github-actions" } }];
   };
   github.jobLog = async (_address, id) => { requestLog.push({ op: "log", id }); return "test failed\n"; };
-  const service = new ConveyorService(config, store, github, { codeHosts: createGitHubCodeHostRegistry(config, github) });
+  const service = new ConveyorService(config, store, github, { plugins: githubPlugins(config, github) });
   const issue = store.getIssue("issue")!;
   const context: RuntimeIssueContext = {
     issue,

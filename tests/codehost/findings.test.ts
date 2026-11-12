@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
-import { GitHubCodeHost } from "../../src/source/github/codehost";
+import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
+import { GitHubCodeHost } from "../../src/plugins/github/code/codehost";
 
 class FakeTransport implements GitHubTransport {
   readonly requests: GitHubTransportRequest[] = [];

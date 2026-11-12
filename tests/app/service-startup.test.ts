@@ -162,7 +162,7 @@ describe("startup reconciliation", () => {
       async listSubIssues() { return []; },
       async listDependencies() { return []; },
     };
-    const service = await ConveyorService.create(config(root), github as never, new CodeHostRegistry());
+    const service = await ConveyorService.create(config(root), github as never, { codeHosts: new CodeHostRegistry() });
     expect(service.startupStatus()).toEqual({ state: "starting", repository: "app", phase: "waiting" });
     const auth = createWebAuth({
       username: "operator",
@@ -259,7 +259,7 @@ describe("startup reconciliation", () => {
       async listSubIssues() { return []; },
       async listDependencies() { return []; },
     };
-    const service = await ConveyorService.create(config(root), github as never, new CodeHostRegistry());
+    const service = await ConveyorService.create(config(root), github as never, { codeHosts: new CodeHostRegistry() });
     const auth = createWebAuth({
       username: "operator",
       passwordHash: hashPassword("correct horse", { salt: "0123456789abcdef" }),

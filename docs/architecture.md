@@ -11,6 +11,7 @@ How Conveyor is built and why it behaves as it does. For using it, start with th
 - **Work is isolated.** Feature changes happen in Git worktrees; Conveyor does not edit a repository's primary checkout.
 - **Progress is durable.** SQLite journals runs, attempts, transitions, questions, costs, source mutations, conversation messages, and every task execution with the context it ran against.
 - **External mutations are idempotent.** Each act records a planned execution before it changes anything, observes external state first and does only the missing work, so a crash between a side effect and its record is repaired rather than repeated. For pull-request descriptions, recovery rereads the managed section before patching the provider, so a write that succeeded just before a crash is recorded without a second provider update.
+- **Small core, replaceable modules.** The core holds configuration, the item lifecycle, execution, commands and events. Everything that talks to the outside (item source, code host, CI, agent harnesses, the dashboard) is a module behind small interfaces (ports), so a provider can be replaced or several can run side by side. See [Modules and ports](#modules-and-ports).
 - **Commands in, events out.** The dashboard and the CLI send commands; every change of state is recorded as an event in the same transaction; reactions (scheduling, waking waits, the live dashboard, event sinks) subscribe to events. Any change can be traced, and a new consumer needs no change to the core.
 - **Humans stay in control.** Conveyor never directly closes an ordinary issue. Its only direct-close exception is an active roll-up parent after all descendants satisfy the completion rule; it first records the parent done and closes it with GitHub's `completed` reason. Other completed open issues remain closable for an owner or an ordinary PR reference.
 
@@ -49,7 +50,7 @@ flowchart LR
 | --- | --- |
 | Configuration loader | Composes the `conveyor.yaml` entrypoint and the files its `!include` / `!secret` tags name, resolves paths relative to the file that declares them, validates cross-references with file-and-key-path errors, and computes a stable configuration hash. |
 | GitHub source adapter | Reads issues and relationships, manages only configured labels/body sections, observes pull requests and checks, verifies webhooks, and performs idempotent source actions. |
-| Reconciler | Rebuilds the local projection from GitHub and detects enrollment and label drift. Polling reads every issue; an issue or relationship delivery is acknowledged at once and reconciled in the background, reading only the issues it names, with deliveries that arrive meanwhile joining one pass. CI and pull request deliveries do not reconcile. Deliveries for Conveyor's own status comments are ignored. A deleted or transferred issue counts as one with no Conveyor labels: an `issues.deleted` or `issues.transferred` delivery purges its item at once, aborting its run before any further GitHub request, and a read by number answered 404 or 410 does the same; a listing that omits a stored issue only triggers that read by number, and any other failure (5xx, network) leaves the item unchanged. Nothing is ever marked missing. For a repository with a managed webhook there is no periodic pass. All GitHub reads go through a copy kept in the database (`src/source/github/read-cache.ts`), answered from it within each kind's lifetime and kept current by deliveries and Conveyor's own writes; startup reads only the issues changed since the newest stored change. The dashboard, control socket, and live health endpoint start before the initial reconciliation, while readiness stays false until every repository has completed it. A polling repository is read in full periodically. A superuser can read one repository afresh with Sync now. |
+| Reconciler | Rebuilds the local projection from GitHub and detects enrollment and label drift. Polling reads every issue; an issue or relationship delivery is acknowledged at once and reconciled in the background, reading only the issues it names, with deliveries that arrive meanwhile joining one pass. CI and pull request deliveries do not reconcile. Deliveries for Conveyor's own status comments are ignored. A deleted or transferred issue counts as one with no Conveyor labels: an `issues.deleted` or `issues.transferred` delivery purges its item at once, aborting its run before any further GitHub request, and a read by number answered 404 or 410 does the same; a listing that omits a stored issue only triggers that read by number, and any other failure (5xx, network) leaves the item unchanged. Nothing is ever marked missing. For a repository with a managed webhook there is no periodic pass. All GitHub reads go through a copy kept in the database (`src/plugins/github/shared/read-cache.ts`), answered from it within each kind's lifetime and kept current by deliveries and Conveyor's own writes; startup reads only the issues changed since the newest stored change. The dashboard, control socket, and live health endpoint start before the initial reconciliation, while readiness stays false until every repository has completed it. A polling repository is read in full periodically. A superuser can read one repository afresh with Sync now. |
 | Event log and bus | Records every change as an event in its transaction (`src/events`), publishes committed events in order to in-process subscribers and delivers them to sinks from durable cursors. |
 | Command bus | The one way in for dashboard and CLI actions (`src/commands`): validation, server-side role checks, correlation, accepted/rejected events. |
 | Wait dispatcher | Wakes parked tasks whose wait subscriptions match an event (a commit's CI finishing, a pull request changing, a tracked blocker changing); a fallback deadline covers a lost delivery. |
@@ -64,10 +65,44 @@ flowchart LR
 | JSON-process runner | Executes repository-defined programs that accept JSON on stdin and return exactly one validated JSON result. |
 | Scoped MCP server | Serves the registry's `tool` tasks to each live run under an exact grant, through one dispatcher that re-checks the grant and preconditions. Grants expire with the run. |
 | Agent isolation | Sanitized agent environment and, per repository, a network namespace with allowlisting proxies (`src/isolation`). |
-| SQLite store | Persists source projections, stage state, attempts, events, transitions, questions, costs, artifacts, leases, review findings, criterion approvals, advisory CI watches and idempotency records in WAL mode. |
+| SQLite store | Persists source projections, stage state, events, transitions, runs and their logs, questions and conversations, costs, review findings, criterion approvals, advisory CI watches and idempotency records in WAL mode. |
 | Web control plane | Serves the authenticated dashboard application (a Preact application that runs in the browser), its JSON endpoints for issue conversations, stage history, technical logs, views and steering runs, health endpoints, and the live SSE stream. The live dashboard model (`src/app/dashboard-feed.ts`, `src/web/model.ts`) is rebuilt once per burst of changes and sent as a snapshot plus field-level patches (`/api/v1/snapshot`, `/api/v1/stream`), so the work per change does not grow with the number of open dashboards. |
 | Control interface and releases | Serves the CLI over a private Unix socket with the same operations as the dashboard; drains, backs up, switches the installed release and restarts under systemd for upgrades and rollbacks (`src/control`). |
 | Service logging | Structured, redacted service logs on stdout/stderr and in a rotated JSON-lines file (`src/log`). |
+
+## Modules and ports
+
+Conveyor is moving to a small core with replaceable modules (#667). This section is the target and
+the rule new code follows; the current state is tracked by the boundary test.
+
+- **Core:** configuration and the module registry, the item lifecycle (stage, state, epoch,
+  enrollment, roll-ups) in provider-neutral words (item, change, check, marker), scheduling and the
+  stage executor with its journal, the command bus, and the event log and bus.
+- **Ports:** small interfaces, each shaped by what its consumer needs. One implementation may
+  provide many of them.
+
+| Role | Ports today | Implementations |
+| --- | --- | --- |
+| Item source | `IssueSourceAdapter` (`src/source/types.ts`); more to come: reading, markers, relations, sections, comments, lifecycle, trust | GitHub Issues |
+| Code host | `CodeHost` (`src/codehost/types.ts`) | GitHub pull requests |
+| CI | `CiProvider` (`src/app/ci-provider.ts`) | GitHub Actions |
+| Agent harness | `Harness` (`src/harness/types.ts`) | Codex, Claude Code |
+| Storage | `ConveyorStore` today; per-domain store ports to come (items, journal, evidence, events, run logs, conversations, provider cache, webhook deliveries, accounts) | SQLite |
+
+- **Plugins** live in their own folders (`src/plugins/<provider>/<role>/`) and are selected by
+  configuration `type` per role, so a repository can combine, for example, items from one provider
+  with code and CI from another. The contract and registry are in `src/core/plugins.ts`; the code
+  host, CI and harness roles are plugins today, and the item source becomes one with its ports.
+  `src/plugins/index.ts` lists them and the composition root (`src/cli/commands/serve.ts`) is the
+  only place that registers them. Plugins of one provider share a client through the plugin
+  context, never by importing each other.
+- **Events:** plugins report what they observe as events; the core compares them with what it
+  knows, records the change, and emits its own events, which other modules (the dashboard among
+  them) consume. Writes stay direct calls through ports, and every write is recorded as an event.
+- **Enforcement:** `tests/scripts/architecture-boundaries.test.ts` fails when code outside an
+  implementation or the composition root imports a provider or harness implementation, when a
+  plugin imports another plugin, or when code outside `src/db` uses SQLite. Existing violations are
+  listed in `scripts/architecture-allowlist.json`, which may only shrink.
 
 ## Issue and pipeline model
 
@@ -186,19 +221,20 @@ Operator check (real network, not part of `bun test`): `bun scripts/check-agent-
 src/
 ├── app/          service orchestration, issue execution, configured stage runtime, and retention
 ├── cli/          the conveyor command line: commands, home layout, control-socket client
-├── codehost/     code-host contract and GitHub implementation (changes, review, merge)
+├── codehost/     code-host contract and provider-neutral change actions
 ├── config/       entrypoint composition (include/secret tags), packaged defaults, migration, validation
 ├── control/      the local control socket and in-service upgrades and rollbacks
-├── core/         issue projection, scheduling, and transitions
+├── core/         issue projection, scheduling, transitions, and the plugin contract and registry
 ├── db/           SQLite migrations and durable store
 ├── engine/       stage executor, execution journal, review records, advisory CI watches
-├── harness/      neutral agent-harness contract and the Codex harness
+├── harness/      neutral agent-harness contract
 ├── isolation/    agent environment, network sandbox, egress proxies
 ├── log/          service logging (redaction, rotation) and the log reader
 ├── mcp/          run-scoped MCP context and stdio server
+├── plugins/      plugin implementations: github/{shared,items,code,ci}, codex, claude-code; index.ts lists them
 ├── release/      installed-release layout, verified staging, backups and switch history
-├── runner/       Codex, legacy verifier, steering, and strict JSON-process runners
-├── source/       source contracts and the GitHub adapter
+├── runner/       Codex, Claude Code, legacy verifier, steering, and strict JSON-process runners
+├── source/       item source contracts
 ├── tasks/        task contract, registry, groups, plan compiler, legacy compiler
 ├── web/          authentication, HTTP/SSE server, the live dashboard model, Preact components, styles, and the browser application (app/)
 └── workspace/    managed Git worktree lifecycle

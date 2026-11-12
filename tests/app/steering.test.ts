@@ -6,7 +6,7 @@ import path from "node:path";
 import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
-import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-registry";
+import { githubPlugins } from "../support/plugins";
 
 const temporaryDirectories: string[] = [];
 
@@ -648,7 +648,7 @@ describe("ConveyorService steering", () => {
     let service!: ConveyorService;
     let steeringRunId = "";
     service = new ConveyorService(config, store, github as never, {
-      codeHosts: createGitHubCodeHostRegistry(config, github as never),
+      plugins: githubPlugins(config, github as never),
       steering: async (input) => {
         expect(input.sandbox).toBe("read-only");
         expect(input.filesystem).toBe("scratch");
