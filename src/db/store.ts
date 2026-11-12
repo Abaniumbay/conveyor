@@ -2119,7 +2119,8 @@ export class ConveyorStore {
         )
         .run(event.source, event.deliveryId, event.eventType, json(event.payload), now());
       if (result.changes !== 1) return false;
-      const scope = { repositoryId: event.repositoryId ?? null };
+      // The plugin that received the delivery is the source of what it reports.
+      const scope = { repositoryId: event.repositoryId ?? null, source: event.source };
       this.#events.append("webhook.received", { deliveryId: event.deliveryId, eventType: event.eventType }, scope);
       const normalized = event.normalized;
       if (normalized) this.#appendGitHubEvent(normalized, scope);
@@ -2127,7 +2128,7 @@ export class ConveyorStore {
     })();
   }
 
-  #appendGitHubEvent(event: NormalizedGitHubEvent, scope: { repositoryId: string | null }): void {
+  #appendGitHubEvent(event: NormalizedGitHubEvent, scope: { repositoryId: string | null; source: string }): void {
     // Each branch narrows the payload to its own type.
     switch (event.type) {
       case "github.issueUpdated": return this.#events.append(event.type, event.payload, scope);

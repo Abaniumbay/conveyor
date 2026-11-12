@@ -112,6 +112,30 @@ describe("ConveyorService shutdown", () => {
     }
   });
 
+  test("each firing of the reconcile timer records a timer trace", async () => {
+    const { directory, base } = await referenceConfigDirectory();
+    bases.push(base);
+    const config = await loadConfig(directory);
+    config.settings.reconcileIntervalMs = 10;
+    const store = await ConveyorStore.open(path.join(base, "conveyor.sqlite"));
+    const github = {
+      async repositoryVisibility() { return "private" as const; },
+      async ensureLabels() {},
+      async listIssues() { return []; },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+    };
+    const service = new ConveyorService(config, store, github as never);
+    try {
+      service.start();
+      // A hang guard, not a deadline: the timer fires every 10 ms.
+      for (let waited = 0; store.events().read({ type: "timer.fired" }).length === 0 && waited < 5_000; waited += 5) await Bun.sleep(5);
+      expect(store.events().read({ type: "timer.fired" })[0]).toMatchObject({ class: "trace", payload: { timer: "reconcile" } });
+    } finally {
+      await service.close();
+    }
+  });
+
   test("resumes periodic reconciliation after startup completion", async () => {
     const { directory, base } = await referenceConfigDirectory();
     bases.push(base);

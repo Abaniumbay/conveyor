@@ -11,6 +11,7 @@ import { ConveyorStore } from "../../src/db/store";
 import { createWorkspace } from "../../src/workspace/lifecycle";
 import { WorkspaceManager } from "../../src/workspace/manager";
 import { git } from "../support/delivery-world";
+import { UNDO_EVENT_CLASSES } from "../support/schema-rollback";
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
@@ -64,7 +65,7 @@ test("migration 47 queues the rows of the removed missing and offboarded states;
   }
   // Offboarding had ended the enrollment of the first and marked its workspace stale.
   store.endActiveEnrollment("gone", "offboarded");
-  store.sqlite().exec("DROP TABLE pending_purges; DROP TABLE purged_generations; DELETE FROM schema_migrations WHERE version >= 47;");
+  store.sqlite().exec(UNDO_EVENT_CLASSES + " DROP TABLE pending_purges; DROP TABLE purged_generations; DELETE FROM schema_migrations WHERE version >= 47;");
   store.close();
   for (const { path: workspacePath } of worktrees.values()) expect(existsSync(workspacePath)).toBe(true);
 

@@ -11,6 +11,7 @@ import { AGENT_DENIED_TOOLS, canonicalToolName } from "../tasks/aliases";
 import type { Route } from "../tasks/contract";
 
 import { parseDuration } from "./duration";
+import { EVENT_CLASSES } from "../events/catalogue";
 
 const durationSchema = z
   .union([z.number().int().positive(), z.string().min(1)])
@@ -62,7 +63,14 @@ const waitTimeoutSchema = z.union([z.literal("unlimited"), durationSchema]).tran
 
 /** An event sink: `jsonl` appends each event as one JSON line to `path`, rotated like the service log. */
 const eventSinkSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("jsonl"), path: absolutePathSchema }).strict(),
+  z.object({
+    type: z.literal("jsonl"),
+    path: absolutePathSchema,
+    /** Which classes of event the sink receives; traces are left out by default. */
+    classes: z.array(z.enum(EVENT_CLASSES)).nonempty().default(["fact", "ingest"]),
+    /** Whether events that may carry user-written text (titles, bodies, comments) are delivered. */
+    includeContent: z.boolean().default(false),
+  }).strict(),
 ]);
 
 const settingsSchema = z

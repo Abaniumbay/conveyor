@@ -76,7 +76,7 @@ import { ManualGateApprovals } from "../engine/manual-gates";
 import { CommandBus, CommandForbiddenError, CommandInputError, type CommandActor } from "../commands/bus";
 import { EventBus } from "../events/bus";
 import { JsonlEventSink, SinkRunner, type EventSink } from "../events/sinks";
-import { isEventOf, type EventType, type StoredEvent } from "../events/catalogue";
+import { isEventOf, type EventPayload, type EventType, type StoredEvent } from "../events/catalogue";
 import { withEventContext } from "../events/context";
 import { normalizeGitHubEvent } from "../plugins/github/shared/events";
 import { deliveredIssueChange } from "../plugins/github/items/delivery-issue";
@@ -611,6 +611,7 @@ export class ConveyorService {
     const sinks: EventSink[] = [
       ...(config.settings.events?.sinks ?? []).map((sink) => new JsonlEventSink(sink.path, {
         maxBytes: (logging?.maxFileMegabytes ?? 10) * 1024 * 1024, keepFiles: logging?.keepFiles ?? 5,
+        selection: { classes: sink.classes, content: sink.includeContent },
       })),
       ...(implementations.eventSinks ?? []),
     ];
@@ -1082,10 +1083,11 @@ export class ConveyorService {
     if (this.#timer) return;
     this.beginStartupPass();
     void this.tick();
-    this.#timer = setInterval(() => void this.tick(), this.config.settings.reconcileIntervalMs);
+    this.#timer = setInterval(() => { this.#timerFired("reconcile"); void this.tick(); }, this.config.settings.reconcileIntervalMs);
     const periodic = this.config.web?.steering?.periodic;
     if (periodic) {
       this.#periodicOperatorTimer = setInterval(() => {
+        this.#timerFired("scheduled-operator");
         void this.runScheduledOperatorCheck().catch((error) => log.warn("Scheduled Operator check failed", {}, error));
       }, periodic.intervalMs);
     }
@@ -1096,15 +1098,25 @@ export class ConveyorService {
         .finally(() => { this.#retentionActive -= 1; });
     };
     prune();
-    this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
-    this.#githubCallTimer = setInterval(() => void this.logGitHubCalls(), GITHUB_CALL_SUMMARY_MS);
+    this.#retentionTimer = setInterval(() => { this.#timerFired("retention"); prune(); }, 24 * 60 * 60_000);
+    this.#githubCallTimer = setInterval(() => { this.#timerFired("github-calls"); void this.logGitHubCalls(); }, GITHUB_CALL_SUMMARY_MS);
     for (const sink of this.#sinks) sink.start(this.events);
     // The server listens from here on: ask for the deliveries GitHub could not make while Conveyor was
     // starting or stopped, and ping each webhook so its arrival shows deliveries work.
     for (const repositoryId of Object.keys(this.config.repositories)) {
       if (this.webhookUrl(repositoryId)) void this.redeliverMissed(repositoryId).then(() => this.pingWebhook(repositoryId));
     }
-    this.#webhookHealthTimer = setInterval(() => void this.superviseWebhooks(), WEBHOOK_CHECK_MS);
+    this.#webhookHealthTimer = setInterval(() => { this.#timerFired("webhook-health"); void this.superviseWebhooks(); }, WEBHOOK_CHECK_MS);
+  }
+
+  /** A trace of a timer firing: the activity no request or event started. */
+  #timerFired(timer: EventPayload<"timer.fired">["timer"]): void {
+    try {
+      this.store.events().trace("timer.fired", { timer });
+    } catch (error) {
+      // A trace never stops the work it describes (the database may be closing).
+      log.warn("Could not record a trace", { timer }, error);
+    }
   }
 
   private beginStartupPass(): void {
@@ -1647,6 +1659,8 @@ export class ConveyorService {
       });
     }
     const selectedIds = startedIds;
+    const waiting = candidates.filter((candidate) => candidate.eligible && candidate.dependenciesSatisfied && !candidate.rollupOnly && !selectedIds.has(candidate.id)).length;
+    this.#traceSchedulerDecision({ started: selectedIds.size, waiting, running: this.#active.size - selectedIds.size });
     this.refreshStatusComments([
       ...promotedIds,
       ...selectedIds,
@@ -1655,6 +1669,20 @@ export class ConveyorService {
         .map((candidate) => candidate.id),
     ]);
     this.armWakeTimer();
+  }
+
+  #lastSchedulerDecision = "";
+
+  /** A trace of what a scheduling pass decided, recorded only when the outcome changed. */
+  #traceSchedulerDecision(decision: EventPayload<"scheduler.decided">): void {
+    const key = JSON.stringify(decision);
+    if (decision.started === 0 && key === this.#lastSchedulerDecision) return;
+    this.#lastSchedulerDecision = key;
+    try {
+      this.store.events().trace("scheduler.decided", decision);
+    } catch (error) {
+      log.warn("Could not record a trace", {}, error);
+    }
   }
 
   private schedulerCandidates(
@@ -1886,6 +1914,7 @@ export class ConveyorService {
     if (next === null || this.#shuttingDown) return;
     this.#advisoryTimer = setTimeout(() => {
       this.#advisoryTimer = null;
+      this.#timerFired("advisory-ci");
       void this.pollAdvisoryCi().catch(() => {});
     }, Math.max(0, Date.parse(next) - Date.now()) + 50);
   }
@@ -2094,6 +2123,7 @@ export class ConveyorService {
     if (next === null) return;
     this.#wakeTimer = setTimeout(() => {
       this.#wakeTimer = null;
+      this.#timerFired("wake");
       this.schedule();
     }, Math.max(0, Date.parse(next) - Date.now()) + 50);
   }

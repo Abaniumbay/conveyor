@@ -3,6 +3,7 @@
 
 import { log } from "../log/logger";
 import type { EventType, StoredEvent } from "./catalogue";
+import { withCausation } from "./context";
 
 export type EventHandler<T extends EventType = EventType> = (event: StoredEvent<T>) => void | Promise<void>;
 
@@ -28,7 +29,8 @@ export class EventBus {
         const { type, name, handler } = handlers[index]!;
         if (type !== "*" && type !== event.type) continue;
         try {
-          const result = handler(event);
+          // What a subscriber records, now or in work it starts, was caused by this event.
+          const result = withCausation(event.seq, () => handler(event));
           if (result) {
             return result.then(
               () => dispatchFrom(index + 1),

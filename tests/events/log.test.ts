@@ -170,3 +170,99 @@ describe("EventLog", () => {
     reopened.close();
   });
 });
+
+describe("event classes, sources and causes", () => {
+  test("an item change is a fact from the core", async () => {
+    const { store } = await open();
+    store.upsertIssue(issue(1));
+    expect(store.events().read({ type: "item.discovered" })[0]).toMatchObject({ class: "fact", source: "core", causationSeq: null });
+    store.close();
+  });
+
+  test("a webhook observation is an ingest event from the plugin that received it", async () => {
+    const { store } = await open();
+    store.recordSourceEvent({
+      source: "github", deliveryId: "d-1", eventType: "ping", payload: {}, repositoryId: "repo",
+      normalized: { type: "github.ping", payload: { repository: "owner/my-app" } },
+    });
+    expect(store.events().read({ type: "github.ping" })[0]).toMatchObject({ class: "ingest", source: "github" });
+    expect(store.events().read({ type: "webhook.received" })[0]).toMatchObject({ class: "ingest", source: "github" });
+    store.close();
+  });
+
+  test("an event a subscriber records names the event it reacted to as its cause", async () => {
+    const { store } = await open();
+    const bus = new EventBus();
+    store.events().attach(bus);
+    bus.subscribe("item.discovered", "react", (event) => {
+      if (event.issueId === "issue-1") store.upsertIssue(issue(2));
+    });
+    store.upsertIssue(issue(1));
+    await store.events().settled();
+    const [first] = store.events().read({ type: "item.discovered", issueId: "issue-1" });
+    const [second] = store.events().read({ type: "item.discovered", issueId: "issue-2" });
+    expect(second?.causationSeq).toBe(first!.seq);
+    store.close();
+  });
+
+  test("work a subscriber starts asynchronously keeps the cause", async () => {
+    const { store } = await open();
+    const bus = new EventBus();
+    store.events().attach(bus);
+    let later: Promise<void> = Promise.resolve();
+    bus.subscribe("item.discovered", "react later", (event) => {
+      if (event.issueId === "issue-1") later = Bun.sleep(1).then(() => store.upsertIssue(issue(2)));
+    });
+    store.upsertIssue(issue(1));
+    await store.events().settled();
+    await later;
+    const [first] = store.events().read({ type: "item.discovered", issueId: "issue-1" });
+    expect(store.events().read({ type: "item.discovered", issueId: "issue-2" })[0]?.causationSeq).toBe(first!.seq);
+    store.close();
+  });
+
+  test("causedBy returns the whole chain of reactions, not unrelated events", async () => {
+    const { store } = await open();
+    const bus = new EventBus();
+    store.events().attach(bus);
+    bus.subscribe("item.discovered", "chain", (event) => {
+      if (event.issueId === "issue-1") store.upsertIssue(issue(2));
+      if (event.issueId === "issue-2") store.upsertIssue(issue(3));
+    });
+    store.upsertIssue(issue(1));
+    await store.events().settled();
+    store.upsertIssue(issue(9));
+    await store.events().settled();
+    const root = store.events().read({ type: "item.discovered", issueId: "issue-1" })[0]!;
+    const chain = store.events().read({ causedBy: root.seq, type: "item.discovered" }).map((event) => event.issueId);
+    expect(chain).toEqual(["issue-2", "issue-3"]);
+    store.close();
+  });
+
+  test("classes selects events by class", async () => {
+    const { store } = await open();
+    store.upsertIssue(issue(1));
+    store.events().trace("timer.fired", { timer: "reconcile" });
+    expect(store.events().read({ classes: ["trace"] }).map((event) => event.type)).toEqual(["timer.fired"]);
+    expect(store.events().read({ classes: ["fact"] }).map((event) => event.type)).not.toContain("timer.fired");
+    store.close();
+  });
+
+  test("trace refuses an event type that is not a trace", async () => {
+    const { store } = await open();
+    expect(() => store.events().trace("admission.paused", {})).toThrow("admission.paused is not a trace event");
+    store.close();
+  });
+
+  test("prune removes traces older than their own cutoff and keeps newer facts", async () => {
+    const { store } = await open();
+    store.upsertIssue(issue(1));
+    store.events().trace("timer.fired", { timer: "wake" });
+    const future = new Date(Date.now() + 60_000).toISOString();
+    expect(store.events().prune("", future)).toBe(1);
+    const types = store.events().read().map((event) => event.type);
+    expect(types).toContain("item.discovered");
+    expect(types).not.toContain("timer.fired");
+    store.close();
+  });
+});

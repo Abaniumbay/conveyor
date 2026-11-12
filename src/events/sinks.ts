@@ -3,23 +3,41 @@
 
 import { log, RotatingFile } from "../log/logger";
 import type { EventBus } from "./bus";
-import type { StoredEvent } from "./catalogue";
+import { EVENT_CATALOGUE, type EventClass, type StoredEvent } from "./catalogue";
 import type { EventLog } from "./log";
+
+/** Which events a sink receives: these classes, and events that may carry user-written text only when `content`. */
+export interface SinkSelection {
+  classes: readonly EventClass[];
+  content: boolean;
+}
+
+/** Facts and observations, without traces or user-written text. */
+export const DEFAULT_SINK_SELECTION: SinkSelection = { classes: ["fact", "ingest"], content: false };
 
 /** A consumer of the event log. `deliver` resolving means the batch is safely delivered. */
 export interface EventSink {
   /** Stable and unique: the sink's cursor is stored under it. */
   readonly name: string;
+  /** What it receives; the default selection when absent. */
+  readonly selection?: SinkSelection;
   deliver(events: readonly StoredEvent[]): Promise<void>;
+}
+
+/** Whether a sink with `selection` receives `event`. */
+export function selects(selection: SinkSelection, event: StoredEvent): boolean {
+  return selection.classes.includes(event.class) && (selection.content || !EVENT_CATALOGUE[event.type].content);
 }
 
 /** Appends each event as one JSON line to a file, rotated by size like the service log. */
 export class JsonlEventSink implements EventSink {
   readonly name: string;
+  readonly selection: SinkSelection;
   readonly #file: RotatingFile;
 
-  constructor(file: string, options: { maxBytes: number; keepFiles: number }) {
+  constructor(file: string, options: { maxBytes: number; keepFiles: number; selection?: SinkSelection }) {
     this.name = `jsonl:${file}`;
+    this.selection = options.selection ?? DEFAULT_SINK_SELECTION;
     this.#file = new RotatingFile(file, options.maxBytes, options.keepFiles);
   }
 
@@ -104,8 +122,11 @@ export class SinkRunner {
         }
         const batch = this.events.read({ afterSeq: cursor, limit: this.#batchSize });
         if (batch.length === 0) break;
+        const selection = this.sink.selection ?? DEFAULT_SINK_SELECTION;
+        const selected = batch.filter((event) => selects(selection, event));
         try {
-          await this.sink.deliver(batch);
+          // Events the sink does not select are passed over: the cursor still moves past them.
+          if (selected.length > 0) await this.sink.deliver(selected);
         } catch (error) {
           this.#failures += 1;
           const delay = Math.min(this.#backoffMs * 2 ** (this.#failures - 1), this.#maxBackoffMs);

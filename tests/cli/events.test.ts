@@ -13,7 +13,7 @@ afterEach(async () => {
 });
 
 /** A stopped Conveyor home whose database holds a few events of two items. */
-async function home() {
+async function home(seed: (store: ConveyorStore) => void = () => {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-events-cli-"));
   directories.push(root);
   const database = path.join(root, "state/conveyor.sqlite");
@@ -28,6 +28,7 @@ async function home() {
   store.setQueueRank("github:owner/app#1", 10);
   // An old event, beyond --since 1h.
   store.sqlite().query("UPDATE events SET occurred_at = '2026-01-01T00:00:00.000Z' WHERE seq = (SELECT MIN(seq) FROM events)").run();
+  seed(store);
   store.close();
   const conveyorHome = path.join(root, "home");
   await mkdir(path.join(conveyorHome, "config"), { recursive: true });
@@ -43,7 +44,7 @@ async function home() {
   return { cli };
 }
 
-const types = (lines: string[]) => lines.map((line) => line.split(" ")[2]);
+const types = (lines: string[]) => lines.map((line) => line.split(" ")[3]);
 
 describe("conveyor events", () => {
   test("prints the log, one event per line with its item and actor", async () => {
@@ -51,7 +52,7 @@ describe("conveyor events", () => {
     const { code, lines } = await cli("events");
     expect(code).toBe(0);
     expect(types(lines)).toEqual(["repository.onboarded", "item.discovered", "item.discovered", "item.queueChanged"]);
-    expect(lines[2]).toMatch(/ item\.discovered app:2 user:admin-1 correlation=click-1 \{"number":2\}$/);
+    expect(lines[2]).toMatch(/ fact item\.discovered app:2 user:admin-1 correlation=click-1 \{"number":2\}$/);
   });
 
   test("--issue keeps one item's events", async () => {
@@ -88,5 +89,29 @@ describe("conveyor events", () => {
   test("an unknown item is an error", async () => {
     const { cli } = await home();
     expect((await cli("events", "--issue", "app:99")).code).not.toBe(0);
+  });
+
+  test("--class keeps the events of the named classes", async () => {
+    const { cli } = await home((store) => store.events().trace("timer.fired", { timer: "wake" }));
+    expect(types((await cli("events", "--class", "trace")).lines)).toEqual(["timer.fired"]);
+    expect(types((await cli("events", "--class", "fact")).lines)).not.toContain("timer.fired");
+  });
+
+  test("--class refuses an unknown class", async () => {
+    const { cli } = await home();
+    const { code, err } = await cli("events", "--class", "fact,gossip");
+    expect(code).not.toBe(0);
+    expect(err).toContain("unknown: gossip");
+  });
+
+  test("--caused-by keeps the reactions to one event and shows their cause", async () => {
+    let cause = 0;
+    const { cli } = await home((store) => {
+      cause = store.events().latestSeq();
+      store.sqlite().query("UPDATE events SET causation_seq = ? WHERE type = 'item.queueChanged'").run(cause - 1);
+    });
+    const { lines } = await cli("events", "--caused-by", String(cause - 1));
+    expect(types(lines)).toEqual(["item.queueChanged"]);
+    expect(lines[0]).toContain(` cause=${cause - 1} `);
   });
 });

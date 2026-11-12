@@ -1,20 +1,36 @@
 // Every event Conveyor records, declared once. The store or engine method that makes a change
-// appends its event in the same transaction, so no change exists without its event. Payloads carry
-// identifiers and states, never secrets and never user-written text: a consumer that needs the
-// text reads it from the view or the source.
+// appends its event in the same transaction, so no change exists without its event. Each type has a
+// class: a `fact` records a change of Conveyor's own state, an `ingest` event reports what a plugin
+// observed at a provider, and a `trace` shows what the service is doing (fire and forget, kept for a
+// day). Payloads carry identifiers and states, never secrets; only a type declared with `content`
+// may carry user-written text, and sinks leave such events out unless they ask for them.
 
 import { z } from "zod";
 
 import { FINDING_TYPES } from "../engine/finding-types";
 import { WAIT_KINDS } from "./topics";
 
+export const EVENT_CLASSES = ["fact", "ingest", "trace"] as const;
+export type EventClass = (typeof EVENT_CLASSES)[number];
+
 interface Definition<S extends z.ZodType> {
   group: string;
   description: string;
   payload: S;
+  class: EventClass;
+  /** Whether the payload may carry user-written text (titles, bodies, comments). */
+  content: boolean;
 }
 
-const define = <S extends z.ZodType>(group: string, description: string, payload: S): Definition<S> => ({ group, description, payload });
+const define = <S extends z.ZodType>(
+  group: string,
+  description: string,
+  payload: S,
+  options: { class?: EventClass; content?: boolean } = {},
+): Definition<S> => ({ group, description, payload, class: options.class ?? "fact", content: options.content ?? false });
+
+const ingest = { class: "ingest" } as const;
+const trace = { class: "trace" } as const;
 
 const id = z.string().min(1);
 const nullableId = id.nullable();
@@ -106,21 +122,21 @@ export const EVENT_CATALOGUE = {
   "advisoryCi.finished": define("Changes and CI", "An advisory CI watch posted its result.", z.object({ watchId: id, state: z.string() }).strict()),
 
   // GitHub
-  "webhook.received": define("GitHub", "A verified webhook delivery was stored.", z.object({ deliveryId: id, eventType: z.string() }).strict()),
+  "webhook.received": define("GitHub", "A verified webhook delivery was stored.", z.object({ deliveryId: id, eventType: z.string() }).strict(), ingest),
   "github.issueUpdated": define("GitHub", "GitHub reported a change to an issue or its comments; `pullRequest` when the issue is a pull request.", z.object({
     repository: z.string(), number, action: z.string(), pullRequest: z.boolean(),
-  }).strict()),
+  }).strict(), ingest),
   "github.relationshipChanged": define("GitHub", "GitHub reported changed sub-issues or blockers; `numbers` are the issues of this repository involved.", z.object({
     repository: z.string(), numbers: z.array(number),
-  }).strict()),
+  }).strict(), ingest),
   "github.changeUpdated": define("GitHub", "GitHub reported a change to a pull request (opened, synchronize, closed, ...).", z.object({
     repository: z.string(), number, action: z.string(), headSha: sha.nullable(), merged: z.boolean().default(false),
-  }).strict()),
+  }).strict(), ingest),
   "github.ciUpdated": define("GitHub", "GitHub reported CI progress for a commit; `completed` when a workflow run or check suite finished.", z.object({
     repository: z.string(), sha, pullRequests: z.array(number), completed: z.boolean(),
-  }).strict()),
+  }).strict(), ingest),
   "webhook.healthChanged": define("GitHub", "A repository's webhook started or stopped delivering: unhealthy when a ping went undelivered, healthy again with the next delivery.", z.object({ healthy: z.boolean() }).strict()),
-  "github.ping": define("GitHub", "GitHub confirmed the webhook (a ping).", z.object({ repository: z.string() }).strict()),
+  "github.ping": define("GitHub", "GitHub confirmed the webhook (a ping).", z.object({ repository: z.string() }).strict(), ingest),
   "source.mutationStarted": define("GitHub", "Conveyor recorded a change it is about to make at the source.", z.object({ mutationId: id, operation: z.string() }).strict()),
   "source.mutationCompleted": define("GitHub", "A source change completed.", z.object({ mutationId: id, operation: z.string() }).strict()),
   "source.mutationFailed": define("GitHub", "A source change failed.", z.object({ mutationId: id, operation: z.string() }).strict()),
@@ -157,6 +173,14 @@ export const EVENT_CATALOGUE = {
     issueNumbers: z.array(number).nullable(),
   }).strict()),
 
+  // Traces
+  "scheduler.decided": define("Traces", "A scheduling pass started `started` items; `waiting` were runnable but held back by a limit and `running` were already running. Recorded when the outcome changes.", z.object({
+    started: z.number().int().nonnegative(), waiting: z.number().int().nonnegative(), running: z.number().int().nonnegative(),
+  }).strict(), trace),
+  "timer.fired": define("Traces", "One of the service's timers fired and started its work.", z.object({
+    timer: z.enum(["reconcile", "wake", "retention", "webhook-health", "github-calls", "advisory-ci", "scheduled-operator"]),
+  }).strict(), trace),
+
   // Commands
   "command.accepted": define("Commands", "A command from the dashboard or the CLI succeeded; events for its item share its correlation id.", z.object({ command: z.string() }).strict()),
   "command.rejected": define("Commands", "A command was refused or failed; `reason` says why.", z.object({ command: z.string(), reason: z.string() }).strict()),
@@ -169,6 +193,11 @@ export type EventPayload<T extends EventType> = z.infer<(typeof EVENT_CATALOGUE)
 export interface StoredEvent<T extends EventType = EventType> {
   seq: number;
   type: T;
+  class: EventClass;
+  /** `core`, or the plugin that reported it (`github`). */
+  source: string;
+  /** The event whose subscriber appended this one, when it was a reaction. */
+  causationSeq: number | null;
   occurredAt: string;
   repositoryId: string | null;
   issueId: string | null;

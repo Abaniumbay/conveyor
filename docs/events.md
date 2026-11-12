@@ -8,138 +8,148 @@ Each event has:
 
 - `seq`: its position in the log, increasing.
 - `type`: one of the types below.
+- `class`: `fact` (a change of Conveyor's own state, recorded with the change), `ingest` (what a plugin observed at a provider, such as a webhook delivery) or `trace` (what the service is doing: a timer firing, a scheduling decision; fire and forget, kept for a day).
+- `source`: `core`, or the plugin that reported the event (`github`).
+- `causationSeq`: the event this one was a reaction to, when a subscriber recorded it; `conveyor events --caused-by <seq>` follows the chain.
 - `occurredAt`: when it was recorded (ISO 8601).
 - `repositoryId` and `issueId`: the configured repository and item it concerns, when it concerns one.
 - `actor`: who caused it: `user` (a dashboard account), `cli`, `agent` (an agent run), `webhook` (a GitHub delivery) or `system` (Conveyor itself).
 - `correlationId`: shared by events for the item a command names; commands without an item share it with every event they cause.
-- `payload`: the fields listed below. Payloads carry identifiers and states, never secrets and never user-written text; read the text from the dashboard or the source.
+- `payload`: the fields listed below. Payloads carry identifiers and states, never secrets. Only an event type marked *content* may carry user-written text, and sinks leave those out unless they ask for them.
 
-`conveyor events` prints the log, and event sinks deliver it elsewhere ([configuration.md](configuration.md#events)). The log keeps events for `settings.events.retention` (30 days by default).
+`conveyor events` prints the log, and event sinks deliver it elsewhere ([configuration.md](configuration.md#events)); a sink receives facts and observations unless it selects other classes. The log keeps events for `settings.events.retention` (30 days by default) and traces for a day.
 
 ## Event catalogue
 
 ### Items
 
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `item.discovered` | Conveyor saw a source issue for the first time. | `number`: integer |
-| `item.enrolled` | An item started a new enrollment generation. | `generation`: integer |
-| `item.metadataChanged` | An item's issue type or issue-field values changed. | - |
-| `item.offboarded` | An item's active enrollment ended; `status` says how. | `status`: string |
-| `item.purged` | An item lost its Conveyor labels (or was closed without a merge) and Conveyor deleted everything it held about it; the event log keeps the item's events. | `number`: integer |
-| `item.queueChanged` | An item's backlog position changed; null rank leaves the queue. | `rank`: number \| null |
-| `item.relationshipsChanged` | An item's stored parent or blockers changed. | `parentId`: string \| null<br>`dependencies`: string[] |
-| `item.requeued` | A person asked for an item's stage to run again: a retry, a message, a resume or an answer. | `reason`: `"retry"` \| `"message"` \| `"resume"` \| `"answer"` |
-| `item.stageChanged` | An item's projected stage or state changed. | `fromStage`: string \| null<br>`fromState`: string \| null<br>`toStage`: string \| null<br>`toState`: string \| null |
-| `item.updated` | A source issue's title, body, state, labels, parent or accepted text changed; `changed` names the fields. | `number`: integer<br>`changed`: (`"title"` \| `"body"` \| `"state"` \| `"labels"` \| `"parent"` \| `"acceptedText"`)[] |
-| `journey.recorded` | A journey entry (a stage transition, resume or restart) completed or failed. | `transitionId`: string<br>`kind`: string<br>`fromStage`: string \| null<br>`toStage`: string \| null<br>`status`: `"completed"` \| `"failed"` |
-| `stage.stateChanged` | An item's stage record (stage, status or feedback cycle) changed. | `stageId`: string<br>`status`: string<br>`feedbackCycle`: integer |
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `item.discovered` | fact | Conveyor saw a source issue for the first time. | `number`: integer |
+| `item.enrolled` | fact | An item started a new enrollment generation. | `generation`: integer |
+| `item.metadataChanged` | fact | An item's issue type or issue-field values changed. | - |
+| `item.offboarded` | fact | An item's active enrollment ended; `status` says how. | `status`: string |
+| `item.purged` | fact | An item lost its Conveyor labels (or was closed without a merge) and Conveyor deleted everything it held about it; the event log keeps the item's events. | `number`: integer |
+| `item.queueChanged` | fact | An item's backlog position changed; null rank leaves the queue. | `rank`: number \| null |
+| `item.relationshipsChanged` | fact | An item's stored parent or blockers changed. | `parentId`: string \| null<br>`dependencies`: string[] |
+| `item.requeued` | fact | A person asked for an item's stage to run again: a retry, a message, a resume or an answer. | `reason`: `"retry"` \| `"message"` \| `"resume"` \| `"answer"` |
+| `item.stageChanged` | fact | An item's projected stage or state changed. | `fromStage`: string \| null<br>`fromState`: string \| null<br>`toStage`: string \| null<br>`toState`: string \| null |
+| `item.updated` | fact | A source issue's title, body, state, labels, parent or accepted text changed; `changed` names the fields. | `number`: integer<br>`changed`: (`"title"` \| `"body"` \| `"state"` \| `"labels"` \| `"parent"` \| `"acceptedText"`)[] |
+| `journey.recorded` | fact | A journey entry (a stage transition, resume or restart) completed or failed. | `transitionId`: string<br>`kind`: string<br>`fromStage`: string \| null<br>`toStage`: string \| null<br>`status`: `"completed"` \| `"failed"` |
+| `stage.stateChanged` | fact | An item's stage record (stage, status or feedback cycle) changed. | `stageId`: string<br>`status`: string<br>`feedbackCycle`: integer |
 
 ### Execution
 
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `item.fenced` | The item's stage epoch moved: work started for the old epoch can no longer change it, and its stage restarts. | `epoch`: integer |
-| `task.failed` | A task failed. | `executionId`: string<br>`taskInstanceId`: string |
-| `task.passed` | A task passed. | `executionId`: string<br>`taskInstanceId`: string |
-| `task.pending` | A task is waiting; it runs again at `wakeAt` unless an event it waits for (`waitFor`) wakes it earlier. | `executionId`: string<br>`taskInstanceId`: string<br>`wakeAt`: string \| null<br>`deadlineAt`: string \| null<br>`waitFor`: object \| null |
-| `task.planned` | The executor recorded that it will run a task. | `executionId`: string<br>`stage`: string<br>`list`: string<br>`taskInstanceId`: string<br>`attempt`: integer<br>`epoch`: integer |
-| `task.woken` | A parked task was made due before its wake-up time. | - |
-| `worker.released` | A stage worker left the running set; `stageId` identifies the stage it ran. | `stageId`: string |
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `item.fenced` | fact | The item's stage epoch moved: work started for the old epoch can no longer change it, and its stage restarts. | `epoch`: integer |
+| `task.failed` | fact | A task failed. | `executionId`: string<br>`taskInstanceId`: string |
+| `task.passed` | fact | A task passed. | `executionId`: string<br>`taskInstanceId`: string |
+| `task.pending` | fact | A task is waiting; it runs again at `wakeAt` unless an event it waits for (`waitFor`) wakes it earlier. | `executionId`: string<br>`taskInstanceId`: string<br>`wakeAt`: string \| null<br>`deadlineAt`: string \| null<br>`waitFor`: object \| null |
+| `task.planned` | fact | The executor recorded that it will run a task. | `executionId`: string<br>`stage`: string<br>`list`: string<br>`taskInstanceId`: string<br>`attempt`: integer<br>`epoch`: integer |
+| `task.woken` | fact | A parked task was made due before its wake-up time. | - |
+| `worker.released` | fact | A stage worker left the running set; `stageId` identifies the stage it ran. | `stageId`: string |
 
 ### Runs
 
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `run.finished` | A run finished; `status` is its outcome. | `runId`: string<br>`status`: string |
-| `run.progressed` | A run wrote to its transcript; recorded at most once a second per run, and once after its last line. | `runId`: string |
-| `run.started` | An agent, script or steering run started. | `runId`: string<br>`kind`: string<br>`stage`: string \| null |
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `run.finished` | fact | A run finished; `status` is its outcome. | `runId`: string<br>`status`: string |
+| `run.progressed` | fact | A run wrote to its transcript; recorded at most once a second per run, and once after its last line. | `runId`: string |
+| `run.started` | fact | An agent, script or steering run started. | `runId`: string<br>`kind`: string<br>`stage`: string \| null |
 
 ### Conversation
 
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `answer.recorded` | An answer to a question was recorded. | `questionId`: string |
-| `message.posted` | A conversation message was stored. | `messageId`: string<br>`role`: string |
-| `question.asked` | A question for a person was opened. | `questionId`: string |
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `answer.recorded` | fact | An answer to a question was recorded. | `questionId`: string |
+| `message.posted` | fact | A conversation message was stored. | `messageId`: string<br>`role`: string |
+| `question.asked` | fact | A question for a person was opened. | `questionId`: string |
 
 ### Gates and review
 
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `criterion.approvalChanged` | A reviewer approved an acceptance criterion at a head, or withdrew the approval. | `criterionId`: string<br>`approved`: boolean<br>`headSha`: string \| null |
-| `criterion.testsRecorded` | Test evidence for acceptance criteria was recorded. | `criteria`: string[] |
-| `finding.changed` | A review finding was created, resolved, dismissed, withdrawn, edited, reopened or reclassified; `change` and its fixed `type` say which. | `findingId`: string<br>`type`: `"criterion-not-met"` \| `"test-missing-case"` \| `"test-not-real"` \| `"test-not-discriminating"` \| `"test-not-run"` \| `"bug"` \| `"concurrency"` \| `"security"` \| `"error-handling"` \| `"performance"` \| `"design"` \| `"docs"` \| `"style"` \| `"general"`<br>`change`: `"created"` \| `"resolved"` \| `"dismissed"` \| `"withdrawn"` \| `"edited"` \| `"reopened"` \| `"reclassified"` |
-| `gate.approved` | A person approved a manual gate for one visit (stage epoch and attempt) of its stage. | `stageId`: string<br>`gateId`: string<br>`stageEpoch`: integer<br>`attempt`: integer |
-| `gate.boardApprovalChanged` | A board approval was made required or optional for one stage. | `stageId`: string<br>`required`: boolean |
-| `gate.boardApproved` | A person approved the board gate for one stage visit. | `stageId`: string<br>`stageEpoch`: integer<br>`attempt`: integer |
-| `gate.requirementChanged` | A manual gate was made required or optional. | `stageId`: string<br>`gateId`: string<br>`required`: boolean |
-| `todo.changed` | An item's to-do list changed. | - |
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `criterion.approvalChanged` | fact | A reviewer approved an acceptance criterion at a head, or withdrew the approval. | `criterionId`: string<br>`approved`: boolean<br>`headSha`: string \| null |
+| `criterion.testsRecorded` | fact | Test evidence for acceptance criteria was recorded. | `criteria`: string[] |
+| `finding.changed` | fact | A review finding was created, resolved, dismissed, withdrawn, edited, reopened or reclassified; `change` and its fixed `type` say which. | `findingId`: string<br>`type`: `"criterion-not-met"` \| `"test-missing-case"` \| `"test-not-real"` \| `"test-not-discriminating"` \| `"test-not-run"` \| `"bug"` \| `"concurrency"` \| `"security"` \| `"error-handling"` \| `"performance"` \| `"design"` \| `"docs"` \| `"style"` \| `"general"`<br>`change`: `"created"` \| `"resolved"` \| `"dismissed"` \| `"withdrawn"` \| `"edited"` \| `"reopened"` \| `"reclassified"` |
+| `gate.approved` | fact | A person approved a manual gate for one visit (stage epoch and attempt) of its stage. | `stageId`: string<br>`gateId`: string<br>`stageEpoch`: integer<br>`attempt`: integer |
+| `gate.boardApprovalChanged` | fact | A board approval was made required or optional for one stage. | `stageId`: string<br>`required`: boolean |
+| `gate.boardApproved` | fact | A person approved the board gate for one stage visit. | `stageId`: string<br>`stageEpoch`: integer<br>`attempt`: integer |
+| `gate.requirementChanged` | fact | A manual gate was made required or optional. | `stageId`: string<br>`gateId`: string<br>`required`: boolean |
+| `todo.changed` | fact | An item's to-do list changed. | - |
 
 ### Changes and CI
 
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `advisoryCi.finished` | An advisory CI watch posted its result. | `watchId`: string<br>`state`: string |
-| `advisoryCi.watchStarted` | An advisory CI watch started for a head. | `watchId`: string<br>`headSha`: string |
-| `change.headObserved` | Conveyor observed a new current head for an open pull request. | `headSha`: string |
-| `change.opened` | Conveyor recorded a pull request for an item. | `number`: integer<br>`state`: string |
-| `change.stateChanged` | A recorded pull request's state changed (merged, closed, reopened). | `number`: integer<br>`state`: string |
-| `indicator.changed` | A board indicator (such as CI) changed state, progress or head. | `indicatorId`: string<br>`state`: string<br>`progress`: string<br>`headSha`: string \| null |
-| `indicator.cleared` | A board indicator was removed. | `indicatorId`: string |
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `advisoryCi.finished` | fact | An advisory CI watch posted its result. | `watchId`: string<br>`state`: string |
+| `advisoryCi.watchStarted` | fact | An advisory CI watch started for a head. | `watchId`: string<br>`headSha`: string |
+| `change.headObserved` | fact | Conveyor observed a new current head for an open pull request. | `headSha`: string |
+| `change.opened` | fact | Conveyor recorded a pull request for an item. | `number`: integer<br>`state`: string |
+| `change.stateChanged` | fact | A recorded pull request's state changed (merged, closed, reopened). | `number`: integer<br>`state`: string |
+| `indicator.changed` | fact | A board indicator (such as CI) changed state, progress or head. | `indicatorId`: string<br>`state`: string<br>`progress`: string<br>`headSha`: string \| null |
+| `indicator.cleared` | fact | A board indicator was removed. | `indicatorId`: string |
 
 ### GitHub
 
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `github.changeUpdated` | GitHub reported a change to a pull request (opened, synchronize, closed, ...). | `repository`: string<br>`number`: integer<br>`action`: string<br>`headSha`: string \| null<br>`merged`: boolean |
-| `github.ciUpdated` | GitHub reported CI progress for a commit; `completed` when a workflow run or check suite finished. | `repository`: string<br>`sha`: string<br>`pullRequests`: integer[]<br>`completed`: boolean |
-| `github.issueUpdated` | GitHub reported a change to an issue or its comments; `pullRequest` when the issue is a pull request. | `repository`: string<br>`number`: integer<br>`action`: string<br>`pullRequest`: boolean |
-| `github.ping` | GitHub confirmed the webhook (a ping). | `repository`: string |
-| `github.relationshipChanged` | GitHub reported changed sub-issues or blockers; `numbers` are the issues of this repository involved. | `repository`: string<br>`numbers`: integer[] |
-| `source.mutationCompleted` | A source change completed. | `mutationId`: string<br>`operation`: string |
-| `source.mutationFailed` | A source change failed. | `mutationId`: string<br>`operation`: string |
-| `source.mutationStarted` | Conveyor recorded a change it is about to make at the source. | `mutationId`: string<br>`operation`: string |
-| `webhook.healthChanged` | A repository's webhook started or stopped delivering: unhealthy when a ping went undelivered, healthy again with the next delivery. | `healthy`: boolean |
-| `webhook.received` | A verified webhook delivery was stored. | `deliveryId`: string<br>`eventType`: string |
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `github.changeUpdated` | ingest | GitHub reported a change to a pull request (opened, synchronize, closed, ...). | `repository`: string<br>`number`: integer<br>`action`: string<br>`headSha`: string \| null<br>`merged`: boolean |
+| `github.ciUpdated` | ingest | GitHub reported CI progress for a commit; `completed` when a workflow run or check suite finished. | `repository`: string<br>`sha`: string<br>`pullRequests`: integer[]<br>`completed`: boolean |
+| `github.issueUpdated` | ingest | GitHub reported a change to an issue or its comments; `pullRequest` when the issue is a pull request. | `repository`: string<br>`number`: integer<br>`action`: string<br>`pullRequest`: boolean |
+| `github.ping` | ingest | GitHub confirmed the webhook (a ping). | `repository`: string |
+| `github.relationshipChanged` | ingest | GitHub reported changed sub-issues or blockers; `numbers` are the issues of this repository involved. | `repository`: string<br>`numbers`: integer[] |
+| `source.mutationCompleted` | fact | A source change completed. | `mutationId`: string<br>`operation`: string |
+| `source.mutationFailed` | fact | A source change failed. | `mutationId`: string<br>`operation`: string |
+| `source.mutationStarted` | fact | Conveyor recorded a change it is about to make at the source. | `mutationId`: string<br>`operation`: string |
+| `webhook.healthChanged` | fact | A repository's webhook started or stopped delivering: unhealthy when a ping went undelivered, healthy again with the next delivery. | `healthy`: boolean |
+| `webhook.received` | ingest | A verified webhook delivery was stored. | `deliveryId`: string<br>`eventType`: string |
 
 ### Workspaces
 
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `workspace.recorded` | An item's workspace was created or its status changed. | `branch`: string<br>`status`: string |
-| `workspace.removed` | An item's workspace was removed. | - |
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `workspace.recorded` | fact | An item's workspace was created or its status changed. | `branch`: string<br>`status`: string |
+| `workspace.removed` | fact | An item's workspace was removed. | - |
 
 ### System
 
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `account.avatarChanged` | A dashboard account's avatar changed. | `accountId`: string |
-| `account.created` | A dashboard account was created. | `accountId`: string<br>`role`: string |
-| `account.deleted` | A dashboard account was deleted. | `accountId`: string |
-| `account.passwordChanged` | A dashboard account's password changed. | `accountId`: string |
-| `admission.paused` | Conveyor stopped admitting new work (a drain); running work continues. | - |
-| `admission.resumed` | Conveyor admits new work again. | - |
-| `config.recorded` | A new configuration snapshot was recorded. | `hash`: string |
-| `notifications.settingsChanged` | An account's push notification preferences changed. | `accountId`: string |
-| `notifications.subscribed` | A browser subscribed to push notifications. | `accountId`: string |
-| `notifications.unsubscribed` | A browser's push subscription was removed. | `accountId`: string \| null |
-| `operatorMcpToken.created` | An operator MCP token was created. | `tokenId`: string |
-| `operatorMcpToken.revoked` | An operator MCP token was revoked. | `tokenId`: string |
-| `repository.healthChanged` | A repository's onboarding or reconcile started failing, or recovered; the dashboard shows the error. | `check`: `"onboarding"` \| `"reconcile"`<br>`healthy`: boolean |
-| `repository.onboarded` | A configured repository was added to or updated in the local index. | `address`: string |
-| `repository.paused` | An operator paused repository work without changing its configuration. | `actor`: string<br>`reason`: string \| null |
-| `repository.reconciled` | Conveyor finished reading a repository's issues; `issueNumbers` are the ones a webhook named, null for all. | `issueNumbers`: integer[] \| null |
-| `repository.removed` | An unconfigured repository and its history were removed. | - |
-| `repository.resumed` | An operator resumed repository work from its retained state. | - |
-| `repository.trustChanged` | A repository's observed visibility changed. | `visibility`: string |
-| `service.reconciled` | A pass over every repository finished; `failed` repositories could not be read. | `failed`: integer |
-| `session.signedIn` | A dashboard account signed in. | `accountId`: string \| null |
-| `session.signedOut` | A dashboard account signed out. | `accountId`: string \| null |
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `account.avatarChanged` | fact | A dashboard account's avatar changed. | `accountId`: string |
+| `account.created` | fact | A dashboard account was created. | `accountId`: string<br>`role`: string |
+| `account.deleted` | fact | A dashboard account was deleted. | `accountId`: string |
+| `account.passwordChanged` | fact | A dashboard account's password changed. | `accountId`: string |
+| `admission.paused` | fact | Conveyor stopped admitting new work (a drain); running work continues. | - |
+| `admission.resumed` | fact | Conveyor admits new work again. | - |
+| `config.recorded` | fact | A new configuration snapshot was recorded. | `hash`: string |
+| `notifications.settingsChanged` | fact | An account's push notification preferences changed. | `accountId`: string |
+| `notifications.subscribed` | fact | A browser subscribed to push notifications. | `accountId`: string |
+| `notifications.unsubscribed` | fact | A browser's push subscription was removed. | `accountId`: string \| null |
+| `operatorMcpToken.created` | fact | An operator MCP token was created. | `tokenId`: string |
+| `operatorMcpToken.revoked` | fact | An operator MCP token was revoked. | `tokenId`: string |
+| `repository.healthChanged` | fact | A repository's onboarding or reconcile started failing, or recovered; the dashboard shows the error. | `check`: `"onboarding"` \| `"reconcile"`<br>`healthy`: boolean |
+| `repository.onboarded` | fact | A configured repository was added to or updated in the local index. | `address`: string |
+| `repository.paused` | fact | An operator paused repository work without changing its configuration. | `actor`: string<br>`reason`: string \| null |
+| `repository.reconciled` | fact | Conveyor finished reading a repository's issues; `issueNumbers` are the ones a webhook named, null for all. | `issueNumbers`: integer[] \| null |
+| `repository.removed` | fact | An unconfigured repository and its history were removed. | - |
+| `repository.resumed` | fact | An operator resumed repository work from its retained state. | - |
+| `repository.trustChanged` | fact | A repository's observed visibility changed. | `visibility`: string |
+| `service.reconciled` | fact | A pass over every repository finished; `failed` repositories could not be read. | `failed`: integer |
+| `session.signedIn` | fact | A dashboard account signed in. | `accountId`: string \| null |
+| `session.signedOut` | fact | A dashboard account signed out. | `accountId`: string \| null |
+
+### Traces
+
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `scheduler.decided` | trace | A scheduling pass started `started` items; `waiting` were runnable but held back by a limit and `running` were already running. Recorded when the outcome changes. | `started`: integer<br>`waiting`: integer<br>`running`: integer |
+| `timer.fired` | trace | One of the service's timers fired and started its work. | `timer`: `"reconcile"` \| `"wake"` \| `"retention"` \| `"webhook-health"` \| `"github-calls"` \| `"advisory-ci"` \| `"scheduled-operator"` |
 
 ### Commands
 
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `command.accepted` | A command from the dashboard or the CLI succeeded; events for its item share its correlation id. | `command`: string |
-| `command.rejected` | A command was refused or failed; `reason` says why. | `command`: string<br>`reason`: string |
+| Event | Class | Meaning | Payload |
+| --- | --- | --- | --- |
+| `command.accepted` | fact | A command from the dashboard or the CLI succeeded; events for its item share its correlation id. | `command`: string |
+| `command.rejected` | fact | A command was refused or failed; `reason` says why. | `command`: string<br>`reason`: string |
