@@ -408,6 +408,7 @@ describe("ci.passed", () => {
     const result = await run("ci.passed", { context: gateCtx(snapshot) }) as Fail;
 
     expect(result).toMatchObject({ status: "fail" });
+    expect(result.route).toBeUndefined();
     expect(result.message).toContain("Tests (failed)");
     expect((result.details as { evidence: string[] }).evidence[0]).toContain("log unavailable: HTTP 404");
   });
@@ -976,5 +977,66 @@ describe("CI indicator updates from the ci tasks", () => {
     w.provider.runs = [ciRun("Tests", "passed")];
     await run("ci.start", { context: gateCtx(ci({ runs: [] })), deps: w.deps });
     expect(stored(w)).toMatchObject({ state: "running", detail: "1 running · 1/2 passed" });
+  });
+});
+
+describe("the first required-CI failure follows the gate's route through the stage executor", () => {
+  const gateConfig = (onFail?: Record<string, string>) => configSchema.parse({
+    settings: { database: "/d", logs: "/l", workspaces: "/w", artifacts: "/a" },
+    labels: { stageTemplate: "c:{stage}", states: { blocked: "c:blocked", done: "c:done" }, metadata: { closable: "c:closable", orderTemplate: "c:order:{number}" } },
+    sources: { github: { type: "github" } },
+    pipelines: {
+      delivery: {
+        stages: [
+          { id: "implementation", concurrency: 1, retries: 0, actions: [], "exit-gate": [{ task: "change.mergeable" }] },
+          {
+            id: "ci-gate", concurrency: 1, retries: 2, actions: [],
+            "exit-gate": [{ task: "ci.passed", with: { settleSeconds: 1 }, ...(onFail ? { onFail } : {}) }],
+          },
+        ],
+      },
+    },
+    repositories: { sample: { source: "github", address: "o/r", folder: "/r", pipeline: "delivery", ci: { mode: "required" } } },
+  });
+
+  const runGate = async (onFail?: Record<string, string>) => {
+    const w = await world();
+    w.provider.runs = [ciRun("Tests", "failed")];
+    w.provider.logs["id-Tests"] = "not ok 1 - first failure";
+    const notes: string[] = [];
+    const executor = new StageExecutor({
+      registry, journal: w.store.executions(), clock: () => new Date(w.clock.now),
+      notify: (message) => { notes.push(message); }, setStatus: () => {}, settings: { maxReturns: 5 },
+    });
+    const baseContext: TaskContext = {
+      schemaVersion: 1, configHash: "h",
+      run: { stage: "", stageEpoch: 0, attempt: 1, maxAttempts: 1, taskInstanceId: "", enteredAt: new Date(T0).toISOString(), feedback: null },
+      repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main", ciMode: "required", systemLabels: [] },
+      item: { id: "i1", number: 7, title: "T", url: "u", labels: [], state: "open", criteria: [], children: [], dependencies: [], systemLabels: [] },
+      checkpoints: { ciPassed: null, reviewPassed: null },
+    };
+    const pipeline = compilePipeline({ config: gateConfig(onFail), repositoryId: "sample", registry });
+    const outcome = await executor.execute({ issueId: "i1", pipeline, stageId: "ci-gate", baseContext, deps: w.deps });
+    return { outcome, notes, w };
+  };
+
+  test("with onFail return implementation, returns to implementation with the failure report and does not re-run ci-gate", async () => {
+    const { outcome, notes, w } = await runGate({ return: "implementation" });
+    expect(outcome).toMatchObject({
+      kind: "correction", stageId: "ci-gate", targetStageId: "implementation",
+      reason: expect.stringContaining("Tests (failed)"),
+      requiredFixes: [expect.stringContaining('"Tests"')],
+    });
+    expect(JSON.stringify(outcome)).toContain("not ok 1 - first failure");
+    expect(notes.some((note) => note.includes("retrying"))).toBe(false);
+    expect(w.provider.calls.filter((call) => call.startsWith("start"))).toEqual([]);
+  });
+
+  test("without onFail, the first failure takes the default gate-failure path and is not retried in place", async () => {
+    const { outcome, notes } = await runGate();
+    // The default exit-gate path: feedback cycles of the stage, then a blocked stop. The same head seen again is never a repeat.
+    expect(outcome).toMatchObject({ kind: "stopped", stageId: "ci-gate", state: "blocked", feedbackCycles: 2, reason: expect.stringContaining("Tests (failed)") });
+    expect(notes.filter((note) => note.includes("retrying"))).toHaveLength(2);
+    expect(notes.some((note) => note.includes("repeated"))).toBe(false);
   });
 });
