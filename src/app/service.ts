@@ -11,17 +11,17 @@ import { log, type LogFields } from "../log/logger";
 import { applyRetention, removeRunArtifacts, type RetentionPolicy, type RetentionReport } from "./retention";
 import type { StageOutcome } from "../engine/stage-executor";
 import type { ConveyorConfig } from "../config/load";
-import { isNativeStage, REDELIVERY_WINDOW_MS } from "../config/schema";
+import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
 import { evaluateIssueState, STOPPED_ISSUE_STATES } from "../core/issue-state";
 import { inFlightAdmission, inFlightHolders, inFlightInterval, inFlightWaitReason, type InFlightInterval } from "../core/in-flight";
 import { RepositoryPausedError } from "../core/repository-pause";
 import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
 import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../core/transition";
-import { ConveyorStore, type StoredIssue, type StoredQuestion } from "../db/store";
+import { ConveyorStore, type StoredIssue } from "../db/store";
 import type { Harness, SteeringRunInput, SteeringRunResult } from "../harness/types";
-import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt, type WebhookSettings } from "../core/plugins";
-import { isSourceAccessDenied, type HookDeliveryAttempt, type ItemSourceClient } from "../source/client";
+import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt } from "../core/plugins";
+import type { ItemSourceClient } from "../source/client";
 import { followUpsFromBody } from "../source/managed-sections";
 import { RepositoryActorTrust, type ActorTrust } from "../source/trust";
 import { isIssueGone, type SourceIssue } from "../source/types";
@@ -30,7 +30,6 @@ import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
 import { changeAction, pushAndEnsureChange, recoverClosedChange } from "../codehost/actions";
-import { renderStatusComment } from "../source/status-comment";
 import { canonicalToolName } from "../tasks/aliases";
 import type { Feedback } from "../tasks/context";
 import { conveyorToolGuidance } from "../mcp/guidance";
@@ -59,7 +58,6 @@ import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActi
 import {
   conversationQuestionAnswer,
   scheduledQuestionAnswerEvidence,
-  validatedQuestionAnswer,
 } from "../questions";
 import type { ManualGateApprovals } from "../db/manual-gates";
 import { CommandBus, CommandForbiddenError, CommandInputError, type CommandActor } from "../commands/bus";
@@ -68,7 +66,10 @@ import { JsonlEventSink, SinkRunner, type EventSink } from "../events/sinks";
 import { isEventOf, type EventPayload, type EventType, type StoredEvent } from "../events/catalogue";
 import { withEventContext } from "../events/context";
 import type { WaitKind } from "../events/topics";
+import { metadataLabels, QuestionAnswers } from "./question-answers";
+import { StatusCommentWriter } from "./status-comments";
 import { WaitDispatcher } from "./wait-dispatcher";
+import { WebhookSupervisor } from "./webhook-supervisor";
 import type { ActiveWork, ControlSources, GitHubCallReport, StartupRepositoryPhase, StartupStatus } from "./control-sources";
 import type { DashboardSources, LiveIssueStatus } from "./dashboard-sources";
 import type { WebSources } from "./web-sources";
@@ -165,15 +166,6 @@ const HEALTHY_RELATIONSHIP_REUSE_MS = 6 * 60 * 60_000;
 const SCHEDULING_EVENTS: readonly EventType[] = [
   "task.woken", "worker.released", "item.requeued", "gate.requirementChanged", "gate.boardApprovalChanged", "command.accepted",
 ];
-/** How far back missed webhook deliveries are redelivered, and at most how many per pass. */
-const REDELIVERY_LIMIT = 50;
-/** How often each repository's webhook is asked how its deliveries go. */
-/** How often Conveyor looks at whether deliveries arrive. */
-const WEBHOOK_CHECK_MS = 5 * 60_000;
-/** A repository without any delivery for this long gets a ping, to tell a quiet repository from a broken webhook. */
-const WEBHOOK_QUIET_MS = 60 * 60_000;
-/** A ping that has not arrived after this long means deliveries do not arrive. */
-const WEBHOOK_PING_TIMEOUT_MS = 5 * 60_000;
 /** How often the GitHub request counts are logged, and the window they cover. */
 const GITHUB_CALL_SUMMARY_MS = 60 * 60_000;
 /** A partial issue list starts this much before the previous read began, so clock skew and in-flight edits are not missed. */
@@ -297,28 +289,6 @@ function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
   return [...new Map(labels.map((label) => [label.name, label])).values()];
 }
 
-function metadataLabels(sourceLabels: readonly string[], config: ConveyorConfig): string[] {
-  const orderPrefix = config.labels.metadata.orderTemplate.split("{number}")[0]!;
-  return sourceLabels.filter((label) =>
-    label === config.labels.metadata.closable ||
-    label === config.labels.metadata.noSplit ||
-    label.startsWith(orderPrefix),
-  );
-}
-
-function questionAnswerText(answer: unknown): string | null {
-  if (typeof answer === "string") return answer;
-  if (!answer || typeof answer !== "object") return null;
-  const value = (answer as { answer?: unknown }).answer;
-  return typeof value === "string" ? value : null;
-}
-
-function questionAnswerEvidence(answer: unknown): string | null {
-  if (!answer || typeof answer !== "object") return null;
-  const value = (answer as { evidence?: unknown }).evidence;
-  return typeof value === "string" ? value : null;
-}
-
 /** The run-scoped MCP server: this executable's internal `__mcp` subcommand. */
 function mcpServerCommand(contextFile: string): { command: string; args: string[] } {
   const [command, ...args] = selfCommand(INTERNAL.mcp, "--context", contextFile);
@@ -341,14 +311,10 @@ export class ConveyorService {
   readonly workspaceManager: WorkspaceManager;
   readonly #active = new Map<string, ActiveRun>();
   readonly #purges = new Map<string, Promise<void>>();
-  /** Live answer mirrors are guarded in memory; persisted pending mutations can be retried after a restart. */
-  readonly #answerMirrorsInFlight = new Set<string>();
-  readonly #statusCommentUpdates = new Set<Promise<void>>();
-  readonly #statusCommentUpdatesByIssue = new Map<string, Promise<void>>();
-  /** The status-comment digest last written by this process, so a revert to older content is still written. */
-  readonly #statusCommentDigests = new Map<string, string>();
-  /** The status comment of each issue, as last written, so an update goes straight to it without listing comments. */
-  readonly #statusCommentIds = new Map<string, number>();
+  /** Answers to agents' questions and the work each answer starts. */
+  readonly #answers: QuestionAnswers;
+  /** Each enrolled item's status comment on the source. */
+  readonly #statusComments: StatusCommentWriter;
   /** The live head of an open change, as last read from the code host; newer than the persisted context. */
   readonly #liveChangeHeads = new Map<string, string>();
   /** Called when process-local state the dashboard shows changes without a recorded event (the GitHub outage). */
@@ -427,21 +393,14 @@ export class ConveyorService {
   readonly commands: CommandBus;
   /** Configured event sinks, delivered from their own cursors while the service runs. */
   readonly #sinks: SinkRunner[];
-  /** Per repository: whether its webhook delivers, as last checked or shown by a delivery. */
-  readonly #webhookHealth = new Map<string, boolean>();
-  /** When each repository last received a delivery, and when Conveyor last pinged its webhook. */
-  readonly #webhookDeliveredAt = new Map<string, number>();
-  readonly #webhookPingedAt = new Map<string, number>();
-  readonly #webhookIds = new Map<string, number>();
-  /** Repositories whose deliveries Conveyor may not list; warned about once. */
-  readonly #redeliveryDenied = new Set<string>();
+  /** The managed webhooks: registration, health and redelivery of missed deliveries. */
+  readonly #webhooks: WebhookSupervisor;
   /** Idempotency-key results, by repository and key. */
   readonly #createdIssues = new Map<string, Promise<{ issueId: string; number: number; url: string }>>();
   /** Operator syncs in progress, by repository. */
   readonly #repositorySyncs = new Map<string, Promise<{ issues: number; failed: boolean }>>();
   /** When each repository was last read by a pass of the periodic tick, startup or a sync. */
   readonly #repositoryReconciledAt = new Map<string, number>();
-  #webhookHealthTimer: ReturnType<typeof setInterval> | null = null;
   readonly #waitDispatcher: WaitDispatcher;
   #scheduleRequested = false;
   /** Parked items made due by an answer, approval or other event, not by their wake-up time. */
@@ -463,6 +422,34 @@ export class ConveyorService {
     this.itemSource = itemSource;
     this.#issueTrust = new RepositoryActorTrust(itemSource);
     this.#plugins = implementations.plugins ?? new PluginRegistry([], pluginContext(config));
+    this.#webhooks = new WebhookSupervisor({
+      config,
+      plugins: this.#plugins,
+      store,
+      source: itemSource,
+      fencedSource: (repositoryId) => this.executionSource(repositoryId),
+      timerFired: () => this.#timerFired("webhook-health"),
+    });
+    this.#statusComments = new StatusCommentWriter({
+      config,
+      store,
+      source: (repositoryId) => this.executionSource(repositoryId),
+      refreshChangeHead: (issue) => this.refreshLiveChangeHead(issue),
+      criteria: (issue) => this.criterionApprovalStates(issue),
+      status: (issue) => this.currentIssueStatus(issue),
+      stopReason: (issueId) => latestStopReason(this.store, issueId),
+    });
+    this.#answers = new QuestionAnswers({
+      config,
+      store,
+      source: (repositoryId) => this.executionSource(repositoryId),
+      wakeParkedAgent: (question) => this.wakeParkedAgent(question),
+      schedule: () => this.schedule(),
+      reconcile: (repositoryId, sourceNumber) => this.reconcileRepository(repositoryId, { only: [sourceNumber] }),
+      updateStatusComment: (issueId) => this.updateStatusComment(issueId),
+      shuttingDown: () => this.#shuttingDown,
+      itemFields: (issueId) => this.itemFields(issueId),
+    });
     this.#codeHosts = implementations.codeHosts ?? this.#plugins.codeHosts();
     this.githubCalls = implementations.githubCalls ?? new CallMeter();
     this.events = new EventBus();
@@ -563,117 +550,27 @@ export class ConveyorService {
 
   /** The URL a repository's item source delivers webhook events to, when Conveyor manages its webhook. */
   private webhookUrl(repositoryId: string): string | null {
-    const repository = this.config.repositories[repositoryId];
-    const settings = repository ? this.webhookSettings(repository.source) : null;
-    if (!settings?.managed || !this.config.web?.publicUrl) return null;
-    return new URL(settings.path, this.config.web.publicUrl).href;
+    return this.#webhooks.url(repositoryId);
   }
 
-  /** The webhook settings of an item source, as its plugin reads them; null when its plugin takes no webhooks. */
-  private webhookSettings(sourceName: string): WebhookSettings | null {
-    const type = this.config.sources?.[sourceName]?.type;
-    return type ? this.#plugins.itemSource(type)?.webhook?.settings(sourceName) ?? null : null;
-  }
-
-  /** Whether a repository's webhook delivers events, so waits may rely on them. */
   /** Whether the repository's deliveries are known to arrive; false only after a ping went undelivered. */
   webhooksHealthy(repositoryId: string): boolean {
-    return this.#webhookHealth.get(repositoryId) !== false;
+    return this.#webhooks.healthy(repositoryId);
   }
 
-  /**
-   * Asks GitHub to send the repository's webhook a ping; its arrival shows deliveries work. A failed
-   * request (an outage, the rate limit) changes nothing: health is decided by deliveries alone.
-   */
-  async pingWebhook(repositoryId: string): Promise<boolean> {
-    if (this.store.repositoryPause(repositoryId)) return false;
-    const address = this.config.repositories[repositoryId]?.address;
-    const hookId = this.#webhookIds.get(repositoryId);
-    if (!this.webhookUrl(repositoryId) || !address || hookId === undefined) return false;
-    try {
-      await this.executionSource(repositoryId).pingHook(address, hookId);
-      this.#webhookPingedAt.set(repositoryId, Date.now());
-      return true;
-    } catch (error) {
-      if (error instanceof RepositoryPausedError) return false;
-      log.warn("Could not ask GitHub to ping the webhook", { repository: repositoryId }, error);
-      return false;
-    }
+  /** Asks the source to ping the repository's webhook; see WebhookSupervisor.ping. */
+  pingWebhook(repositoryId: string): Promise<boolean> {
+    return this.#webhooks.ping(repositoryId);
   }
 
-  /**
-   * Webhook health from deliveries: a repository quiet for an hour gets a ping, and only a ping that
-   * does not arrive marks it unhealthy, for an admin to investigate. Nothing else changes with it.
-   */
-  async superviseWebhooks(now = Date.now()): Promise<void> {
-    for (const repositoryId of Object.keys(this.config.repositories)) {
-      if (!this.webhookUrl(repositoryId)) continue;
-      const delivered = this.#webhookDeliveredAt.get(repositoryId) ?? 0;
-      const pinged = this.#webhookPingedAt.get(repositoryId);
-      const awaitingPing = pinged !== undefined && delivered < pinged;
-      if (awaitingPing && now - pinged >= WEBHOOK_PING_TIMEOUT_MS) this.setWebhookHealth(repositoryId, false);
-      if (now - Math.max(delivered, pinged ?? 0) >= WEBHOOK_QUIET_MS) await this.pingWebhook(repositoryId);
-    }
+  /** One supervision pass over every managed webhook; see WebhookSupervisor.supervise. */
+  superviseWebhooks(now = Date.now()): Promise<void> {
+    return this.#webhooks.supervise(now);
   }
 
-  /** A delivery arrived: the webhook works. One after an outage also asks for what was missed. */
-  private webhookDelivered(repositoryId: string): void {
-    this.#webhookDeliveredAt.set(repositoryId, Date.now());
-    const recovered = this.#webhookHealth.get(repositoryId) === false;
-    this.setWebhookHealth(repositoryId, true);
-    if (recovered) void this.redeliverMissed(repositoryId);
-  }
-
-  /**
-   * Asks GitHub to send again the recent deliveries Conveyor never received: those of the last day
-   * that no attempt delivered and that are not stored. At most REDELIVERY_LIMIT per pass. Without the
-   * permission to list deliveries it warns once and leaves them to the safety-net reconcile.
-   */
-  async redeliverMissed(repositoryId: string): Promise<number> {
-    if (this.store.repositoryPause(repositoryId)) return 0;
-    const address = this.config.repositories[repositoryId]?.address;
-    const hookId = this.#webhookIds.get(repositoryId);
-    if (!address || hookId === undefined || this.#redeliveryDenied.has(repositoryId)) return 0;
-    let deliveries: HookDeliveryAttempt[];
-    try {
-      deliveries = await this.itemSource.listHookDeliveries(address, hookId);
-    } catch (error) {
-      if (isSourceAccessDenied(error)) {
-        this.#redeliveryDenied.add(repositoryId);
-        log.warn("Cannot list webhook deliveries; missed deliveries are not redelivered", { repository: repositoryId }, error);
-      } else {
-        log.warn("Could not list webhook deliveries", { repository: repositoryId }, error);
-      }
-      return 0;
-    }
-    const cutoff = Date.now() - REDELIVERY_WINDOW_MS;
-    const attempts = new Map<string, typeof deliveries>();
-    for (const delivery of deliveries) attempts.set(delivery.guid, [...(attempts.get(delivery.guid) ?? []), delivery]);
-    const missed = [...attempts.entries()].flatMap(([guid, tries]) => {
-      const delivered = tries.some((attempt) => attempt.statusCode >= 200 && attempt.statusCode < 300);
-      const latest = tries.reduce((newest, attempt) => (Date.parse(attempt.deliveredAt) > Date.parse(newest.deliveredAt) ? attempt : newest));
-      return delivered || Date.parse(latest.deliveredAt) < cutoff || this.store.hasSourceEvent("github", guid) ? [] : [latest];
-    }).slice(0, REDELIVERY_LIMIT);
-    let redelivered = 0;
-    for (const delivery of missed) {
-      try {
-        await this.executionSource(repositoryId).redeliverHookDelivery(address, hookId, delivery.id);
-        redelivered += 1;
-      } catch (error) {
-        if (error instanceof RepositoryPausedError) break;
-        log.warn("Could not ask GitHub to redeliver a webhook delivery", { repository: repositoryId, delivery: delivery.guid }, error);
-      }
-    }
-    if (redelivered > 0) log.info("Asked GitHub to redeliver missed webhook deliveries", { repository: repositoryId, deliveries: redelivered });
-    return redelivered;
-  }
-
-  private setWebhookHealth(repositoryId: string, healthy: boolean): void {
-    if (this.#webhookHealth.get(repositoryId) === healthy) return;
-    this.#webhookHealth.set(repositoryId, healthy);
-    this.store.events().append("webhook.healthChanged", { healthy }, { repositoryId });
-    if (healthy) log.info("Webhook deliveries arrive", { repository: repositoryId });
-    else log.warn("Webhook deliveries stop arriving: a ping was not delivered; check the repository's webhook", { repository: repositoryId });
+  /** Asks the source to redeliver the repository's missed deliveries; see WebhookSupervisor.redeliverMissed. */
+  redeliverMissed(repositoryId: string): Promise<number> {
+    return this.#webhooks.redeliverMissed(repositoryId);
   }
 
   /** How long an event wait sleeps without its event: its fallback where Conveyor manages a webhook, else null (poll). */
@@ -719,7 +616,7 @@ export class ConveyorService {
     this.#lastReconciledAt = new Date().toISOString();
     this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size });
     this.interruptIneligibleRuns();
-    this.#recoverPendingScheduledAnswers();
+    this.#answers.recoverPendingScheduled();
   }
 
   /**
@@ -971,10 +868,7 @@ export class ConveyorService {
     for (const sink of this.#sinks) sink.start(this.events);
     // The server listens from here on: ask for the deliveries GitHub could not make while Conveyor was
     // starting or stopped, and ping each webhook so its arrival shows deliveries work.
-    for (const repositoryId of Object.keys(this.config.repositories)) {
-      if (this.webhookUrl(repositoryId)) void this.redeliverMissed(repositoryId).then(() => this.pingWebhook(repositoryId));
-    }
-    this.#webhookHealthTimer = setInterval(() => { this.#timerFired("webhook-health"); void this.superviseWebhooks(); }, WEBHOOK_CHECK_MS);
+    this.#webhooks.start();
   }
 
   /** A trace of a timer firing: the activity no request or event started. */
@@ -1028,7 +922,7 @@ export class ConveyorService {
       this.#lastReconciledAt = new Date().toISOString();
       this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size + this.#onboardingErrors.size });
       this.interruptIneligibleRuns();
-      this.#recoverPendingScheduledAnswers();
+      this.#answers.recoverPendingScheduled();
     }).catch((error) => {
       this.#startupFailed = true;
       log.error("Startup reconciliation failed", {}, error);
@@ -1052,12 +946,7 @@ export class ConveyorService {
     if (this.store.repositoryPause(id)) return;
     try {
       await this.executionSource(id).ensureLabels(repository.address, labelDefinitions(this.config, id));
-      const webhook = this.webhookSettings(repository.source);
-      const url = this.webhookUrl(id);
-      if (webhook && url) {
-        if (!webhook.secret) throw new Error(`a webhook secret is required for webhooks: set webhookSecret on the items provider ${repository.source}`);
-        this.#webhookIds.set(id, await this.executionSource(id).ensureWebhook({ address: repository.address, url, secret: webhook.secret }));
-      }
+      await this.#webhooks.register(id);
       if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
     } catch (error) {
       if (error instanceof RepositoryPausedError) return;
@@ -1153,8 +1042,7 @@ export class ConveyorService {
     this.#advisoryTimer = null;
     if (this.#githubCallTimer) clearInterval(this.#githubCallTimer);
     this.#githubCallTimer = null;
-    if (this.#webhookHealthTimer) clearInterval(this.#webhookHealthTimer);
-    this.#webhookHealthTimer = null;
+    this.#webhooks.stop();
     await Promise.all(this.#sinks.map((sink) => sink.stop()));
     for (const timer of this.#retryTimers) clearTimeout(timer);
     this.#retryTimers.clear();
@@ -1166,7 +1054,7 @@ export class ConveyorService {
     for (const controller of this.#steeringActive.values()) controller.abort();
     for (const { controller } of this.#stopSummaryActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
-    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#stopSummaryActive.size > 0 || this.#purges.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#answerFollowUps.size > 0 || this.#startupRunning || this.#tickRunning || this.#advisoryPolling || this.#retentionActive > 0) {
+    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#stopSummaryActive.size > 0 || this.#purges.size > 0 || this.#statusComments.busy || this.#webhookWork.size > 0 || this.#answers.busy || this.#startupRunning || this.#tickRunning || this.#advisoryPolling || this.#retentionActive > 0) {
       await Bun.sleep(25);
     }
     this.store.close();
@@ -1965,7 +1853,7 @@ export class ConveyorService {
     });
     // A delivery that arrives shows the webhook works.
     this.events.subscribe("webhook.received", "webhook health", (event) => {
-      if (event.repositoryId && this.webhookUrl(event.repositoryId)) this.webhookDelivered(event.repositoryId);
+      if (event.repositoryId && this.webhookUrl(event.repositoryId)) this.#webhooks.delivered(event.repositoryId);
     });
   }
 
@@ -3932,7 +3820,7 @@ export class ConveyorService {
 
   /** An item source's webhook secret, as its plugin reads it; empty when it has none. */
   private webhookSecretFor(sourceName: string): string {
-    return this.webhookSettings(sourceName)?.secret ?? "";
+    return this.#webhooks.settings(sourceName)?.secret ?? "";
   }
 
   async handleWebhook(rawBody: Uint8Array, headers: Headers): Promise<void> {
@@ -4265,216 +4153,25 @@ export class ConveyorService {
     return this.wakeParked(question.issueId);
   }
 
-  async answerQuestion(questionId: string, answer: string, source = "web", evidence?: string): Promise<void> {
-    const question = this.store.getQuestion(questionId);
-    if (!question) throw new Error("question not found");
-    const issue = this.store.getIssue(question.issueId);
-    if (issue?.projectedState === "unlisted") {
-      throw new Error("This question belongs to an item that left Conveyor.");
-    }
-    if (issue) this.assertRepositoryActive(issue.repositoryId);
-    const response = validatedQuestionAnswer(question, answer);
-    if (question.status !== "open") throw new Error("This question has already been answered.");
-    if (question.answer !== null) {
-      const prior = typeof question.answer === "object" && question.answer !== null
-        ? (question.answer as { answer?: unknown }).answer
-        : question.answer;
-      if (prior !== response) throw new Error("This question already has a pending answer; retry the same answer.");
-      if (source.startsWith("scheduled-operator:") && !question.answerSource?.startsWith("scheduled-operator:")) {
-        throw new Error("This question already has a pending owner answer.");
-      }
-      if (!source.startsWith("scheduled-operator:") && question.answerSource?.startsWith("scheduled-operator:")) {
-        throw new Error("This question has a scheduled answer pending its source mirror.");
-      }
-    }
-    const scheduled = source.startsWith("scheduled-operator:");
-    if (scheduled) {
-      // The source mutation must succeed before this becomes an accepted, resume-worthy answer.
-      // Keep the response and its evidence durable so reconciliation can finish that mutation later.
-      this.store.recordQuestionAnswer(questionId, source, { answer: response, evidence: evidence ?? null });
-    } else {
-      const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
-      this.store.recordQuestionAnswerWithConversation({
-        questionId,
-        source,
-        answer: { answer: response },
-        stageId: runStage ?? issue?.projectedStage ?? null,
-        message: `**Question:** ${question.prompt}\n\n**Accepted answer:** ${response}`,
-      });
-    }
-    if (!issue) return;
-    const repository = this.config.repositories[issue.repositoryId];
-    if (!repository) return;
-    if (scheduled) {
-      await this.#completeScheduledAnswer(question, issue, repository, response);
-      return;
-    }
-    await this.#finalizeQuestionAnswer(question, issue, repository);
-    this.#trackAnswerFollowUp(this.#answerFollowUp(
-      issue.id, question.id, response, repository.address, issue.sourceNumber, repository.source,
-    ).then(() => undefined));
-  }
-
-  async #finalizeQuestionAnswer(
-    question: StoredQuestion,
-    issue: StoredIssue,
-    repository: ConveyorConfig["repositories"][string],
-  ): Promise<void> {
-    this.assertRepositoryActive(issue.repositoryId);
-    const github = this.executionSource(issue.repositoryId);
-    // Before replying, only what resuming needs: the source's needs-input label goes first (a sync
-    // that still saw it would stop the item again), then the parked agent wakes. Mirroring the answer
-    // as a comment, re-syncing the repository and the status comment follow in the background.
-    const needsInput = this.config.labels.states["needs-input"];
-    const hadNeedsInput = Boolean(needsInput && issue.labels.includes(needsInput));
-    if (hadNeedsInput) {
-      const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
-      const stage = runStage ?? issue.projectedStage;
-      const metadata = metadataLabels(issue.labels, this.config);
-      try {
-        await github.replaceConveyorLabels(repository.address, issue.sourceNumber, [
-          this.config.labels.enrollment,
-          ...(stage ? [this.config.labels.stageTemplate.replace("{stage}", stage)] : []),
-          ...metadata,
-        ], [this.config.labels.metadata.noSplit, this.config.labels.metadata.paused]);
-      } catch (error) {
-        if (error instanceof RepositoryPausedError) throw error;
-        throw new Error("Your answer was saved but the question state could not be cleared. Submit the same answer to retry.");
-      }
-    }
-    this.store.completeQuestionAnswer(question.id);
-    // A stage parked on an agent's question continues where it stopped; legacy stages restart.
-    const parkedAgentWoken = this.wakeParkedAgent(question);
-    const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
-    const resumedStage = runStage ?? issue.projectedStage;
-    if (resumedStage) {
-      // A native agent can park without first writing needs-input to the source. Clear its local
-      // projection before scheduling; with the step parked this keeps it (see setIssueProjection).
-      this.store.setIssueProjection(issue.id, { stage: resumedStage, state: "active", warning: null });
-    }
-    if (!parkedAgentWoken && issue.projectedStage) {
-      const metadata = metadataLabels(issue.labels, this.config);
-      await github.replaceConveyorLabels(repository.address, issue.sourceNumber, [
-        this.config.labels.enrollment,
-        this.config.labels.stageTemplate.replace("{stage}", issue.projectedStage),
-        ...metadata,
-      ], [this.config.labels.metadata.noSplit, this.config.labels.metadata.paused]);
-    }
-    this.schedule();
-  }
-
-  readonly #scheduledAnswerCompletions = new Map<string, Promise<void>>();
-
-  async #completeScheduledAnswer(
-    question: StoredQuestion,
-    issue: StoredIssue,
-    repository: ConveyorConfig["repositories"][string],
-    response: string,
-  ): Promise<void> {
-    const existing = this.#scheduledAnswerCompletions.get(question.id);
-    if (existing) return existing;
-    const completion = (async () => {
-      const mirrored = await this.#answerFollowUp(
-        issue.id, question.id, response, repository.address, issue.sourceNumber, repository.source, true,
-      );
-      if (!mirrored) {
-        throw new Error("Scheduled answer is pending source mirror; it will retry after reconciliation.");
-      }
-      const current = this.store.getQuestion(question.id);
-      if (!current || current.status !== "open") return;
-      const evidence = questionAnswerEvidence(current.answer);
-      this.store.recordQuestionAnswerWithConversation({
-        questionId: current.id,
-        source: current.answerSource ?? "scheduled-operator:recovery",
-        answer: current.answer,
-        stageId: current.runId ? this.store.getRun(current.runId)?.stageId ?? issue.projectedStage : issue.projectedStage,
-        message: `**Scheduled Operator question answer:** ${current.prompt}\n\n**Accepted answer:** ${response}\n\n**Evidence:** ${evidence ?? "recorded by scheduled Operator"}`,
-        actor: { type: "conveyor", id: current.answerSource ?? "scheduled-operator:recovery", name: "Scheduled Operator", title: "Conveyor Operator" },
-      });
-      await this.#finalizeQuestionAnswer(current, issue, repository);
-    })().finally(() => this.#scheduledAnswerCompletions.delete(question.id));
-    this.#scheduledAnswerCompletions.set(question.id, completion);
-    return completion;
-  }
-
-  #recoverPendingScheduledAnswers(): void {
-    for (const question of this.store.listOpenQuestions()) {
-      if (!question.answerSource?.startsWith("scheduled-operator:")) continue;
-      const response = questionAnswerText(question.answer);
-      const issue = this.store.getIssue(question.issueId);
-      const repository = issue && this.config.repositories[issue.repositoryId];
-      if (!response || !issue || !repository || issue.projectedState === "unlisted") continue;
-      this.#trackAnswerFollowUp(this.#completeScheduledAnswer(question, issue, repository, response));
-    }
-  }
-
-  /** Background work after an answer: settled before the service closes, and awaitable in tests. */
-  readonly #answerFollowUps = new Set<Promise<void>>();
-
-  #trackAnswerFollowUp(work: Promise<void>): void {
-    const tracked = work.catch((error: unknown) => log.warn("Answer follow-up failed", {}, error)).finally(() => this.#answerFollowUps.delete(tracked));
-    this.#answerFollowUps.add(tracked);
+  /** Accepts an answer to an agent's question; see QuestionAnswers.answer. */
+  answerQuestion(questionId: string, answer: string, source = "web", evidence?: string): Promise<void> {
+    return this.#answers.answer(questionId, answer, source, evidence);
   }
 
   /** Resolves once every answer's background work (comment, re-sync, status) has finished. */
   async answerFollowUpsSettled(): Promise<void> {
-    while (this.#answerFollowUps.size > 0) await Promise.all([...this.#answerFollowUps]);
+    await this.#answers.followUpsSettled();
     await this.eventsSettled();
   }
 
-  async #answerFollowUp(issueId: string, questionId: string, response: string, address: string, sourceNumber: number, source: string, scheduled = false): Promise<boolean> {
-    const issue = this.store.getIssue(issueId);
-    if (!issue || this.store.repositoryPause(issue.repositoryId)) return false;
-    const github = this.executionSource(issue.repositoryId);
-    // The answer is mirrored as an issue comment once, retried a few times when the source is unavailable.
-    const mirrorKey = `question-answer:${questionId}`;
-    if (!this.#answerMirrorsInFlight.has(mirrorKey)) {
-      this.#answerMirrorsInFlight.add(mirrorKey);
-      try {
-        for (const [attempt, delayMs] of [0, 2_000, 10_000].entries()) {
-          if (delayMs > 0) await Bun.sleep(this.answerRetryDelayMs ?? delayMs);
-          if (this.#shuttingDown && attempt > 0) break;
-          const mirror = this.store.beginSourceMutation({
-            idempotencyKey: mirrorKey,
-            source,
-            operation: "issue.comment.answer",
-            request: { issueId, questionId, answer: response, actor: scheduled ? "scheduled-operator" : "owner" },
-          });
-          if (mirror.status === "succeeded") break;
-          try {
-            const marker = `<!-- conveyor:answer:${questionId} -->`;
-            const sourceHasAnswer = typeof github.hasCommentWithMarker === "function" &&
-              await github.hasCommentWithMarker(address, sourceNumber, marker);
-            if (!sourceHasAnswer) await github.addComment(address, sourceNumber, `${marker}\n**${scheduled ? "Scheduled Operator answer" : "Conveyor answer"}:** ${response}`);
-            this.store.completeSourceMutation(mirror.id, { questionId });
-            break;
-          } catch (error) {
-            if (error instanceof RepositoryPausedError) return false;
-            this.store.failSourceMutation(mirror.id, error instanceof Error ? error.message : String(error));
-            log.warn("Could not mirror an answer to the source; retrying", { ...this.itemFields(issueId), attempt: attempt + 1 }, error);
-          }
-        }
-      } finally {
-        this.#answerMirrorsInFlight.delete(mirrorKey);
-      }
-    }
-    const mirrored = this.store.getSourceMutationByKey(mirrorKey)?.status === "succeeded";
-    try {
-      // Reconciliation is needed after every answer, not only when the stale source snapshot happened
-      // to include the needs-input label.
-      const answered = this.store.getIssue(issueId);
-      if (answered) await this.reconcileRepository(answered.repositoryId, { only: [answered.sourceNumber] });
-    } catch (error) {
-      log.warn("Question answer reconciliation failed; the parked run remains resumable", this.itemFields(issueId), error);
-    }
-    await this.updateStatusComment(issueId);
-    this.schedule();
-    this.store.events().append("item.requeued", { reason: "answer" }, { issueId });
-    return mirrored;
+  /** Tests shorten the pauses between answer-mirror retries. */
+  get answerRetryDelayMs(): number | null {
+    return this.#answers.retryDelayMs;
   }
 
-  /** Tests shorten the pauses between answer-mirror retries. */
-  answerRetryDelayMs: number | null = null;
+  set answerRetryDelayMs(delayMs: number | null) {
+    this.#answers.retryDelayMs = delayMs;
+  }
 
   /**
    * Starts one cadence-triggered Operator run when the reconciled board contains stopped enrolled
@@ -4822,25 +4519,9 @@ export class ConveyorService {
     }
   }
 
-  /**
-   * Queue comment writes for an issue so concurrent scheduling and webhook work cannot create
-   * duplicate source comments or allow an older snapshot to win the race.
-   */
+  /** Queues a write of the issue's status comment; see StatusCommentWriter.update. */
   private updateStatusComment(issueId: string): Promise<void> {
-    const previous = this.#statusCommentUpdatesByIssue.get(issueId) ?? Promise.resolve();
-    const update = previous
-      .catch(() => {})
-      .then(() => this.writeStatusComment(issueId));
-    this.#statusCommentUpdatesByIssue.set(issueId, update);
-    this.#statusCommentUpdates.add(update);
-    const complete = () => {
-      this.#statusCommentUpdates.delete(update);
-      if (this.#statusCommentUpdatesByIssue.get(issueId) === update) {
-        this.#statusCommentUpdatesByIssue.delete(issueId);
-      }
-    };
-    void update.then(complete, complete);
-    return update;
+    return this.#statusComments.update(issueId);
   }
 
   /** The approval fence for an item. A merged item uses the durable review fence, not a later PR projection. */
@@ -4885,107 +4566,15 @@ export class ConveyorService {
     });
   }
 
-  private async writeStatusComment(issueId: string): Promise<void> {
-    const issue = this.store.getIssue(issueId);
-    if (!issue) return;
-    if (this.store.repositoryPause(issue.repositoryId)) return;
-    const relevant = issue.labels.some(
-      (label) =>
-        label === this.config.labels.enrollment ||
-        label.startsWith(`${this.config.labels.enrollment}:`),
-    );
-    if (!relevant) return;
-    const repository = this.config.repositories[issue.repositoryId];
-    if (!repository) return;
-    const stageState = this.store.getStageState(issue.id);
-    const latestRun = this.store.latestRunSummary(issue.id);
-    const questions = this.store
-      .listOpenQuestions()
-      .filter((question) => question.issueId === issue.id)
-      .map((question) => question.prompt);
-    const children = this.store.listChildren(issue.id).flatMap(({ issueId: childId }) => {
-      const child = this.store.getIssue(childId);
-      return child ? [{ number: child.sourceNumber, title: child.title }] : [];
-    });
-    const dependencies = this.store.listDependencies(issue.id).flatMap((blockerId) => {
-      const blocker = this.store.getIssue(blockerId);
-      return blocker
-        ? [{ number: blocker.sourceNumber, title: blocker.title, state: blocker.projectedState ?? blocker.sourceState }]
-        : [];
-    });
+  /** Reads an open change's live head, so what is shown agrees with the review gate even when a webhook was delayed. */
+  private async refreshLiveChangeHead(issue: StoredIssue): Promise<void> {
     const openPullRequest = this.store.getCurrentPullRequest(issue.id);
     if (openPullRequest?.state === "open" && !openPullRequest.mergedAt) {
-      // A status comment must agree with the review gate even when a webhook was delayed.
       const liveHead = await this.currentChangeHead(issue.repositoryId, openPullRequest.id);
       if (liveHead) this.setLiveChangeHead(issue.id, liveHead);
     } else {
       this.#liveChangeHeads.delete(issue.id);
     }
-    const acceptanceCriteria = this.criterionApprovalStates(issue).map(({ text, approved }) => ({ text, passed: approved }));
-    const status = this.currentIssueStatus(issue);
-    // A stopped item says why on its issue: the recorded stop reason, so the owner knows what to do.
-    const blocker = status || !STOPPED_ISSUE_STATES.has(issue.projectedState ?? "") ? null : latestStopReason(this.store, issue.id);
-    const markdown = renderStatusComment({
-      issue: { number: issue.sourceNumber, title: issue.title, state: issue.sourceState },
-      stage: issue.projectedStage ?? "unassigned",
-      state: issue.projectedState ?? "unknown",
-      ...(status ? { status: this.statusCommentText(status) } : {}),
-      ...(blocker ? { blocker } : {}),
-      ...(stageState
-        ? { activity: `${stageState.stageId} · ${stageState.status}` }
-        : {}),
-      acceptanceCriteria,
-      children,
-      dependencies,
-      ...(latestRun
-        ? { latestRun: {
-            id: latestRun.id,
-            state: latestRun.status,
-            durationMs: latestRun.durationMs,
-            usage: {
-              inputTokens: latestRun.inputTokens,
-              outputTokens: latestRun.outputTokens,
-            },
-            costUsd:
-              latestRun.costSource === "unavailable" ? null : latestRun.amount,
-          } }
-        : {}),
-      questions,
-      warnings: !status && issue.warning ? [issue.warning] : [],
-    });
-    const digest = createHash("sha256").update(markdown).digest("hex");
-    const mutation = this.store.beginSourceMutation({
-      idempotencyKey: `status:${issue.id}:${digest}`,
-      source: repository.source,
-      operation: "comment.status.upsert",
-      request: { issueId: issue.id, digest },
-    });
-    // A succeeded mutation only proves this content was written once; the remote comment may
-    // have moved on since (checked, then unchecked), so skip only when it is the last write.
-    if (mutation.status === "succeeded" && this.#statusCommentDigests.get(issue.id) === digest) return;
-    try {
-      const commentId = await this.executionSource(issue.repositoryId).upsertStatusComment(
-        repository.address,
-        issue.sourceNumber,
-        markdown,
-        this.#statusCommentIds.get(issue.id),
-      );
-      this.store.completeSourceMutation(mutation.id, { commentId });
-      this.#statusCommentDigests.set(issue.id, digest);
-      this.#statusCommentIds.set(issue.id, commentId);
-    } catch (error) {
-      if (error instanceof RepositoryPausedError) throw error;
-      this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
-      throw error;
-    }
-  }
-
-  /**
-   * The status line of the issue's status comment. Only the status itself: times that move on their
-   * own (the next check, how long it has been queued) would rewrite the comment without any change.
-   */
-  private statusCommentText(status: LiveIssueStatus): string {
-    return `${status.kind === "queued" ? "Queued" : "Waiting"} · ${status.reason}`;
   }
 
   private repositorySummaries(issues?: readonly StoredIssue[]): RepositorySummaries {
@@ -4997,7 +4586,7 @@ export class ConveyorService {
       reconciliationErrors: this.#repositoryErrors,
       startup: this.#startupRepositories,
       lastReconciledAt: this.#lastReconciledAt,
-      webhookHealth: this.#webhookHealth,
+      webhookHealth: this.#webhooks.health,
       githubCalls: this.githubCalls.summary(GITHUB_CALL_SUMMARY_MS),
     });
   }
@@ -5752,7 +5341,7 @@ export class ConveyorService {
       store: this.store,
       commands: this.commands,
       isReady: () => this.isReady(),
-      webhookPath: () => Object.keys(this.config.sources).map((name) => this.webhookSettings(name)?.path).find((path) => path !== undefined) ?? null,
+      webhookPath: () => Object.keys(this.config.sources).map((name) => this.#webhooks.settings(name)?.path).find((path) => path !== undefined) ?? null,
       handleWebhook: (body, headers) => this.handleWebhook(body, headers),
       handleMcp: (body, token, callId) => this.handleMcp(body, token, callId),
     };
