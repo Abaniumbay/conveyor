@@ -55,11 +55,11 @@ describe("operatorItemTarget", () => {
     const { service, store, add } = await setup();
     const id = add(1, "build", "blocked");
     const gone = add(2, "build", "unlisted");
-    expect(operatorItemTarget(service, "app:1")).toEqual({ issueId: id, running: false });
-    expect(operatorItemTarget(service, "app#1")?.issueId).toBe(id);
-    expect(operatorItemTarget(service, "app:99")).toBeNull();
-    expect(operatorItemTarget(service, "nope:1")).toBeNull();
-    expect(operatorItemTarget(service, `app:${gone.split("-")[1]}`)).toBeNull();
+    expect(operatorItemTarget(service.controlSources(), "app:1")).toEqual({ issueId: id, running: false });
+    expect(operatorItemTarget(service.controlSources(), "app#1")?.issueId).toBe(id);
+    expect(operatorItemTarget(service.controlSources(), "app:99")).toBeNull();
+    expect(operatorItemTarget(service.controlSources(), "nope:1")).toBeNull();
+    expect(operatorItemTarget(service.controlSources(), `app:${gone.split("-")[1]}`)).toBeNull();
     store.close();
   });
 
@@ -70,9 +70,9 @@ describe("operatorItemTarget", () => {
     const idle = add(3, "build", "active");
     startRun(agent, "build");
     startRun(script, "deploy");
-    expect(operatorItemTarget(service, "app:1")).toEqual({ issueId: agent, running: true });
-    expect(operatorItemTarget(service, "app:2")).toEqual({ issueId: script, running: false });
-    expect(operatorItemTarget(service, "app:3")).toEqual({ issueId: idle, running: false });
+    expect(operatorItemTarget(service.controlSources(), "app:1")).toEqual({ issueId: agent, running: true });
+    expect(operatorItemTarget(service.controlSources(), "app:2")).toEqual({ issueId: script, running: false });
+    expect(operatorItemTarget(service.controlSources(), "app:3")).toEqual({ issueId: idle, running: false });
     store.close();
   });
 });

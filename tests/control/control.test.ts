@@ -136,7 +136,7 @@ async function running(options: {
   // Most control tests keep admission drained; child-creation retries exercise the scheduler.
   if (!childCreationTask) service.drain("tests");
   const socket = path.join(home, "run/control.sock");
-  const control = await serveControlSocket(socket, createControlHandler(service, {
+  const control = await serveControlSocket(socket, createControlHandler(service.controlSources(), {
     home, config: path.join(home, "config/conveyor.yaml"), logs: path.join(home, "logs"), database: path.join(home, "state/conveyor.sqlite"),
     dashboardUrl: "http://127.0.0.1:7788/", startedAt: "2026-10-06T10:00:00.000Z", supervised: false,
   }));
@@ -154,7 +154,7 @@ describe("control socket", () => {
   test("reports the last hour's GitHub calls of the running service", async () => {
     const { service, calls } = await running();
     calls.record({ method: "GET", route: "repos/:repo/issues", repository: "owner/app", source: "tick", durationMs: 1, ok: true, status: null });
-    const handler = createControlHandler(service, { supervised: false } as never);
+    const handler = createControlHandler(service.controlSources(), { supervised: false } as never);
     const report = await (await handler(new Request("http://x/v1/github-calls"))).json() as { total: number; bySource: Record<string, number>; rateLimit: unknown };
     expect(report).toMatchObject({ total: 1, bySource: { tick: 1 }, rateLimit: null });
   });
@@ -179,7 +179,7 @@ describe("control socket", () => {
     const { home, socket, service } = await running();
     expect((await stat(socket)).mode & 0o777).toBe(0o600);
     expect((await stat(path.join(home, "run"))).mode & 0o777).toBe(0o700);
-    await expect(serveControlSocket(socket, createControlHandler(service, {} as never))).rejects.toThrow("another Conveyor is already running");
+    await expect(serveControlSocket(socket, createControlHandler(service.controlSources(), {} as never))).rejects.toThrow("another Conveyor is already running");
 
     const stale = path.join(home, "run/stale.sock");
     const leftover = net.createServer().listen(stale);
@@ -284,7 +284,7 @@ describe("finding report", () => {
       expect(result.code).toBe(EXIT.usage);
       expect(result.err).toContain("ISO 8601");
     }
-    const handler = createControlHandler(service, { supervised: false } as never);
+    const handler = createControlHandler(service.controlSources(), { supervised: false } as never);
     expect((await handler(new Request("http://x/v1/reports/findings?since=yesterday"))).status).toBe(400);
   });
 });
@@ -576,7 +576,7 @@ describe("operating through the CLI", () => {
       world.store.upsertIssue({ id: issue.id, repositoryId: "app", sourceNumber: 1, sourceUrl: issue.url, title: issue.title, body: "", sourceState: "open", sourceStateReason: null, labels: issue.labels, sourceUpdatedAt: issue.updatedAt });
       await world.service.syncRepository("app");
       const board = async (service = world.service) => {
-        const response = await createControlHandler(service, { supervised: false } as never)(new Request("http://x/v1/board"));
+        const response = await createControlHandler(service.controlSources(), { supervised: false } as never)(new Request("http://x/v1/board"));
         return (await response.json()) as Array<{ item: string; stage: string | null; state: string }>;
       };
       return { ...world, issue, board };

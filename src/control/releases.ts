@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 
-import type { ConveyorService } from "../app/service";
+import type { ReleaseSources } from "../app/control-sources";
 import { log } from "../log/logger";
 import { executableOf, releaseTag, requireInstalled, switchCurrent } from "../release/install";
 import { compareVersions } from "../release/semver";
@@ -44,7 +44,7 @@ export class ReleaseCoordinator {
   #performing = false;
 
   constructor(
-    private readonly service: ConveyorService,
+    private readonly sources: ReleaseSources,
     private readonly home: string,
     private readonly hooks: CoordinatorHooks,
     private readonly pollMs = 1_000,
@@ -59,7 +59,7 @@ export class ReleaseCoordinator {
       const ok = switched.to === BUILD.version;
       Object.assign(switched, {
         status: ok ? "completed" : "failed",
-        toSchema: this.service.store.schemaVersion(),
+        toSchema: this.sources.store.schemaVersion(),
         finishedAt: new Date().toISOString(),
         reason: ok ? null : `expected ${switched.to} to start, but ${BUILD.version} started`,
       });
@@ -90,7 +90,7 @@ export class ReleaseCoordinator {
     let restoreBackup: string | null = null;
     if (request.kind === "rollback") {
       try {
-        const plan = planRollback(state, BUILD.version, this.service.store.schemaVersion(), request.restoreBackup === true);
+        const plan = planRollback(state, BUILD.version, this.sources.store.schemaVersion(), request.restoreBackup === true);
         version = plan.target;
         restoreBackup = plan.restoreBackup;
       } catch (error) {
@@ -116,7 +116,7 @@ export class ReleaseCoordinator {
       drainDeadline: new Date(Date.now() + request.drainTimeoutMs).toISOString(),
     };
     await writeReleaseState(this.home, { ...state, pending });
-    this.service.drain(
+    this.sources.drain(
       `${request.kind} to ${version}`,
       request.kind === "upgrade" ? { targetVersion: version, releaseTag: releaseTag(version) } : null,
     );
@@ -134,7 +134,7 @@ export class ReleaseCoordinator {
     state.pending = null;
     await writeReleaseState(this.home, state);
     this.stopWatching();
-    this.service.resumeAdmission();
+    this.sources.resumeAdmission();
     log.warn(`Cancelled the ${cancelled.kind} to ${cancelled.version}`, { reason });
     return true;
   }
@@ -154,7 +154,7 @@ export class ReleaseCoordinator {
     if (this.#performing) return;
     const pending = await this.pending();
     if (!pending) return this.stopWatching();
-    const work = this.service.activeWork();
+    const work = this.sources.activeWork();
     if (work.items.length === 0 && work.steering === 0) return this.perform(pending);
     if (Date.now() >= Date.parse(pending.drainDeadline)) {
       const running = work.items.map((item) => `${item.repositoryId}/${item.stageId}`).join(", ") || `${work.steering} steering run(s)`;
@@ -172,7 +172,7 @@ export class ReleaseCoordinator {
   private async perform(pending: PendingSwitch): Promise<void> {
     this.#performing = true;
     this.stopWatching();
-    const store = this.service.store;
+    const store = this.sources.store;
     const database = store.filename();
     // Order matters for recovery: record the switch first, then move the link as the last step, so
     // a failure anywhere leaves the link where the record says it is.
@@ -201,7 +201,7 @@ export class ReleaseCoordinator {
       // Even when this bookkeeping fails, the next start marks a stale record correctly (onStartup).
       await failed.catch((bookkeeping: unknown) => log.error("Could not record the failed release switch", {}, bookkeeping));
       this.#performing = false;
-      this.service.resumeAdmission();
+      this.sources.resumeAdmission();
       log.error(`The ${pending.kind} to ${pending.version} failed before switching; still running ${BUILD.version}`, {}, error);
       return;
     }

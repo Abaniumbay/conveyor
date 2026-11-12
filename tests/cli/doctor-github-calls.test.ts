@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { GitHubCallReport } from "../../src/app/service";
+import type { GitHubCallReport } from "../../src/app/control-sources";
 import { githubCallCheck } from "../../src/cli/commands/doctor";
 
 const report = (over: Partial<GitHubCallReport> = {}): GitHubCallReport => ({
