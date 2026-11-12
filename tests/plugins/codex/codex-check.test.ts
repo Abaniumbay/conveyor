@@ -29,7 +29,7 @@ async function fixture(source: string) {
 }
 
 async function waitForCapturedPaths(capture: string): Promise<{ tmpdir: string; home: string }> {
-  for (let attempts = 0; !existsSync(capture) && attempts < 100; attempts += 1) await Bun.sleep(10);
+  for (let attempts = 0; !existsSync(capture) && attempts < 3_000; attempts += 1) await Bun.sleep(10);
   if (!existsSync(capture)) throw new Error("fake Codex did not record its disposable paths");
   return JSON.parse(await readFile(capture, "utf8")) as { tmpdir: string; home: string };
 }
@@ -303,6 +303,7 @@ describeSandbox("runCodexCheck", () => {
   test("settles on abort and ends a descendant that keeps the pipes open (a child that ignores SIGTERM)", () => descendantOnAbort(ignoreSigterm, 50), HANG_GUARD_MS);
   test("settles on abort and ends a descendant that keeps the pipes open (a child that exits on SIGTERM)", () => descendantOnAbort("", 10_000), HANG_GUARD_MS);
 
+  const CLEANUP_HANG_GUARD_MS = 30_000;
   test("cleans disposable scratch and private homes after failure, timeout, and interruption", async () => {
     const failed = await fixture(`
       await Bun.write(process.env.CAPTURE!, JSON.stringify({ tmpdir: process.env.TMPDIR, home: process.env.HOME }));
@@ -318,30 +319,42 @@ describeSandbox("runCodexCheck", () => {
     expect(existsSync(failedPaths.tmpdir)).toBe(false);
     expect(existsSync(failedPaths.home)).toBe(false);
 
-    const slow = await fixture(`
-      await Bun.write(process.env.CAPTURE!, JSON.stringify({ tmpdir: process.env.TMPDIR, home: process.env.HOME }));
-      await Bun.sleep(2_000);
-    `);
-    const timeout = runCodexCheck({ ...base(slow), timeoutMs: 1_000 });
-    const timeoutPaths = await waitForCapturedPaths(slow.capture);
-    expect(existsSync(timeoutPaths.tmpdir)).toBe(true);
-    expect(existsSync(timeoutPaths.home)).toBe(true);
-    await expect(timeout).rejects.toMatchObject({ kind: "timeout" });
+    // The timeout clock starts at spawn, so under load it could elapse before the fake process starts.
+    // The process records its paths and whether they exist while it runs; a run that timed out before
+    // the process started is repeated with a longer timeout, so no fixed delay decides whether it ran.
+    const slowSource = `
+      import { existsSync } from "node:fs";
+      await Bun.write(process.env.CAPTURE!, JSON.stringify({
+        tmpdir: process.env.TMPDIR, home: process.env.HOME,
+        existedWhileRunning: existsSync(process.env.TMPDIR!) && existsSync(process.env.HOME!),
+      }));
+      await Bun.sleep(${CLEANUP_HANG_GUARD_MS});
+    `;
+    let timeoutPaths: { tmpdir: string; home: string; existedWhileRunning: boolean } | undefined;
+    for (let timeoutMs = 1_000; !timeoutPaths && timeoutMs <= 64_000; timeoutMs *= 2) {
+      const slow = await fixture(slowSource);
+      await expect(runCodexCheck({ ...base(slow), timeoutMs })).rejects.toMatchObject({ kind: "timeout" });
+      if (existsSync(slow.capture)) timeoutPaths = JSON.parse(await readFile(slow.capture, "utf8"));
+    }
+    if (!timeoutPaths) throw new Error("fake Codex never started before the timeout");
+    expect(timeoutPaths.existedWhileRunning).toBe(true);
     expect(existsSync(timeoutPaths.tmpdir)).toBe(false);
     expect(existsSync(timeoutPaths.home)).toBe(false);
 
     const interrupted = await fixture(`
       await Bun.write(process.env.CAPTURE!, JSON.stringify({ tmpdir: process.env.TMPDIR, home: process.env.HOME }));
-      await Bun.sleep(2_000);
+      await Bun.sleep(${CLEANUP_HANG_GUARD_MS});
     `);
     const controller = new AbortController();
     const run = runCodexCheck({ ...base(interrupted), signal: controller.signal });
-    setTimeout(() => controller.abort(), 100);
+    const interruptedStarted = await waitForCapturedPaths(interrupted.capture);
+    expect(existsSync(interruptedStarted.tmpdir)).toBe(true);
+    controller.abort();
     await expect(run).rejects.toMatchObject({ kind: "interrupted" });
     const interruptedPaths = JSON.parse(await readFile(interrupted.capture, "utf8")) as { tmpdir: string; home: string };
     expect(existsSync(interruptedPaths.tmpdir)).toBe(false);
     expect(existsSync(interruptedPaths.home)).toBe(false);
-  });
+  }, 4 * CLEANUP_HANG_GUARD_MS);
 
   test("rejects invalid verifier protocol output", async () => {
     const files = await fixture(`
