@@ -154,3 +154,16 @@ describe("operator.recordStopSummary", () => {
     expect(store.listStageTransitions(ITEM).at(-1)?.reason).toBe("red");
   });
 });
+
+describe("stop summary documentation", () => {
+  test("SPEC.md and the Operator documentation describe the record, its limit, format rules and that it is advice only", async () => {
+    for (const file of ["SPEC.md", "docs/operator-mcp.md"]) {
+      const text = await Bun.file(path.join(import.meta.dir, "../..", file)).text();
+      expect(text).toContain("operator.recordStopSummary");
+      expect(text).toContain("300");
+      expect(text).toContain("line break");
+      expect(text).toContain("URL");
+      expect(text).toContain("advice only");
+    }
+  });
+});
