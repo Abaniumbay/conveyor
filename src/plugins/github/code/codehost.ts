@@ -252,7 +252,9 @@ export class GitHubCodeHost implements CodeHost {
       refused = result;
     }
     // Conveyor merges without waiting for GitHub to compute mergeability. A refusal as "not
-    // mergeable" while it is still computing is no conflict: the merge is tried again later.
+    // mergeable" while it is still computing is no conflict: the merge is tried again later. The
+    // state is read afresh: a copy taken while GitHub was computing would hide a conflict forever.
+    if (!refused.merged && refused.refusal === "conflict") this.github.forgetChange(input.address, reference(input.address, input.id));
     if (!refused.merged && refused.refusal === "conflict" && (await this.getChange(input)).mergeable === null) {
       throw new InfrastructureError("GitHub has not computed whether the change is mergeable yet; the merge is tried again.");
     }
