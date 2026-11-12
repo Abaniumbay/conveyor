@@ -11,6 +11,7 @@ How Conveyor is built and why it behaves as it does. For using it, start with th
 - **Work is isolated.** Feature changes happen in Git worktrees; Conveyor does not edit a repository's primary checkout.
 - **Progress is durable.** SQLite journals runs, attempts, transitions, questions, costs, source mutations, conversation messages, and every task execution with the context it ran against.
 - **External mutations are idempotent.** Each act records a planned execution before it changes anything, observes external state first and does only the missing work, so a crash between a side effect and its record is repaired rather than repeated. For pull-request descriptions, recovery rereads the managed section before patching the provider, so a write that succeeded just before a crash is recorded without a second provider update.
+- **Small core, replaceable modules.** The core holds configuration, the item lifecycle, execution, commands and events. Everything that talks to the outside (item source, code host, CI, agent harnesses, the dashboard) is a module behind small interfaces (ports), so a provider can be replaced or several can run side by side. See [Modules and ports](#modules-and-ports).
 - **Commands in, events out.** The dashboard and the CLI send commands; every change of state is recorded as an event in the same transaction; reactions (scheduling, waking waits, the live dashboard, event sinks) subscribe to events. Any change can be traced, and a new consumer needs no change to the core.
 - **Humans stay in control.** Conveyor never directly closes an ordinary issue. Its only direct-close exception is an active roll-up parent after all descendants satisfy the completion rule; it first records the parent done and closes it with GitHub's `completed` reason. Other completed open issues remain closable for an owner or an ordinary PR reference.
 
@@ -64,10 +65,41 @@ flowchart LR
 | JSON-process runner | Executes repository-defined programs that accept JSON on stdin and return exactly one validated JSON result. |
 | Scoped MCP server | Serves the registry's `tool` tasks to each live run under an exact grant, through one dispatcher that re-checks the grant and preconditions. Grants expire with the run. |
 | Agent isolation | Sanitized agent environment and, per repository, a network namespace with allowlisting proxies (`src/isolation`). |
-| SQLite store | Persists source projections, stage state, attempts, events, transitions, questions, costs, artifacts, leases, review findings, criterion approvals, advisory CI watches and idempotency records in WAL mode. |
+| SQLite store | Persists source projections, stage state, events, transitions, runs and their logs, questions and conversations, costs, review findings, criterion approvals, advisory CI watches and idempotency records in WAL mode. |
 | Web control plane | Serves the authenticated dashboard application (a Preact application that runs in the browser), its JSON endpoints for issue conversations, stage history, technical logs, views and steering runs, health endpoints, and the live SSE stream. The live dashboard model (`src/app/dashboard-feed.ts`, `src/web/model.ts`) is rebuilt once per burst of changes and sent as a snapshot plus field-level patches (`/api/v1/snapshot`, `/api/v1/stream`), so the work per change does not grow with the number of open dashboards. |
 | Control interface and releases | Serves the CLI over a private Unix socket with the same operations as the dashboard; drains, backs up, switches the installed release and restarts under systemd for upgrades and rollbacks (`src/control`). |
 | Service logging | Structured, redacted service logs on stdout/stderr and in a rotated JSON-lines file (`src/log`). |
+
+## Modules and ports
+
+Conveyor is moving to a small core with replaceable modules (#667). This section is the target and
+the rule new code follows; the current state is tracked by the boundary test.
+
+- **Core:** configuration and the module registry, the item lifecycle (stage, state, epoch,
+  enrollment, roll-ups) in provider-neutral words (item, change, check, marker), scheduling and the
+  stage executor with its journal, the command bus, and the event log and bus.
+- **Ports:** small interfaces, each shaped by what its consumer needs. One implementation may
+  provide many of them.
+
+| Role | Ports today | Implementations |
+| --- | --- | --- |
+| Item source | `IssueSourceAdapter` (`src/source/types.ts`); more to come: reading, markers, relations, sections, comments, lifecycle, trust | GitHub Issues |
+| Code host | `CodeHost` (`src/codehost/types.ts`) | GitHub pull requests |
+| CI | `CiProvider` (`src/app/ci-provider.ts`) | GitHub Actions |
+| Agent harness | `Harness` (`src/harness/types.ts`) | Codex, Claude Code |
+| Storage | `ConveyorStore` today; per-domain store ports to come (items, journal, evidence, events, run logs, conversations, provider cache, webhook deliveries, accounts) | SQLite |
+
+- **Modules** become plugins in their own folders (`src/plugins/<provider>/<role>/`), each selected
+  by configuration per role, so a repository can combine, for example, items from one provider with
+  code and CI from another. The composition root (`src/cli/commands/serve.ts`) is the only place
+  that builds them.
+- **Events:** plugins report what they observe as events; the core compares them with what it
+  knows, records the change, and emits its own events, which other modules (the dashboard among
+  them) consume. Writes stay direct calls through ports, and every write is recorded as an event.
+- **Enforcement:** `tests/scripts/architecture-boundaries.test.ts` fails when code outside an
+  implementation or the composition root imports a provider or harness implementation, when a
+  plugin imports another plugin, or when code outside `src/db` uses SQLite. Existing violations are
+  listed in `scripts/architecture-allowlist.json`, which may only shrink.
 
 ## Issue and pipeline model
 

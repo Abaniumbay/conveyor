@@ -41,6 +41,7 @@ Run these from the repository root.
 | Check for unmarked breaking changes | `bun run scripts/check-breaking-changes.ts --base origin/main` |
 | Regenerate dashboard screenshots | `bun run docs:screenshots` (needs `bunx playwright install chromium` once) |
 | Run the CLI from source | `bun run src/cli.ts --help` |
+| List architecture boundary violations | `bun run scripts/architecture-boundaries.ts` |
 
 `bun run check` must pass before you push. Never push code you have not seen pass.
 
@@ -104,6 +105,17 @@ blocking review finding.
    grant. Never weaken anything in `src/isolation/`.
 8. **No silent state.** Anything the dashboard shows as running must have a live run behind it,
    and anything stopped must have a recorded reason.
+9. **Everything replaceable sits behind a port.** Conveyor is a small core with replaceable
+   modules ([docs/architecture.md](docs/architecture.md#modules-and-ports)). Code outside a
+   provider or harness implementation reaches GitHub, a CI system or an agent CLI only through its
+   port (`CodeHost`, `CiProvider`, `Harness`, the item source), never by importing the
+   implementation; only the composition root (`src/cli/commands/serve.ts`) builds implementations.
+   Only `src/db` touches SQLite. Keep interfaces small and specific to what their consumer needs
+   (one implementation may implement many of them). `tests/scripts/architecture-boundaries.test.ts`
+   enforces the import rules against `scripts/architecture-allowlist.json`, the list of existing
+   violations: never add an entry to it. When you remove a violation, delete its entry. New code
+   that couples to a provider, harness or SQLite directly is a blocking review finding even where
+   the test cannot see it (GitHub concepts such as labels or issue numbers in core logic).
 
 ## 5. How to make common changes
 
@@ -115,9 +127,10 @@ sends work back.
 1. Append a new object to the end of the array in `src/db/migrations.ts` with the next
    `version` number. **Never edit an existing migration**; production databases have already run
    it.
-2. Put the SQL for the new data in `src/db/store.ts` methods. Do not add SQL anywhere else; the
-   only other places with queries are the engine records in `src/engine/` and the read-only
-   reports in `src/app/reports.ts` and `src/app/repository-summary.ts`.
+2. Put the SQL for the new data in `src/db/store.ts` methods. Do not add SQL anywhere else. The
+   engine records in `src/engine/` and the reports in `src/app/` still run their own queries through
+   `store.sqlite()`; those are listed violations of rule 9 that are being moved into `src/db`, not a
+   pattern to copy.
 3. Update the expected version in `tests/db/store.test.ts` (`expect(store.schemaVersion()).toBe(N)`).
 4. A new query that sorts or filters a large table needs an index in the same migration.
 5. A new write that changes state follows the event recipe below.
@@ -172,6 +185,19 @@ a service mutation directly.
    through the dispatcher (an input `headSha` must equal the live change head).
 4. Run `bun run docs:tasks` and commit `docs/tasks.md`. `tests/tasks/docs.test.ts` fails otherwise.
 5. If agents should use it, update the default instructions in `examples/config/instructions/`.
+
+### Provider, harness or other replaceable module
+
+1. Extend the port, not its callers: add the smallest method or interface the consumer needs to
+   the port (`src/codehost/types.ts`, `src/app/ci-provider.ts`, `src/harness/types.ts`,
+   `src/source/types.ts`), implement it in the provider or harness module, and give the consumer
+   only that interface.
+2. Keep provider vocabulary (labels, issue numbers, check runs, `Closes #N`) inside the provider
+   module; the core speaks of items, changes, checks and markers.
+3. Build the implementation in the composition root (`src/cli/commands/serve.ts`) and pass it in.
+4. Fake the port in tests, not the provider's transport, unless you are testing the provider
+   module itself.
+5. `bun test tests/scripts/architecture-boundaries.test.ts` passes without new allowlist entries.
 
 ### Configuration field
 

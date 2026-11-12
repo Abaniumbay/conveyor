@@ -1136,4 +1136,20 @@ export const migrations: readonly Migration[] = [
         WHERE projected_state IN ('missing', 'offboarded');
     `,
   },
+  {
+    version: 48,
+    sql: `
+      -- Tables no code has read or written for several releases: early run bookkeeping that the
+      -- journal replaced, a session table the cookie sessions replaced, and the per-gate manual
+      -- requirements that version 33 copied into item_board_approval_requirements.
+      DROP TABLE IF EXISTS stage_attempts;
+      DROP TABLE IF EXISTS feedback_cycles;
+      DROP TABLE IF EXISTS run_leases;
+      DROP TABLE IF EXISTS artifacts;
+      DROP TABLE IF EXISTS log_files;
+      DROP TABLE IF EXISTS source_cursors;
+      DROP TABLE IF EXISTS web_sessions;
+      DROP TABLE IF EXISTS item_manual_gate_requirements;
+    `,
+  },
 ];
