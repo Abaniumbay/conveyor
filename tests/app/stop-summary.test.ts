@@ -23,7 +23,7 @@ const ENVELOPE: RunEnvelope = {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-async function fixture(options: { runner?: "codex" | "claude-code"; steering?: boolean; run: (input: HarnessRunInput, fixture: () => Fixture) => Promise<RunEnvelope> }) {
+async function fixture(options: { runner?: "codex" | "claude-code"; steering?: boolean; stopSummaryTimeoutMs?: number; run: (input: HarnessRunInput, fixture: () => Fixture) => Promise<RunEnvelope> }) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-stop-summary-"));
   temporaryDirectories.push(root);
   const instructions = path.join(root, "operator.md");
@@ -51,7 +51,7 @@ async function fixture(options: { runner?: "codex" | "claude-code"; steering?: b
     id: runnerType, capabilities: { sessionResume: false } as Harness["capabilities"],
     async run(input) { calls.push(input); return options.run(input, () => current); },
   });
-  const service = new ConveyorService(config, store, {} as never, { harnesses: { [runnerType]: harness() } });
+  const service = new ConveyorService(config, store, {} as never, { harnesses: { [runnerType]: harness() }, ...(options.stopSummaryTimeoutMs ? { stopSummaryTimeoutMs: options.stopSummaryTimeoutMs } : {}) });
   const current = { root, store, config, service, calls, stop };
   function stop(id: string) {
     store.beginStageTransition({
@@ -147,11 +147,11 @@ describe("stop-summary Operator run", () => {
 
   test("a run that times out records the timeout reason and leaves no summary", async () => {
     const f = await fixture({
+      stopSummaryTimeoutMs: 30,
       run: (input) => new Promise((_resolve, reject) => {
         input.signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
       }),
     });
-    f.service.stopSummaryTimeoutMs = 30;
     f.stop("stop-1");
     const before = snapshot(f.store);
     await finish(f);
@@ -160,6 +160,21 @@ describe("stop-summary Operator run", () => {
     expect(events[0]!.payload).toMatchObject({ kind: "timeout", reason: expect.stringContaining("timed out") });
     expect(f.store.currentStopSummary("item")).toBeNull();
     expect(snapshot(f.store)).toEqual(before);
+    await f.service.close();
+  });
+
+  test("a run that fails after recording a summary removes that summary", async () => {
+    const f = await fixture({
+      async run(input, get) {
+        const grant = await token(input);
+        await get().service.handleMcp({ tool: "operator.recordStopSummary", input: { itemId: "item", stopId: get().store.currentStopId("item"), summary: SUMMARY } }, grant.token);
+        throw new Error("agent crashed");
+      },
+    });
+    f.stop("stop-1");
+    await finish(f);
+    expect(failures(f)).toHaveLength(1);
+    expect(f.store.currentStopSummary("item")).toBeNull();
     await f.service.close();
   });
 });
