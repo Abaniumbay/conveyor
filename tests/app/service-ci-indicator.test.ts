@@ -110,7 +110,6 @@ repositories:
     codeHostFor: () => CodeHost;
     backfillCiIndicators(id: string): Promise<void>;
     updateStatusComment(id: string): Promise<void>;
-    wakeupReached(issueId: string): boolean;
     execute(issue: ReturnType<ConveyorStore["getIssue"]> extends infer T ? Exclude<T, null> : never, signal: AbortSignal): Promise<boolean>;
   };
   internals.ciProvider = () => provider;
@@ -188,7 +187,6 @@ test("a configured manual gate records a fresh superuser approval and wakes only
   const w = await setup("", true);
   parkManualGate(w.store);
   const firstEpoch = w.store.executions().stageEpoch("issue");
-  expect(w.internals.wakeupReached("issue")).toBe(false);
 
   const dashboard = () => dashboardViews(w.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
   expect(dashboard().selectedIssue?.manualGates).toEqual(expect.arrayContaining([

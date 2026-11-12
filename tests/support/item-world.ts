@@ -18,7 +18,8 @@ export const STOP_LABELS = {
   "needs-intervention": "conveyor:needs-intervention",
 } as const;
 
-export function itemConfig(root: string): ConveyorConfig {
+/** The world's configuration; `extra` adds or replaces top-level sections (agents, runners, web). */
+export function itemConfig(root: string, extra: Record<string, unknown> = {}): ConveyorConfig {
   const parsed = configSchema.parse({
     settings: {
       database: path.join(root, "conveyor.sqlite"),
@@ -47,6 +48,7 @@ export function itemConfig(root: string): ConveyorConfig {
       repo: { source: "github", address: "owner/my-app", folder: root, pipeline: "default" },
     },
     agents: {},
+    ...extra,
   });
   return { ...parsed, hash: "config-hash", root, plans: [] };
 }
@@ -142,10 +144,10 @@ export interface ItemWorld {
   close(): Promise<void>;
 }
 
-export async function itemWorld(): Promise<ItemWorld> {
+export async function itemWorld(extra: (root: string) => Record<string, unknown> = () => ({})): Promise<ItemWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-item-world-"));
   log.configure({ sinks: [] });
-  const config = itemConfig(root);
+  const config = itemConfig(root, extra(root));
   const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash });
   const items = new FakeItems();
