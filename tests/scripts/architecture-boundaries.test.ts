@@ -9,9 +9,10 @@ const ALLOWLIST = path.join(ROOT, "scripts/architecture-allowlist.json");
 
 const FILES = new Set([
   "src/core/scheduler.ts",
-  "src/source/github/adapter.ts",
-  "src/source/github/events.ts",
-  "src/harness/codex.ts",
+  "src/plugins/github/shared/adapter.ts",
+  "src/plugins/github/shared/events.ts",
+  "src/plugins/codex/harness.ts",
+  "src/plugins/index.ts",
   "src/harness/types.ts",
   "src/runner/claude-code.ts",
   "src/cli/commands/serve.ts",
@@ -37,18 +38,18 @@ describe("architecture boundaries", () => {
   });
 
   test("a core module importing a provider implementation is a violation", () => {
-    expect(keys("src/core/scheduler.ts", 'import { GitHubAdapter } from "../source/github/adapter";'))
-      .toEqual(["implementation-import src/core/scheduler.ts -> src/source/github/adapter.ts"]);
+    expect(keys("src/core/scheduler.ts", 'import { GitHubAdapter } from "../plugins/github/shared/adapter";'))
+      .toEqual(["implementation-import src/core/scheduler.ts -> src/plugins/github/shared/adapter.ts"]);
   });
 
   test("a type-only import of an implementation is a violation", () => {
-    expect(keys("src/core/scheduler.ts", 'import type { GitHubAdapter } from "../source/github/adapter";'))
-      .toEqual(["implementation-import src/core/scheduler.ts -> src/source/github/adapter.ts"]);
+    expect(keys("src/core/scheduler.ts", 'import type { GitHubAdapter } from "../plugins/github/shared/adapter";'))
+      .toEqual(["implementation-import src/core/scheduler.ts -> src/plugins/github/shared/adapter.ts"]);
   });
 
   test("importing a harness implementation outside the composition root is a violation", () => {
-    expect(keys("src/core/scheduler.ts", 'import { codexHarness } from "../harness/codex";'))
-      .toEqual(["implementation-import src/core/scheduler.ts -> src/harness/codex.ts"]);
+    expect(keys("src/core/scheduler.ts", 'import { codexHarness } from "../plugins/codex/harness";'))
+      .toEqual(["implementation-import src/core/scheduler.ts -> src/plugins/codex/harness.ts"]);
   });
 
   test("importing a port is not a violation", () => {
@@ -56,11 +57,15 @@ describe("architecture boundaries", () => {
   });
 
   test("the composition root may import implementations", () => {
-    expect(keys("src/cli/commands/serve.ts", 'import { GitHubAdapter } from "../../source/github/adapter";')).toEqual([]);
+    expect(keys("src/cli/commands/serve.ts", 'import { GitHubAdapter } from "../../plugins/github/shared/adapter";')).toEqual([]);
   });
 
   test("an implementation may import its own provider's modules", () => {
-    expect(keys("src/source/github/adapter.ts", 'import { normalizeGitHubEvent } from "./events";')).toEqual([]);
+    expect(keys("src/plugins/github/shared/adapter.ts", 'import { normalizeGitHubEvent } from "./events";')).toEqual([]);
+  });
+
+  test("the plugin list may import every plugin", () => {
+    expect(keys("src/plugins/index.ts", 'import { codexHarness } from "./codex/harness";\nimport { GitHubAdapter } from "./github/shared/adapter";')).toEqual([]);
   });
 
   test("a plugin importing another plugin is a violation", () => {
@@ -87,7 +92,7 @@ describe("architecture boundaries", () => {
   });
 
   test("an import mentioned only in a comment is not a violation", () => {
-    expect(keys("src/core/scheduler.ts", '// import { GitHubAdapter } from "../source/github/adapter";\n/* import "../harness/codex"; */')).toEqual([]);
+    expect(keys("src/core/scheduler.ts", '// import { GitHubAdapter } from "../plugins/github/shared/adapter";\n/* import "../plugins/codex/harness"; */')).toEqual([]);
   });
 
   test("re-exports, side-effect and dynamic imports are scanned", () => {

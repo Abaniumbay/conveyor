@@ -8,7 +8,7 @@ import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { CriterionApprovals, criterionTextHash } from "../../src/engine/review-records";
-import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-registry";
+import { githubPlugins } from "../support/plugins";
 import type { TaskContext } from "../../src/tasks/context";
 
 const directories: string[] = [];
@@ -78,7 +78,7 @@ repositories:
     },
     async upsertStatusComment(_address: string, _number: number, markdown: string) { statusComments.push(markdown); return statusComments.length; },
   };
-  const service = new ConveyorService(config, store, github as never, { codeHosts: createGitHubCodeHostRegistry(config, github as never) });
+  const service = new ConveyorService(config, store, github as never, { plugins: githubPlugins(config, github as never) });
   service.drain("tests: nothing executes");
   const internals = service as unknown as { updateStatusComment(id: string): Promise<void> };
   const persist = (state: "open" | "merged", headSha: string, reviewPassed: string | null) => {

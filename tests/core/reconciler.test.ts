@@ -7,7 +7,7 @@ import { reconcileRepository as reconcile } from "../../src/core/reconciler";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
 import { ItemTodos, TODO_CLOSEOUT_NOTE } from "../../src/engine/todos";
-import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
+import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
 import type { IssueSourceAdapter, SourceIssue } from "../../src/source/types";
 
 const temporaryDirectories: string[] = [];

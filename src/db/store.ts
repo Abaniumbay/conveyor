@@ -7,8 +7,8 @@ import type { Indicator, StoredIndicator } from "../app/indicators";
 import { ExecutionStore } from "../engine/journal";
 import { eventLog, type EventLog } from "../events/log";
 import { EventThrottle } from "../events/throttle";
-import type { GitHubMirrorStorage } from "../source/github/read-cache";
-import type { NormalizedGitHubEvent } from "../source/github/events";
+import type { GitHubMirrorStorage } from "../plugins/github/shared/read-cache";
+import type { NormalizedGitHubEvent } from "../plugins/github/shared/events";
 import { migrations } from "./migrations";
 
 export interface RepositoryRecord {

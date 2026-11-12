@@ -2,7 +2,7 @@
 // host and CI provider run against it, so a test or benchmark counts exactly the requests
 // production would send. A request it does not model is recorded and fails loudly.
 
-import { GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
+import { GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
 
 export interface SimulatedIssue {
   number: number;

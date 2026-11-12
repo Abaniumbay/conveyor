@@ -6,8 +6,8 @@ import { isLightweightRepositoryStage } from "./stage-capacity";
 import type { ConveyorConfig } from "../config/load";
 import type { ConveyorStore, StoredIssue } from "../db/store";
 import { ReviewFindings } from "../engine/review-findings";
-import type { GitHubCallSummary } from "../source/github/call-meter";
-import { publicRepositoryTrustPolicy } from "../source/github/trust";
+import type { GitHubCallSummary } from "../plugins/github/shared/call-meter";
+import { publicRepositoryTrustPolicy } from "../plugins/github/shared/trust";
 import { concise, displayName } from "../tasks/agent-support";
 
 export type RepositoryItemState = "Running" | "Queued" | "Waiting" | "Needs you" | "Blocked";

@@ -14,7 +14,7 @@ import { ConveyorStore } from "../../src/db/store";
 import { ReviewFindings } from "../../src/engine/review-findings";
 import { ItemTodos } from "../../src/engine/todos";
 import { ConsoleSink, type LogRecord, log } from "../../src/log/logger";
-import { parseManagedSections } from "../../src/source/github/managed-sections";
+import { parseManagedSections } from "../../src/plugins/github/shared/managed-sections";
 
 const temporaryDirectories: string[] = [];
 

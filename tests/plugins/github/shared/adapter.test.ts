@@ -1,0 +1,1081 @@
+import { describe, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import {
+  GhCliTransport,
+  GitHubAdapter,
+  GitHubTransportError,
+  isStatusComment,
+  verifyGitHubSignature,
+  type GitHubTransport,
+  type GitHubTransportRequest,
+} from "../../../../src/plugins/github/shared/adapter";
+import { GitHubReadCache } from "../../../../src/plugins/github/shared/read-cache";
+
+class FakeTransport implements GitHubTransport {
+  readonly requests: GitHubTransportRequest[] = [];
+  readonly #responses: unknown[];
+
+  constructor(...responses: unknown[]) {
+    this.#responses = [...responses];
+  }
+
+  async request<T>(request: GitHubTransportRequest): Promise<T> {
+    this.requests.push(request);
+    if (this.#responses.length === 0) throw new Error("unexpected GitHub request");
+    const response = this.#responses.shift();
+    if (response instanceof Error) throw response;
+    return response as T;
+  }
+}
+
+class DependencyTransport implements GitHubTransport {
+  readonly requests: GitHubTransportRequest[] = [];
+  postError: Error | null = null;
+  postErrorIds: number[] | null = null;
+
+  constructor(public blockers: number[]) {}
+
+  get mutations(): GitHubTransportRequest[] {
+    return this.requests.filter((request) => request.method !== "GET");
+  }
+
+  async request<T>(request: GitHubTransportRequest): Promise<T> {
+    this.requests.push(request);
+    const base = "repos/owner/repo/issues/";
+    if (request.method === "GET" && request.path.endsWith("/dependencies/blocked_by?per_page=100")) {
+      return this.blockers.map((n) => ({ id: n * 10, number: n })) as T;
+    }
+    if (request.method === "GET") {
+      const n = Number(request.path.slice(base.length));
+      return { id: n * 10, number: n } as T;
+    }
+    if (request.method === "POST") {
+      const id = (request.body as { issue_id: number }).issue_id;
+      if (this.postError && (this.postErrorIds === null || this.postErrorIds.includes(id))) {
+        throw this.postError;
+      }
+      this.blockers.push((request.body as { issue_id: number }).issue_id / 10);
+      return null as T;
+    }
+    const id = Number(request.path.split("/").pop());
+    this.blockers = this.blockers.filter((n) => n * 10 !== id);
+    return null as T;
+  }
+}
+
+const SET = { address: "owner/repo", issueNumber: 1 };
+
+describe("GitHubAdapter.setDependencies", () => {
+  test("adds only the missing blockers", async () => {
+    const transport = new DependencyTransport([2]);
+    await new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [2, 3] });
+    expect(transport.mutations).toEqual([
+      { method: "POST", path: "repos/owner/repo/issues/1/dependencies/blocked_by", body: { issue_id: 30 } },
+    ]);
+  });
+
+  test("removes dropped blockers", async () => {
+    const transport = new DependencyTransport([2, 3]);
+    await new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [3] });
+    expect(transport.mutations).toEqual([
+      { method: "DELETE", path: "repos/owner/repo/issues/1/dependencies/blocked_by/20" },
+    ]);
+  });
+
+  test("performs no mutation when called twice with the same list", async () => {
+    const transport = new DependencyTransport([4]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    await adapter.setDependencies({ ...SET, blockerNumbers: [2, 3] });
+    const after = transport.mutations.length;
+    expect(after).toBe(3);
+    await adapter.setDependencies({ ...SET, blockerNumbers: [2, 3] });
+    expect(transport.mutations).toHaveLength(after);
+  });
+
+  test("treats a 422 already-exists on POST as success", async () => {
+    const transport = new DependencyTransport([]);
+    transport.postError = new GitHubTransportError(
+      "GitHub API POST x failed: gh: Validation Failed (HTTP 422)",
+      1,
+      "Validation Failed (HTTP 422)",
+    );
+    transport.postErrorIds = [20];
+    await new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [2, 3] });
+    expect(transport.mutations.map((request) => request.body)).toEqual([{ issue_id: 20 }, { issue_id: 30 }]);
+    expect(transport.blockers).toEqual([3]);
+  });
+
+  test("propagates other errors", async () => {
+    const transport = new DependencyTransport([]);
+    transport.postError = new GitHubTransportError("GitHub API POST x failed: HTTP 500", 1, "HTTP 500");
+    await expect(
+      new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [2] }),
+    ).rejects.toThrow("HTTP 500");
+  });
+
+  test("does not mistake issue number 422 in the path for an HTTP 422", async () => {
+    const transport = new DependencyTransport([]);
+    transport.postError = new GitHubTransportError(
+      "GitHub API POST repos/owner/repo/issues/422/dependencies/blocked_by failed: HTTP 500",
+      1,
+      "HTTP 500",
+    );
+    await expect(
+      new GitHubAdapter(transport, "conveyor").setDependencies({
+        address: "owner/repo",
+        issueNumber: 422,
+        blockerNumbers: [2],
+      }),
+    ).rejects.toThrow("HTTP 500");
+  });
+});
+
+describe("GitHubAdapter.collaboratorPermission", () => {
+  test("returns each recognized permission and URL-encodes the login", async () => {
+    for (const permission of ["admin", "maintain", "write", "triage", "read", "none"] as const) {
+      const transport = new FakeTransport({ permission });
+      const adapter = new GitHubAdapter(transport, "conveyor");
+
+      expect(await adapter.collaboratorPermission("owner/my-app", "reviewer[bot]")).toBe(permission);
+      expect(transport.requests).toEqual([
+        {
+          method: "GET",
+          path: "repos/owner/my-app/collaborators/reviewer%5Bbot%5D/permission",
+        },
+      ]);
+    }
+  });
+
+  test("rejects missing and unusable permission payloads", async () => {
+    for (const response of [{}, { permission: "owner" }]) {
+      const adapter = new GitHubAdapter(new FakeTransport(response), "conveyor");
+
+      await expect(adapter.collaboratorPermission("owner/my-app", "reviewer")).rejects.toThrow(
+        "GitHub returned no usable repository permission for reviewer",
+      );
+    }
+  });
+
+  test("propagates an unavailable collaborator lookup", async () => {
+    const unavailable = new GitHubTransportError("GitHub request failed with HTTP 404", 1, "Not Found");
+    const adapter = new GitHubAdapter(new FakeTransport(unavailable), "conveyor");
+
+    await expect(adapter.collaboratorPermission("owner/my-app", "reviewer")).rejects.toBe(unavailable);
+  });
+
+  test("propagates non-404 collaborator lookup failures", async () => {
+    const unavailable = new GitHubTransportError("GitHub request failed with HTTP 503", 1, "Service unavailable");
+    const adapter = new GitHubAdapter(new FakeTransport(unavailable), "conveyor");
+
+    await expect(adapter.collaboratorPermission("owner/my-app", "reviewer")).rejects.toBe(unavailable);
+  });
+});
+
+describe("GitHubAdapter.repositoryVisibility", () => {
+  test("returns public and private visibility from GitHub's repository payload", async () => {
+    for (const [response, visibility] of [[{ private: false }, "public"], [{ private: true }, "private"], [{ visibility: "public" }, "public"]] as const) {
+      const transport = new FakeTransport(response);
+      const adapter = new GitHubAdapter(transport, "conveyor");
+
+      expect(await adapter.repositoryVisibility("owner/my-app")).toBe(visibility);
+      expect(transport.requests).toEqual([{ method: "GET", path: "repos/owner/my-app" }]);
+    }
+  });
+
+  test("rejects incomplete visibility payloads and propagates transport errors", async () => {
+    await expect(new GitHubAdapter(new FakeTransport({}), "conveyor").repositoryVisibility("owner/my-app"))
+      .rejects.toThrow("GitHub returned no usable repository visibility for owner/my-app");
+    const unavailable = new GitHubTransportError("GitHub request failed with HTTP 503", 1, "Service unavailable");
+    await expect(new GitHubAdapter(new FakeTransport(unavailable), "conveyor").repositoryVisibility("owner/my-app"))
+      .rejects.toBe(unavailable);
+  });
+});
+
+describe("GitHubAdapter", () => {
+  test("uses the effective label, REST rename, and GraphQL body-edit actors", async () => {
+    const transport = new FakeTransport([
+      { id: 30, created_at: "2026-01-03T00:00:00Z", event: "labeled", label: { name: "conveyor" }, actor: { login: "current-labeler" } },
+      { id: 20, created_at: "2026-01-02T00:00:00Z", event: "unlabeled", label: { name: "conveyor" }, actor: { login: "previous-labeler" } },
+      { id: 10, created_at: "2026-01-01T00:00:00Z", event: "labeled", label: { name: "conveyor" }, actor: { login: "previous-labeler" } },
+      { id: 15, created_at: "2026-01-01T12:00:00Z", event: "renamed", actor: { login: "title-editor" }, rename: { from: "before", to: "after" } },
+    ], {
+      data: { repository: { issue: { userContentEdits: { nodes: [{ editedAt: "2026-01-03T00:00:00Z", editor: { login: "body-editor" } }], pageInfo: { hasNextPage: false, endCursor: null } } } } },
+    });
+
+    await expect(new GitHubAdapter(transport, "conveyor").getIssueProvenance("owner/my-app", 7, "conveyor")).resolves.toEqual({
+      enrollment: { login: "current-labeler" }, title: { login: "title-editor" }, body: { login: "body-editor" },
+    });
+    expect(transport.requests).toEqual([
+      { method: "GET", path: "repos/owner/my-app/issues/7/events?per_page=100", paginate: true },
+      expect.objectContaining({ method: "POST", path: "graphql", body: expect.objectContaining({ variables: { owner: "owner", name: "my-app", number: 7, cursor: null } }) }),
+    ]);
+  });
+
+  test("keeps an unavailable GraphQL body editor unverifiable", async () => {
+    const transport = new FakeTransport([], {
+      data: { repository: { issue: { userContentEdits: { nodes: [{ editedAt: "2026-01-03T00:00:00Z", editor: null }], pageInfo: { hasNextPage: false, endCursor: null } } } } },
+    });
+
+    await expect(new GitHubAdapter(transport, "conveyor").getIssueProvenance("owner/my-app", 7, "conveyor")).resolves.toEqual({
+      enrollment: null, title: null, body: { login: null },
+    });
+  });
+
+  test("selects the newest body editor regardless of GraphQL connection order", async () => {
+    for (const nodes of [
+      [
+        { editedAt: "2026-01-01T00:00:00Z", editor: { login: "trusted-editor" } },
+        { editedAt: "2026-01-02T00:00:00Z", editor: { login: "untrusted-editor" } },
+      ],
+      [
+        { editedAt: "2026-01-02T00:00:00Z", editor: { login: "untrusted-editor" } },
+        { editedAt: "2026-01-01T00:00:00Z", editor: { login: "trusted-editor" } },
+      ],
+    ]) {
+      const transport = new FakeTransport([], {
+        data: { repository: { issue: { userContentEdits: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } } },
+      });
+
+      await expect(new GitHubAdapter(transport, "conveyor").getIssueProvenance("owner/my-app", 7, "conveyor")).resolves.toEqual({
+        enrollment: null, title: null, body: { login: "untrusted-editor" },
+      });
+    }
+  });
+
+  test("projects only issues carrying the configured Conveyor prefix", async () => {
+    const transport = new FakeTransport([
+      {
+        id: 101,
+        number: 1,
+        html_url: "https://github.com/owner/repo/issues/1",
+        title: "Active",
+        body: "body",
+        state: "open",
+        state_reason: null,
+        labels: [{ name: "conveyor" }, { name: "backend" }],
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: 102,
+        number: 2,
+        html_url: "https://github.com/owner/repo/issues/2",
+        title: "Paused",
+        body: null,
+        state: "open",
+        state_reason: null,
+        labels: [{ name: "conveyor:implementation" }],
+        updated_at: "2026-01-02T00:00:00Z",
+      },
+      {
+        id: 103,
+        number: 3,
+        html_url: "https://github.com/owner/repo/issues/3",
+        title: "Invisible",
+        body: "",
+        state: "open",
+        labels: [{ name: "backend" }],
+        updated_at: "2026-01-03T00:00:00Z",
+      },
+      {
+        id: 104,
+        number: 4,
+        html_url: "https://github.com/owner/repo/pull/4",
+        title: "A pull request",
+        body: "",
+        state: "open",
+        labels: [{ name: "conveyor" }],
+        pull_request: {},
+        updated_at: "2026-01-04T00:00:00Z",
+      },
+    ]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    const issues = await adapter.listConveyorIssues("owner/repo");
+
+    expect(issues.map((issue) => issue.number)).toEqual([1, 2]);
+    expect(issues[1]).toMatchObject({ body: "", labels: ["conveyor:implementation"] });
+    expect(transport.requests[0]).toMatchObject({ method: "GET", paginate: true });
+  });
+
+  test("projects GitHub's close reason separately from issue state", async () => {
+    const transport = new FakeTransport([{
+      id: 105,
+      number: 5,
+      html_url: "https://github.com/owner/repo/issues/5",
+      title: "Delivered",
+      body: "",
+      state: "closed",
+      state_reason: "completed",
+      labels: [{ name: "conveyor:done" }],
+      updated_at: "2026-01-05T00:00:00Z",
+    }]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    expect(await adapter.listConveyorIssues("owner/repo")).toEqual([
+      expect.objectContaining({ state: "closed", stateReason: "completed" }),
+    ]);
+  });
+
+  test("can list all source issues so reconciliation observes full offboarding", async () => {
+    const transport = new FakeTransport([
+      {
+        id: 101,
+        number: 1,
+        html_url: "https://github.com/owner/repo/issues/1",
+        title: "Offboarded",
+        body: "body",
+        state: "open",
+        labels: [{ name: "backend" }],
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    ]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    expect(await adapter.listIssues("owner/repo")).toEqual([
+      expect.objectContaining({ number: 1, labels: ["backend"] }),
+    ]);
+  });
+
+  test("replaces only Conveyor labels while preserving project labels", async () => {
+    const transport = new FakeTransport(
+      {
+        labels: [
+          { name: "backend" },
+          { name: "conveyor" },
+          { name: "conveyor:refinement" },
+        ],
+      },
+      [{ name: "backend" }, { name: "conveyor" }, { name: "conveyor:implementation" }],
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.replaceConveyorLabels("owner/repo", 7, [
+      "conveyor",
+      "conveyor:implementation",
+    ]);
+
+    expect(transport.requests[1]).toEqual({
+      method: "PUT",
+      path: "repos/owner/repo/issues/7/labels",
+      body: {
+        labels: ["backend", "conveyor", "conveyor:implementation"],
+      },
+    });
+  });
+
+  test("closes an open issue with GitHub's completed reason", async () => {
+    const open = {
+      id: 107,
+      number: 7,
+      html_url: "https://example.com/issues/7",
+      title: "Roll-up",
+      body: "",
+      state: "open" as const,
+      labels: [{ name: "conveyor" }, { name: "conveyor:done" }],
+      updated_at: "2026-10-17T00:00:00Z",
+    };
+    const transport = new FakeTransport(open, {
+      ...open,
+      state: "closed" as const,
+      state_reason: "completed",
+      updated_at: "2026-10-17T00:01:00Z",
+    });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    expect(await adapter.closeIssue("owner/repo", 7)).toMatchObject({
+      state: "closed",
+      stateReason: "completed",
+    });
+    expect(transport.requests).toEqual([
+      { method: "GET", path: "repos/owner/repo/issues/7" },
+      {
+        method: "PATCH",
+        path: "repos/owner/repo/issues/7",
+        body: { state: "closed", state_reason: "completed" },
+      },
+    ]);
+  });
+
+  test("observes an already closed issue without closing it again", async () => {
+    const transport = new FakeTransport({
+      id: 107,
+      number: 7,
+      html_url: "https://example.com/issues/7",
+      title: "Roll-up",
+      body: "",
+      state: "closed",
+      state_reason: "completed",
+      labels: [{ name: "conveyor" }, { name: "conveyor:done" }],
+      updated_at: "2026-10-17T00:01:00Z",
+    });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.closeIssue("owner/repo", 7);
+
+    expect(transport.requests).toEqual([
+      { method: "GET", path: "repos/owner/repo/issues/7" },
+    ]);
+  });
+
+  test("preserves requested human-managed Conveyor labels from the live issue", async () => {
+    const transport = new FakeTransport(
+      {
+        labels: [
+          { name: "backend" },
+          { name: "conveyor" },
+          { name: "conveyor:refinement" },
+          { name: "conveyor:no-split" },
+        ],
+      },
+      {},
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.replaceConveyorLabels("owner/repo", 7, [
+      "conveyor",
+      "conveyor:implementation",
+    ], ["conveyor:no-split"]);
+
+    expect(transport.requests[1]).toEqual({
+      method: "PUT",
+      path: "repos/owner/repo/issues/7/labels",
+      body: {
+        labels: ["backend", "conveyor", "conveyor:implementation", "conveyor:no-split"],
+      },
+    });
+  });
+
+  test("does not restore a preserved label removed from the live issue", async () => {
+    const transport = new FakeTransport(
+      {
+        labels: [
+          { name: "backend" },
+          { name: "conveyor" },
+          { name: "conveyor:refinement" },
+        ],
+      },
+      {},
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.replaceConveyorLabels("owner/repo", 7, [
+      "conveyor",
+      "conveyor:implementation",
+      "conveyor:no-split",
+    ], ["conveyor:no-split"]);
+
+    expect(transport.requests[1]).toEqual({
+      method: "PUT",
+      path: "repos/owner/repo/issues/7/labels",
+      body: {
+        labels: ["backend", "conveyor", "conveyor:implementation"],
+      },
+    });
+  });
+
+  test("sets the issue title without touching its body or labels", async () => {
+    const transport = new FakeTransport({});
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.setTitle("owner/repo", 7, "Players pick categories per family");
+
+    expect(transport.requests).toEqual([{
+      method: "PATCH",
+      path: "repos/owner/repo/issues/7",
+      body: { title: "Players pick categories per family" },
+    }]);
+  });
+
+  test("replaces configured system labels while preserving workflow and unmanaged labels", async () => {
+    const transport = new FakeTransport(
+      {
+        labels: [
+          { name: "conveyor" },
+          { name: "conveyor:refinement" },
+          { name: "backend" },
+          { name: "priority:high" },
+        ],
+      },
+      {},
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.replaceManagedProjectLabels(
+      "owner/repo",
+      7,
+      ["backend", "web", "mobile"],
+      ["web"],
+    );
+
+    expect(transport.requests[1]).toEqual({
+      method: "PUT",
+      path: "repos/owner/repo/issues/7/labels",
+      body: {
+        labels: ["conveyor", "conveyor:refinement", "priority:high", "web"],
+      },
+    });
+  });
+
+  test("updates the marked status comment instead of creating conversation spam", async () => {
+    const transport = new FakeTransport(
+      [
+        { id: 55, body: "<!-- conveyor:status -->\nOld" },
+        { id: 56, body: "Human comment" },
+      ],
+      { id: 55, body: "updated" },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    const id = await adapter.upsertStatusComment("owner/repo", 3, "Current status");
+
+    expect(id).toBe(55);
+    expect(transport.requests[1]).toEqual({
+      method: "PATCH",
+      path: "repos/owner/repo/issues/comments/55",
+      body: { body: "<!-- conveyor:status -->\nCurrent status" },
+    });
+  });
+
+  test("optimistically updates only a managed issue-body section", async () => {
+    const body = "Human text";
+    const updatedBody = `${body}\n\n<!-- conveyor:acceptance-criteria:start -->\n- [ ] Works <!-- conveyor:criterion:AC-1 -->\n<!-- conveyor:acceptance-criteria:end -->\n`;
+    const issue = {
+      id: 101,
+      number: 3,
+      html_url: "https://github.com/owner/repo/issues/3",
+      title: "Feature",
+      body,
+      state: "open" as const,
+      labels: [{ name: "conveyor" }],
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const transport = new FakeTransport(
+      issue,
+      { ...issue, body: updatedBody, updated_at: "2026-01-02T00:00:00Z" },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    const updated = await adapter.updateManagedSection({
+      address: "owner/repo",
+      issueNumber: 3,
+      section: "acceptance-criteria",
+      markdown: "- [ ] Works <!-- conveyor:criterion:AC-1 -->",
+      expectedRevision: adapter.managedRevision(body),
+      baseBody: body,
+    });
+
+    expect(transport.requests[1]).toEqual({
+      method: "PATCH",
+      path: "repos/owner/repo/issues/3",
+      body: { body: updatedBody },
+    });
+    expect(updated.body).toBe(updatedBody);
+  });
+
+  test("accepts the current managed revision from a cached listing after its own body edit", async () => {
+    const body = "Human text";
+    const firstBody = `${body}\n\n<!-- conveyor:acceptance-criteria:start -->\n- [ ] Works <!-- conveyor:criterion:AC-1 -->\n<!-- conveyor:acceptance-criteria:end -->\n`;
+    const secondBody = `${body}\n\n<!-- conveyor:acceptance-criteria:start -->\n- [x] Works <!-- conveyor:criterion:AC-1 -->\n<!-- conveyor:acceptance-criteria:end -->\n`;
+    const issue = {
+      id: 101,
+      number: 3,
+      html_url: "https://github.com/owner/repo/issues/3",
+      title: "Feature",
+      body,
+      state: "open" as const,
+      labels: [{ name: "conveyor" }],
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const transport = new FakeTransport(
+      [issue],
+      issue,
+      { ...issue, body: firstBody, updated_at: "2026-01-02T00:00:00Z" },
+      { ...issue, body: secondBody, updated_at: "2026-01-03T00:00:00Z" },
+    );
+    const adapter = new GitHubAdapter(new GitHubReadCache(transport), "conveyor");
+
+    await adapter.listIssues("owner/repo");
+    await adapter.updateManagedSection({
+      address: "owner/repo",
+      issueNumber: 3,
+      section: "acceptance-criteria",
+      markdown: "- [ ] Works <!-- conveyor:criterion:AC-1 -->",
+      expectedRevision: adapter.managedRevision(body),
+      baseBody: body,
+    });
+
+    const [cached] = await adapter.listIssues("owner/repo");
+    expect(cached?.body).toBe(firstBody);
+
+    await expect(adapter.updateManagedSection({
+      address: "owner/repo",
+      issueNumber: 3,
+      section: "acceptance-criteria",
+      markdown: "- [x] Works <!-- conveyor:criterion:AC-1 -->",
+      expectedRevision: adapter.managedRevision(cached?.body ?? ""),
+      baseBody: cached?.body ?? "",
+    })).resolves.toMatchObject({ body: secondBody });
+    expect(transport.requests).toHaveLength(4);
+  });
+
+  test("refuses to write a managed section after later live text changes", async () => {
+    const acceptedBody = "Accepted human text";
+    const liveBody = "Untrusted human text";
+    const issue = {
+      id: 101, number: 3, html_url: "https://github.com/owner/repo/issues/3", title: "Feature", body: liveBody,
+      state: "open" as const, labels: [{ name: "conveyor" }], updated_at: "2026-01-01T00:00:00Z",
+    };
+    const transport = new FakeTransport(issue);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await expect(adapter.updateManagedSection({
+      address: "owner/repo", issueNumber: 3, section: "acceptance-criteria",
+      markdown: "- [ ] Works <!-- conveyor:criterion:AC-1 -->",
+      expectedRevision: adapter.managedRevision(acceptedBody), baseBody: acceptedBody,
+    })).rejects.toThrow("issue body changed");
+
+    expect(transport.requests).toHaveLength(1);
+  });
+
+  test("creates a PR idempotently and requests squash merge", async () => {
+    const transport = new FakeTransport(
+      [],
+      { number: 18, html_url: "https://github.com/owner/repo/pull/18", state: "open" },
+      {
+        number: 18,
+        html_url: "https://github.com/owner/repo/pull/18",
+        state: "open",
+        merged: false,
+      },
+      { merged: true, sha: "abc123" },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    const pullRequest = await adapter.ensurePullRequest({
+      address: "owner/repo",
+      issueNumber: 12,
+      branch: "conveyor/12-r1-feature",
+      baseBranch: "main",
+      title: "Deliver feature",
+      closingReference: true,
+    });
+    const merge = await adapter.squashMerge("owner/repo", pullRequest.number);
+
+    expect(transport.requests[1]).toMatchObject({
+      method: "POST",
+      body: {
+        head: "conveyor/12-r1-feature",
+        base: "main",
+        body: "Closes #12",
+      },
+    });
+    expect(transport.requests[3]).toEqual({
+      method: "PUT",
+      path: "repos/owner/repo/pulls/18/merge",
+      body: { merge_method: "squash" },
+    });
+    expect(merge).toEqual({ merged: true, sha: "abc123" });
+  });
+
+  test("treats an already merged pull request as an idempotent squash merge", async () => {
+    const transport = new FakeTransport({
+      number: 18,
+      html_url: "https://github.com/owner/repo/pull/18",
+      state: "closed",
+      merged: true,
+      merge_commit_sha: "abc123",
+    });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await expect(adapter.squashMerge("owner/repo", 18)).resolves.toEqual({
+      merged: true,
+      sha: "abc123",
+    });
+    expect(transport.requests).toEqual([
+      { method: "GET", path: "repos/owner/repo/pulls/18" },
+    ]);
+  });
+
+  test("loads a pull request and its current check runs for delivery gates", async () => {
+    const transport = new FakeTransport(
+      {
+        number: 18,
+        html_url: "https://github.com/owner/repo/pull/18",
+        state: "closed",
+        merged: true,
+        merged_at: "2026-09-29T12:06:00Z",
+        merge_commit_sha: "merge123",
+        draft: false,
+        mergeable_state: "clean",
+        head: { ref: "conveyor/12-r1-feature", sha: "abc123" },
+        base: { ref: "main" },
+      },
+      {
+        check_runs: [
+          {
+            id: 91,
+            name: "Tests",
+            status: "completed",
+            conclusion: "success",
+            details_url: "https://github.com/owner/repo/actions/runs/1",
+            started_at: "2026-09-29T12:00:00Z",
+            completed_at: "2026-09-29T12:05:00Z",
+          },
+        ],
+      },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await expect(adapter.getPullRequestDelivery("owner/repo", 18)).resolves.toEqual({
+      pullRequest: {
+        number: 18,
+        url: "https://github.com/owner/repo/pull/18",
+        state: "merged",
+        merged: true,
+        mergedAt: "2026-09-29T12:06:00Z",
+        mergeCommitSha: "merge123",
+        draft: false,
+        mergeState: "clean",
+        headBranch: "conveyor/12-r1-feature",
+        headSha: "abc123",
+        baseBranch: "main",
+        body: "",
+      },
+      checks: [{
+        id: 91,
+        name: "Tests",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/owner/repo/actions/runs/1",
+        startedAt: "2026-09-29T12:00:00Z",
+        completedAt: "2026-09-29T12:05:00Z",
+      }],
+    });
+    expect(transport.requests).toEqual([
+      { method: "GET", path: "repos/owner/repo/pulls/18" },
+      { method: "GET", path: "repos/owner/repo/commits/abc123/check-runs?per_page=100" },
+    ]);
+  });
+
+  test("reads native child and dependency relationships", async () => {
+    const related = {
+      id: 12,
+      number: 12,
+      html_url: "https://github.com/owner/repo/issues/12",
+      title: "Related",
+      body: "",
+      state: "open" as const,
+      labels: [{ name: "conveyor" }],
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const transport = new FakeTransport([related], [related]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    expect((await adapter.listSubIssues("owner/repo", 1))[0]?.number).toBe(12);
+    expect((await adapter.listDependencies("owner/repo", 2))[0]?.number).toBe(12);
+    expect(transport.requests.map((request) => request.path)).toEqual([
+      "repos/owner/repo/issues/1/sub_issues?per_page=100",
+      "repos/owner/repo/issues/2/dependencies/blocked_by?per_page=100",
+    ]);
+  });
+
+  test("creates only missing configured labels during onboarding", async () => {
+    const transport = new FakeTransport(
+      [{ name: "conveyor" }],
+      { name: "conveyor:done" },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.ensureLabels("owner/repo", [
+      { name: "conveyor", color: "2563eb", description: "Managed by Conveyor" },
+      { name: "conveyor:done", color: "16a34a", description: "Delivery complete" },
+    ]);
+
+    expect(transport.requests).toHaveLength(2);
+    expect(transport.requests[1]).toEqual({
+      method: "POST",
+      path: "repos/owner/repo/labels",
+      body: {
+        name: "conveyor:done",
+        color: "16a34a",
+        description: "Delivery complete",
+      },
+    });
+  });
+
+  test("installs a signed webhook when no matching hook exists", async () => {
+    const transport = new FakeTransport(
+      [],
+      { id: 4, config: { url: "https://example.test/hooks/github" }, active: true },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.ensureWebhook({
+      address: "owner/repo",
+      url: "https://example.test/hooks/github",
+      secret: "webhook-secret",
+    });
+
+    expect(transport.requests[1]).toEqual({
+      method: "POST",
+      path: "repos/owner/repo/hooks",
+      body: {
+        name: "web",
+        active: true,
+        events: [
+          "issues",
+          "issue_comment",
+          "pull_request",
+          "pull_request_review",
+          "pull_request_review_comment",
+          "pull_request_review_thread",
+          "workflow_run",
+          "check_suite",
+          "check_run",
+          "sub_issues",
+          "issue_dependencies",
+          "member",
+        ],
+        config: {
+          url: "https://example.test/hooks/github",
+          content_type: "json",
+          insecure_ssl: "0",
+          secret: "webhook-secret",
+        },
+      },
+    });
+  });
+});
+
+describe("verifyGitHubSignature", () => {
+  test("accepts only the matching sha256 signature", () => {
+    const body = new TextEncoder().encode('{"action":"labeled"}');
+    const signature = `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`;
+
+    expect(verifyGitHubSignature(body, signature, "secret")).toBe(true);
+    expect(verifyGitHubSignature(body, "sha256=deadbeef", "secret")).toBe(false);
+    expect(verifyGitHubSignature(body, null, "secret")).toBe(false);
+  });
+});
+
+test("ensureWebhook adds missing events to an existing active hook", async () => {
+  const transport = new FakeTransport([{ id: 7, active: true, events: ["issues"], config: { url: "https://example.test/hooks/github" } }], {});
+  await new GitHubAdapter(transport, "conveyor").ensureWebhook({ address: "owner/repo", url: "https://example.test/hooks/github", secret: "s" });
+  expect(transport.requests[1]).toMatchObject({ method: "PATCH", path: "repos/owner/repo/hooks/7" });
+  expect((transport.requests[1] as { body: { events: string[] } }).body.events).toContain("check_suite");
+});
+
+describe("GitHubAdapter issue types and fields", () => {
+  const forbidden = new GitHubTransportError("GitHub API GET x failed: Forbidden (HTTP 403)", 1, "gh: Forbidden (HTTP 403)");
+  const notFound = new GitHubTransportError("GitHub API GET x failed: Not Found (HTTP 404)", 1, "gh: Not Found (HTTP 404)");
+
+  class Scripted implements GitHubTransport {
+    readonly requests: GitHubTransportRequest[] = [];
+    constructor(private readonly handler: (request: GitHubTransportRequest) => unknown) {}
+    async request<T>(request: GitHubTransportRequest): Promise<T> {
+      this.requests.push(request);
+      const result = this.handler(request);
+      if (result instanceof Error) throw result;
+      return result as T;
+    }
+  }
+
+  test("lists the owner's types and fields, and reports an owner without them as null", async () => {
+    const transport = new Scripted((request) => request.path.includes("issue-types")
+      ? [{ name: "Task" }, { name: "Bug" }]
+      : [{ id: 1, name: "Effort", data_type: "single_select", options: [{ name: "High" }] }, { id: 2, name: "Start date", data_type: "date", options: null }]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    expect(await adapter.listIssueTypes("acme")).toEqual(["Task", "Bug"]);
+    expect(await adapter.listIssueFields("acme")).toEqual([
+      { id: 1, name: "Effort", dataType: "single_select", options: ["High"] },
+      { id: 2, name: "Start date", dataType: "date", options: [] },
+    ]);
+    const none = new GitHubAdapter(new Scripted(() => notFound), "conveyor");
+    expect(await none.listIssueTypes("me")).toBeNull();
+    expect(await none.listIssueFields("me")).toBeNull();
+    const broken = new GitHubAdapter(new Scripted(() => new GitHubTransportError("boom", 1, "gh: server error (HTTP 500)")), "conveyor");
+    await expect(broken.listIssueTypes("acme")).rejects.toThrow("boom");
+  });
+
+  test("posts a top-level issue with the given labels and returns it", async () => {
+    const transport = new Scripted(() => ({ id: 8, number: 9, html_url: "u", title: "t", body: "b", state: "open", labels: [{ name: "conveyor" }], updated_at: "x" }));
+    const issue = await new GitHubAdapter(transport, "conveyor").createIssue({ address: "o/r", title: "t", body: "b", labels: ["conveyor", "conveyor"] });
+    expect(transport.requests.map(({ method, path, body }) => ({ method, path, body }))).toEqual([
+      { method: "POST", path: "repos/o/r/issues", body: { title: "t", body: "b", labels: ["conveyor"] } },
+    ]);
+    expect(issue.number).toBe(9);
+  });
+
+  test("sets the type, adds only the given field values, and creates a child with both", async () => {
+    const transport = new Scripted((request) => request.path.includes("sub_issues") ? [] : request.method === "GET" ? { id: 7, number: 3 }
+      : { id: 8, number: 9, html_url: "u", title: "t", body: "b", state: "open", labels: [], updated_at: "x", type: { name: "Bug" } });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    await adapter.setIssueType("o/r", 3, "Bug");
+    await adapter.setIssueFieldValues("o/r", 3, [{ fieldId: 11, name: "Effort", value: "Low" }]);
+    await adapter.setIssueFieldValues("o/r", 3, []);
+    const child = await adapter.createChildIssue({
+      address: "o/r", parentNumber: 3, title: "t", body: "b", labels: ["conveyor"], type: "Bug", fields: [{ fieldId: 11, name: "Effort", value: "Low" }],
+    });
+    expect(transport.requests.filter((r) => r.method !== "GET").map(({ method, path, body }) => ({ method, path, body }))).toEqual([
+      { method: "PATCH", path: "repos/o/r/issues/3", body: { type: "Bug" } },
+      { method: "POST", path: "repos/o/r/issues/3/issue-field-values", body: { issue_field_values: [{ field_id: 11, value: "Low" }] } },
+      { method: "POST", path: "repos/o/r/issues", body: { title: "t", body: expect.stringMatching(/^b\n\n<!-- conveyor:child-of:3:key:[a-f0-9]+ -->$/), labels: ["conveyor"], parent_issue_id: 7, type: "Bug" } },
+      { method: "POST", path: "repos/o/r/issues/9/issue-field-values", body: { issue_field_values: [{ field_id: 11, value: "Low" }] } },
+    ]);
+    expect(child.type).toBe("Bug");
+  });
+
+  test("reuses a child after its field write fails, so a retry cannot duplicate it", async () => {
+    const marker = "<!-- conveyor:child-create:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->";
+    const child = { id: 8, number: 9, html_url: "u", title: "t", body: `b\n${marker}`, state: "open" as const, labels: [], updated_at: "x" };
+    let created = false;
+    let fieldWrites = 0;
+    const transport = new Scripted((request) => {
+      if (request.path.includes("sub_issues")) return created ? [child] : [];
+      if (request.method === "GET") return { id: 7, number: 3 };
+      if (request.path.endsWith("/issue-field-values")) {
+        fieldWrites += 1;
+        return fieldWrites === 1 ? new Error("temporary field failure") : {};
+      }
+      created = true;
+      return child;
+    });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    const input = { address: "o/r", parentNumber: 3, title: "t", body: child.body, labels: [], fields: [{ fieldId: 11, name: "Effort", value: "Low" }] };
+    await expect(adapter.createChildIssue(input)).rejects.toThrow("temporary field failure");
+    await expect(adapter.createChildIssue(input)).resolves.toMatchObject({ number: 9 });
+    expect(transport.requests.filter((request) => request.method === "POST" && request.path === "repos/o/r/issues")).toHaveLength(1);
+    expect(fieldWrites).toBe(2);
+  });
+
+  test("reads current field values by name, and the type reported on listed issues", async () => {
+    const transport = new Scripted((request) => request.path.includes("issue-field-values")
+      ? [{ issue_field_name: "Effort", value: "Low" }, { issue_field_name: "Target date", value: null }]
+      : [{ id: 1, number: 1, html_url: "u", title: "t", body: null, state: "open", labels: [], updated_at: "x", type: null }]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    expect(await adapter.getIssueFieldValues("o/r", 1)).toEqual({ Effort: "Low" });
+    expect((await adapter.listIssues("o/r"))[0]!.type).toBeNull();
+  });
+
+  test("probes access read-only: readable, none, denied, and write permission", async () => {
+    const run = async (types: unknown, fields: unknown, push: boolean | undefined) => {
+      const transport = new Scripted((request) => request.path.includes("issue-types") ? types : request.path.includes("issue-fields") ? fields
+        : { permissions: push === undefined ? undefined : { push } });
+      const result = await new GitHubAdapter(transport, "conveyor").probeIssueMetadata("acme/r");
+      expect(transport.requests.every((r) => r.method === "GET")).toBe(true);
+      return result;
+    };
+    expect(await run([{ name: "Bug" }], [{ id: 1 }], true)).toEqual({ types: "ok", fields: "ok", canWrite: true });
+    expect(await run(notFound, [], false)).toEqual({ types: "none", fields: "none", canWrite: false });
+    expect(await run(forbidden, forbidden, undefined)).toEqual({ types: "denied", fields: "denied", canWrite: null });
+  });
+
+  test("recognizes issue-management access without code push access", async () => {
+    const transport = new Scripted((request) => request.path.includes("issue-types") ? [{ name: "Bug" }] : request.path.includes("issue-fields") ? [{ id: 1 }]
+      : { permissions: { push: false, triage: true } });
+    await expect(new GitHubAdapter(transport, "conveyor").probeIssueMetadata("acme/r"))
+      .resolves.toEqual({ types: "ok", fields: "ok", canWrite: true });
+  });
+});
+
+describe("GitHub calls Conveyor avoids", () => {
+  test("a status comment whose id is known is updated directly, without listing the comments", async () => {
+    const transport = new FakeTransport({ id: 7 });
+    await expect(new GitHubAdapter(transport, "conveyor").upsertStatusComment("o/r", 5, "status", 7)).resolves.toBe(7);
+    expect(transport.requests.map((request) => `${request.method} ${request.path}`)).toEqual(["PATCH repos/o/r/issues/comments/7"]);
+    expect(isStatusComment((transport.requests[0]!.body as { body: string }).body)).toBe(true);
+  });
+
+  test("a known status comment that was deleted is found or created again by listing the comments", async () => {
+    const requests: string[] = [];
+    const transport: GitHubTransport = {
+      async request<T>(request: GitHubTransportRequest): Promise<T> {
+        requests.push(`${request.method} ${request.path}`);
+        if (request.path.endsWith("/comments/7")) throw new GitHubTransportError("GitHub API PATCH failed: gh: Not Found (HTTP 404)", 1, "");
+        if (request.method === "GET") return [{ id: 1, body: "a person's comment" }] as T;
+        return { id: 9 } as T;
+      },
+    };
+    await expect(new GitHubAdapter(transport, "conveyor").upsertStatusComment("o/r", 5, "status", 7)).resolves.toBe(9);
+    expect(requests).toEqual([
+      "PATCH repos/o/r/issues/comments/7",
+      "GET repos/o/r/issues/5/comments?per_page=100",
+      "POST repos/o/r/issues/5/comments",
+    ]);
+  });
+
+  test("an issue list can be limited to issues updated since a time", async () => {
+    const transport = new FakeTransport([]);
+    await new GitHubAdapter(transport, "conveyor").listIssues("o/r", { since: "2026-10-07T20:00:00.000Z" });
+    expect(transport.requests[0]!.path).toBe("repos/o/r/issues?state=all&per_page=100&sort=created&direction=asc&since=2026-10-07T20%3A00%3A00.000Z");
+  });
+
+  test("only Conveyor's status comment counts as one", () => {
+    expect(isStatusComment("<!-- conveyor:status -->\n## Conveyor status")).toBe(true);
+    expect(isStatusComment("Looks good to me")).toBe(false);
+    expect(isStatusComment(undefined)).toBe(false);
+  });
+
+  test("after a rate-limit refusal, requests fail at once until the limit resets", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-gh-"));
+    try {
+      const calls = path.join(directory, "calls");
+      const reset = Math.floor(Date.now() / 1_000) + 600;
+      const gh = path.join(directory, "gh");
+      await writeFile(gh, [
+        "#!/bin/sh",
+        `echo "$2" >> "${calls}"`,
+        `if [ "$2" = "rate_limit" ]; then echo '{"resources":{"core":{"remaining":0,"reset":${reset}},"graphql":{"remaining":10,"reset":1}}}'; exit 0; fi`,
+        "echo 'gh: API rate limit exceeded for user ID 1. (HTTP 403)' >&2",
+        "exit 1",
+      ].join("\n"));
+      await chmod(gh, 0o755);
+      const transport = new GhCliTransport(gh);
+      await expect(transport.request({ method: "GET", path: "repos/o/r/issues/1" })).rejects.toThrow("API rate limit exceeded");
+      await expect(transport.request({ method: "GET", path: "repos/o/r/issues/2" }))
+        .rejects.toThrow(`skipped: GitHub rate limit, paused until ${new Date(reset * 1_000).toISOString()}`);
+      expect((await readFile(calls, "utf8")).trim().split("\n")).toEqual(["repos/o/r/issues/1", "rate_limit"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("GitHubAdapter.rateLimit", () => {
+  test("reads the REST and GraphQL limits with their reset time", async () => {
+    const transport = new FakeTransport({ resources: {
+      core: { limit: 5000, remaining: 4100, reset: 1_792_000_000 },
+      graphql: { limit: 5000, remaining: 4990, reset: 1_792_000_600 },
+    } });
+    expect(await new GitHubAdapter(transport, "conveyor").rateLimit()).toEqual({
+      core: { limit: 5000, remaining: 4100, resetAt: new Date(1_792_000_000_000).toISOString() },
+      graphql: { limit: 5000, remaining: 4990, resetAt: new Date(1_792_000_600_000).toISOString() },
+    });
+    expect(transport.requests).toEqual([{ method: "GET", path: "rate_limit" }]);
+  });
+
+  test("a resource GitHub does not report is null", async () => {
+    expect(await new GitHubAdapter(new FakeTransport({ resources: {} }), "conveyor").rateLimit()).toEqual({ core: null, graphql: null });
+  });
+});
+
+describe("webhook deliveries", () => {
+  // GitHub's delivery ids are past Number.MAX_SAFE_INTEGER; a rounded id names no delivery.
+  const LARGE_ID = "3848834007148003328";
+
+  test("keeps a delivery id exact", async () => {
+    const transport = new FakeTransport(`[{"id":${LARGE_ID},"guid":"g-1","delivered_at":"2026-10-17T16:08:05Z","status_code":502,"redelivery":false}]`);
+    const deliveries = await new GitHubAdapter(transport, "conveyor").listHookDeliveries("owner/my-app", 7);
+    expect(deliveries).toEqual([{ id: LARGE_ID, guid: "g-1", deliveredAt: "2026-10-17T16:08:05Z", statusCode: 502, redelivery: false }]);
+  });
+
+  test("asks for a redelivery by that exact id", async () => {
+    const transport = new FakeTransport(null);
+    await new GitHubAdapter(transport, "conveyor").redeliverHookDelivery("owner/my-app", 7, LARGE_ID);
+    expect(transport.requests[0]).toMatchObject({ method: "POST", path: `repos/owner/my-app/hooks/7/deliveries/${LARGE_ID}/attempts` });
+  });
+});

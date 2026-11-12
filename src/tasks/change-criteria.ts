@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { CiTestReport } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
 import { CriterionApprovals, criterionTextHash, isCriterionApprovedAt } from "../engine/review-records";
-import { formatAcceptanceCriteria, ManagedSectionError, parseManagedSections } from "../source/github/managed-sections";
+import { formatAcceptanceCriteria, ManagedSectionError, parseManagedSections } from "../plugins/github/shared/managed-sections";
 import type { ChangeContext } from "./context";
 import { fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";

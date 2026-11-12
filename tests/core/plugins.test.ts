@@ -1,0 +1,75 @@
+import { describe, expect, test } from "bun:test";
+
+import type { CiProvider } from "../../src/app/ci-provider";
+import type { CodeHost } from "../../src/codehost/types";
+import type { ConveyorConfig } from "../../src/config/load";
+import { pluginContext, PluginRegistry, type CiPluginOptions, type Plugin } from "../../src/core/plugins";
+import type { Harness } from "../../src/harness/types";
+
+const config = (sections: Partial<Pick<ConveyorConfig, "codeHosts" | "sources">> = {}) =>
+  ({ codeHosts: {}, sources: {}, ...sections }) as unknown as ConveyorConfig;
+
+const host = (name: string) => ({ name }) as unknown as CodeHost;
+const harness = (id: string) => ({ id, capabilities: { sessionResume: false }, run: async () => { throw new Error("unused"); } }) as Harness;
+
+describe("PluginRegistry", () => {
+  test("builds a CI provider from the plugin of the configured type", () => {
+    const seen: CiPluginOptions[] = [];
+    const provider = {} as CiProvider;
+    const registry = new PluginRegistry([{ role: "ci", type: "fake-ci", create: (_context, options) => { seen.push(options); return provider; } }], pluginContext(config()));
+    const options = { repositoryId: "app", providerName: "main", provider: { type: "fake-ci" }, stageInput: undefined };
+    expect(registry.ciProvider("fake-ci", options)).toBe(provider);
+    expect(seen).toEqual([options]);
+  });
+
+  test("names the type and provider when no CI plugin handles it", () => {
+    const registry = new PluginRegistry([], pluginContext(config()));
+    expect(() => registry.ciProvider("jenkins", { repositoryId: "app", providerName: "build", provider: { type: "jenkins" }, stageInput: undefined }))
+      .toThrow('unsupported CI provider type "jenkins" (build): no plugin is registered for it');
+  });
+
+  test("rejects two plugins of the same role and type", () => {
+    const plugins: Plugin[] = [
+      { role: "harness", type: "codex", create: () => harness("a") },
+      { role: "harness", type: "codex", create: () => harness("b") },
+    ];
+    expect(() => new PluginRegistry(plugins, pluginContext(config()))).toThrow('two harness plugins have the type "codex"');
+  });
+
+  test("returns every harness by runner type", () => {
+    const registry = new PluginRegistry([
+      { role: "harness", type: "codex", create: () => harness("codex") },
+      { role: "harness", type: "pi", create: () => harness("pi") },
+      { role: "ci", type: "fake-ci", create: () => ({}) as CiProvider },
+    ], pluginContext(config()));
+    expect(Object.keys(registry.harnesses()).sort()).toEqual(["codex", "pi"]);
+  });
+
+  test("registers each configured code host by its type", () => {
+    const registry = new PluginRegistry([{ role: "code", type: "gitlab", create: (_context, name) => host(name) }], pluginContext(config({
+      codeHosts: { review: { type: "gitlab" } } as never,
+    })));
+    expect(registry.codeHosts().get("review")).toEqual(host("review"));
+  });
+
+  test("gives an item source without a code host of its name one of the source's own type", () => {
+    const registry = new PluginRegistry([{ role: "code", type: "github", create: (_context, name) => host(name) }], pluginContext(config({
+      sources: { github: { type: "github" } } as never,
+    })));
+    expect(registry.codeHosts().get("github")).toEqual(host("github"));
+  });
+
+  test("leaves a code host out when no plugin provides its type", () => {
+    const registry = new PluginRegistry([], pluginContext(config({ codeHosts: { review: { type: "gitlab" } } as never })));
+    expect(registry.codeHosts().get("review")).toBeUndefined();
+  });
+
+  test("shares one instance per key between the plugins of a context", () => {
+    const context = pluginContext(config());
+    let created = 0;
+    const first = context.shared("client", () => ({ id: ++created }));
+    const second = context.shared("client", () => ({ id: ++created }));
+    expect(second).toBe(first);
+    expect(created).toBe(1);
+  });
+});

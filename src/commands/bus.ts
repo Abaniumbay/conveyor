@@ -5,7 +5,7 @@
 import type { EventLog } from "../events/log";
 import { newCorrelationId, withEventContext } from "../events/context";
 import { log } from "../log/logger";
-import { withGitHubCallSource } from "../source/github/call-meter";
+import { withGitHubCallSource } from "../plugins/github/shared/call-meter";
 import { COMMANDS, type CommandInput, type CommandName, type CommandRole } from "./registry";
 
 /** What each command returns to the dashboard or the CLI. */

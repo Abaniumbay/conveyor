@@ -6,10 +6,10 @@ import path from "node:path";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConveyorService } from "../../src/app/service";
-import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-registry";
+import { githubPlugins } from "../support/plugins";
 import type { CiProvider } from "../../src/app/ci-provider";
 import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
-import type { GitHubAdapter, GitHubCheckRun, GitHubDeliveryState } from "../../src/source/github/adapter";
+import type { GitHubAdapter, GitHubCheckRun, GitHubDeliveryState } from "../../src/plugins/github/shared/adapter";
 
 const directories: string[] = [];
 
@@ -109,7 +109,7 @@ repositories:
     async workflowExists(_address: string, workflow: string) { workflowCalls.push(workflow); return true; },
     async retriggerLabel(_address: string, _number: number, label: string) { retriggerCalls.push(label); },
   } as unknown as GitHubAdapter;
-  const service = new ConveyorService(config, store, github, { codeHosts: createGitHubCodeHostRegistry(config, github) });
+  const service = new ConveyorService(config, store, github, { plugins: githubPlugins(config, github) });
   const issue = store.getIssue("issue")!;
   const context: RuntimeIssueContext = {
     issue,

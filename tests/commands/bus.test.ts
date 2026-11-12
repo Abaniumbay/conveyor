@@ -5,7 +5,7 @@ import { CommandBus, CommandForbiddenError, CommandInputError, CommandUnavailabl
 import { COMMANDS } from "../../src/commands/registry";
 import { migrations } from "../../src/db/migrations";
 import { eventLog } from "../../src/events/log";
-import { currentGitHubCallSource } from "../../src/source/github/call-meter";
+import { currentGitHubCallSource } from "../../src/plugins/github/shared/call-meter";
 
 const superuser: CommandActor = { kind: "user", id: "admin-1", name: "admin", role: "superuser" };
 const user: CommandActor = { kind: "user", id: "user-1", name: "someone", role: "user" };

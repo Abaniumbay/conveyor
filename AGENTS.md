@@ -55,8 +55,10 @@ Run these from the repository root.
 | `src/tasks/` | Task contract (`contract.ts`), every task group (`item.ts`, `change.ts`, `agent.ts`, …), the registry (`catalogue.ts`), the plan compiler, MCP dispatch. |
 | `src/db/` | `migrations.ts` (schema) and `store.ts` (all SQL). |
 | `src/config/` | `schema.ts` (zod schemas), loader, packaged defaults, migration. |
-| `src/source/`, `src/codehost/` | GitHub issue adapter, managed body sections, pull requests and reviews. |
-| `src/harness/`, `src/runner/` | Agent harnesses (Codex, Claude Code) and process runners. |
+| `src/core/plugins.ts` | The plugin contract and registry: code host, CI and harness plugins by configuration `type`. |
+| `src/plugins/` | Plugin implementations, one folder per provider and one per role inside it: `github/{shared,items,code,ci}`, `codex/`, `claude-code/`. `index.ts` is the list the composition root registers. |
+| `src/source/`, `src/codehost/` | Item source and code host ports (`types.ts`) and provider-neutral change actions. |
+| `src/harness/`, `src/runner/` | The harness port (`harness/types.ts`) and the process runners behind the Codex and Claude Code plugins. |
 | `src/isolation/` | Sanitized agent environment, network sandbox, egress proxies. |
 | `src/web/` | `server.ts` (HTTP routes, SSE), `model.ts` (the live dashboard model and its patches), `render.tsx` (Preact markup), `types.ts` (view models), `styles.ts` (CSS), `app/` (the browser application: `main.tsx`, `store.ts`, `derive.ts`, `behaviour.ts`). |
 | `src/cli/` | `main.ts` (command table) and `commands/*.ts`. |
@@ -194,7 +196,10 @@ a service mutation directly.
    only that interface.
 2. Keep provider vocabulary (labels, issue numbers, check runs, `Closes #N`) inside the provider
    module; the core speaks of items, changes, checks and markers.
-3. Build the implementation in the composition root (`src/cli/commands/serve.ts`) and pass it in.
+3. Put the implementation in its plugin folder (`src/plugins/<provider>/<role>/`), declare it with
+   the contract in `src/core/plugins.ts`, and add it to `src/plugins/index.ts`; the composition
+   root (`src/cli/commands/serve.ts`) registers it. Plugins of one provider share a client through
+   `PluginContext.shared`, never by importing another plugin.
 4. Fake the port in tests, not the provider's transport, unless you are testing the provider
    module itself.
 5. `bun test tests/scripts/architecture-boundaries.test.ts` passes without new allowlist entries.
