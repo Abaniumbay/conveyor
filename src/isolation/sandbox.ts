@@ -86,7 +86,7 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   const home = requireDirectory(options.home, "private home");
   const scratch = requireDirectory(options.scratch, "scratch directory");
   const executable = resolveCommand(options.command, options.env);
-  if (!executable) throw new Error(`cannot confine a command that is not installed: ${options.command}`);
+  if (!executable) throw new Error(`cannot confine a command that is not installed: ${options.command} (searched PATH: ${options.env.PATH ?? "unset"})`);
 
   const mounts = [
     "--tmpfs", "/",
@@ -231,7 +231,7 @@ function standaloneRelease(executable: string): string | undefined {
  */
 export function agentLaunchCommand(options: Pick<AgentFilesystemOptions, "command" | "env">): string {
   const executable = resolveCommand(options.command, options.env);
-  if (!executable) throw new Error(`cannot confine a command that is not installed: ${options.command}. Install it, or set the runner's command to an installed executable or an absolute path.`);
+  if (!executable) throw new Error(`cannot confine a command that is not installed: ${options.command} (searched PATH: ${options.env.PATH ?? "unset"}). Install it, or set the runner's command to an installed executable or an absolute path.`);
   return executable;
 }
 

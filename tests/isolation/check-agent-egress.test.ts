@@ -5,10 +5,11 @@ import path from "node:path";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
-import { claudeCodeChecks, judgeLiveOutput, liveCommand, liveArguments, liveHosts, liveModeNote, livePrompt, loadCheckConfig, runLiveClaudeCheck, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
+import { claudeCodeChecks, judgeLiveOutput, liveCommand, liveArguments, liveFilesystemOptions, NOT_SIGNED_IN, liveHosts, liveModeNote, livePrompt, loadCheckConfig, runLiveClaudeCheck, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
+import { agentFilesystemPlan, agentLaunchCommand } from "../../src/isolation/sandbox";
 import { resolveBash } from "../../src/isolation/environment";
 
 describe("restoreSteps", () => {
@@ -113,6 +114,69 @@ describe("live Claude Code check", () => {
     expect(judgeLiveOutput(events(true, true), hosts).passed).toBe(false);
     expect(judgeLiveOutput(events(false, false), hosts).problems.join()).toContain("must be refused");
     expect(judgeLiveOutput("", hosts).problems).toHaveLength(2);
+  });
+
+  const notSignedInOutput = [
+    { type: "system", subtype: "init" },
+    { type: "assistant", message: { content: [{ type: "text", text: "Not logged in · Please run /login" }] }, error: "authentication_failed" },
+    { type: "result", is_error: true, result: "Not logged in · Please run /login" },
+  ].map((event) => JSON.stringify(event)).join("\n");
+
+  test("reports a Claude CLI that is not signed in, not a missing Bash command", () => {
+    const verdict = judgeLiveOutput(notSignedInOutput, hosts);
+    expect(verdict).toEqual({ passed: false, problems: [NOT_SIGNED_IN] });
+    expect(NOT_SIGNED_IN).toBe("the Claude Code CLI is not signed in");
+    expect(verdict.problems.join()).not.toContain("no completed Bash command");
+    expect(judgeLiveOutput("", hosts).problems.join()).toContain("no completed Bash command");
+  });
+
+  describe("launch environment", () => {
+    const parts = async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "live-env-"));
+      const dirs = Object.fromEntries(["workspace", "artifacts", "home", "scratch", "config", "service/.claude"].map((name) => [name, path.join(root, name)]));
+      await Promise.all(Object.values(dirs).map((dir) => mkdir(dir, { recursive: true })));
+      return { root, dirs };
+    };
+    const common = (dirs: Record<string, string>) => ({ cli: "/bin/sh", base: { PATH: "/usr/bin:/bin" }, workspace: dirs.workspace!, artifacts: dirs.artifacts!, home: dirs.home!, scratch: dirs.scratch! });
+
+    test("passes the runner's configDir as CLAUDE_CONFIG_DIR and mounts it writable", async () => {
+      const { root, dirs } = await parts();
+      try {
+        const options = liveFilesystemOptions({ ...common(dirs), configDir: dirs.config!, serviceHome: path.join(root, "service") });
+        expect(options.env.CLAUDE_CONFIG_DIR).toBe(dirs.config!);
+        expect(options.env.HOME).toBe(dirs.home!);
+        expect(options.writable).toEqual([dirs.config!]);
+        const mounts = agentFilesystemPlan(options).mounts;
+        const at = mounts.findIndex((mount, index) => mount === dirs.config! && mounts[index + 1] === dirs.config!);
+        expect(mounts[at - 1]).toBe("--bind");
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    test("falls back to the service account's ~/.claude without a configDir", async () => {
+      const { root, dirs } = await parts();
+      try {
+        const options = liveFilesystemOptions({ ...common(dirs), serviceHome: path.join(root, "service") });
+        expect(options.env.CLAUDE_CONFIG_DIR).toBe(dirs["service/.claude"]!);
+        expect(options.writable).toEqual([dirs["service/.claude"]!]);
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    test("passes the OAuth token and API key from the environment", async () => {
+      const { root, dirs } = await parts();
+      try {
+        const options = liveFilesystemOptions({ ...common(dirs), serviceHome: root, credentials: { CLAUDE_CODE_OAUTH_TOKEN: "tok", ANTHROPIC_API_KEY: "key" } });
+        expect(options.env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: "tok", ANTHROPIC_API_KEY: "key" });
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    test("names the command and the PATH searched when the runner command is not installed", async () => {
+      const { root, dirs } = await parts();
+      try {
+        const options = liveFilesystemOptions({ ...common(dirs), cli: "claude-missing", configDir: dirs.config!, base: { PATH: "/nowhere/bin" } });
+        expect(() => agentLaunchCommand(options)).toThrow(/not installed: claude-missing \(searched PATH: \/nowhere\/bin\)/);
+        expect(() => agentFilesystemPlan(options)).toThrow(/claude-missing.*\/nowhere\/bin/);
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
   });
 
   test("ignores commands the CLI changed from the ones it was asked to run", () => {

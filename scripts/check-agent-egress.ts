@@ -22,6 +22,7 @@ import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { resolveFilesystemPath } from "../src/core/paths";
 import { loadConfig, type ConveyorConfig } from "../src/config/load";
 import { parseLoopbackTcp } from "../src/isolation/egress-policy";
 import { startEgressProxy } from "../src/isolation/egress-proxy";
@@ -29,7 +30,7 @@ import { agentEgressFor } from "../src/isolation/agent-egress";
 import { resolveBash, sanitizedAgentEnvironment } from "../src/isolation/environment";
 import { CLAUDE_CONTROL_PLANE_HOSTS, claudeLaunch } from "../src/isolation/run-network";
 import { startTcpRelay } from "../src/isolation/tcp-relay";
-import { sandboxCommand } from "../src/isolation/sandbox";
+import { sandboxCommand, type AgentFilesystemOptions } from "../src/isolation/sandbox";
 
 export interface RestoreStep {
   name: string;
@@ -236,15 +237,19 @@ export function livePrompt(hosts: LiveHosts): string {
   ].join("\n");
 }
 
+export const NOT_SIGNED_IN = "the Claude Code CLI is not signed in";
+
 export interface LiveVerdict { passed: boolean; problems: string[] }
 
 /** Reads Claude Code's stream-json output: the allowed command's `Bash` call must succeed, the refused one's must fail. */
 export function judgeLiveOutput(output: string, hosts: LiveHosts): LiveVerdict {
   const calls = new Map<string, string>();
   const errored = new Map<string, boolean>();
+  let notSignedIn = false;
   for (const line of output.split("\n")) {
-    let event: { message?: { content?: unknown } };
+    let event: { message?: { content?: unknown }; error?: unknown; result?: unknown };
     try { event = JSON.parse(line); } catch { continue; }
+    if (event.error === "authentication_failed" || (typeof event.result === "string" && event.result.includes("Not logged in"))) notSignedIn = true;
     const content = event.message?.content;
     if (!Array.isArray(content)) continue;
     for (const block of content as { type?: string; id?: string; name?: string; input?: { command?: string }; tool_use_id?: string; is_error?: boolean }[]) {
@@ -252,6 +257,7 @@ export function judgeLiveOutput(output: string, hosts: LiveHosts): LiveVerdict {
       if (block.type === "tool_result" && block.tool_use_id) errored.set(block.tool_use_id, block.is_error === true);
     }
   }
+  if (notSignedIn) return { passed: false, problems: [NOT_SIGNED_IN] };
   const problems: string[] = [];
   // Only the exact commands the prompt asked for count: a modified command proves nothing about the connection.
   const outcome = (host: string): boolean | undefined => {
@@ -274,24 +280,41 @@ export function liveArguments(): string[] {
 
 const LIVE_TIMEOUT_MS = 300_000;
 
+/**
+ * The environment and filesystem the live check gives Claude Code, as `runClaudeCode` does: the
+ * runner's `configDir` (else `CLAUDE_CONFIG_DIR`, else the service account's `~/.claude`) as
+ * `CLAUDE_CONFIG_DIR`, mounted writable, and the token variables as control-plane variables.
+ */
+export function liveFilesystemOptions(options: {
+  cli: string; base: Record<string, string>; credentials?: Record<string, string> | undefined;
+  configDir?: string | undefined; serviceHome?: string | undefined;
+  workspace: string; artifacts: string; home: string; scratch: string;
+}): AgentFilesystemOptions {
+  const configured = options.configDir ?? options.credentials?.CLAUDE_CONFIG_DIR ?? (options.serviceHome ? path.join(options.serviceHome, ".claude") : undefined);
+  if (!configured) throw new Error("cannot locate the Claude Code config directory: set the runner's configDir, CLAUDE_CONFIG_DIR or HOME");
+  const configDirectory = resolveFilesystemPath(configured);
+  const env = { ...options.base, ...options.credentials, CLAUDE_CONFIG_DIR: configDirectory, HOME: options.home, TMPDIR: options.scratch };
+  return { command: options.cli, env, workspace: options.workspace, artifacts: options.artifacts, home: options.home, scratch: options.scratch, writable: [configDirectory] };
+}
+
 /** Starts the real Claude Code CLI in the run's network namespace, exactly as the runner launches it, and judges its two `Bash` calls. */
 export async function runLiveClaudeCheck(options: {
   cli: string; scratch: string; workspace: string; base: Record<string, string>;
   egress: NonNullable<ReturnType<typeof agentEgressFor>>; hosts: LiveHosts;
   /** Credentials the CLI needs for its own control-plane connection. */
-  credentials?: Record<string, string>; timeoutMs?: number;
+  credentials?: Record<string, string>; configDir?: string | undefined; serviceHome?: string | undefined; timeoutMs?: number;
 }): Promise<LiveVerdict & { output: string }> {
   const directory = await mkdtemp(path.join(options.scratch, "live-"));
   const [artifacts, home, temporary] = ["artifacts", "home", "tmp"].map((name) => path.join(directory, name)) as [string, string, string];
   await Promise.all([artifacts, home, temporary].map((target) => mkdir(target, { recursive: true })));
-  const environment = { ...options.base, ...options.credentials, HOME: home, TMPDIR: temporary };
-  const configDirectory = options.credentials?.CLAUDE_CONFIG_DIR;
+  const filesystem = liveFilesystemOptions({ ...options, artifacts, home, scratch: temporary });
+  await mkdir(filesystem.env.CLAUDE_CONFIG_DIR!, { recursive: true });
   const launch = await claudeLaunch({
     command: options.cli,
-    environment,
+    environment: filesystem.env,
     artifactsDirectory: artifacts,
     egress: options.egress,
-    filesystem: { command: options.cli, env: environment, workspace: options.workspace, artifacts, home, scratch: temporary, ...(configDirectory ? { readable: [configDirectory] } : {}) },
+    filesystem,
     buildArguments: liveArguments,
   });
   try {
@@ -387,7 +410,7 @@ async function main(): Promise<number> {
         const credentials = Object.fromEntries(
           (["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"] as const).flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : [])),
         );
-        const result = await runLiveClaudeCheck({ cli: runner.command, scratch, workspace: work, base, egress, hosts, credentials });
+        const result = await runLiveClaudeCheck({ cli: runner.command, scratch, workspace: work, base, egress, hosts, credentials, configDir: runner.configDir, serviceHome: process.env.HOME });
         if (!result.passed) failures += 1;
         console.log(`${result.passed ? "PASS" : "FAIL"} live claude-code: Bash reaches ${hosts.allowed} and is refused ${hosts.refused}`);
         if (!result.passed) console.log(result.output.split("\n").slice(-15).join("\n"));

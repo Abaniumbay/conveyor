@@ -188,8 +188,12 @@ Claude Code agents, run the check with `--live`:**
 bun scripts/check-agent-egress.ts <repository-id> --config <dir> --runner <runner-id> --live
 ```
 
-It starts the real Claude Code CLI inside the run's namespace (it needs `CLAUDE_CODE_OAUTH_TOKEN`,
-`ANTHROPIC_API_KEY` or `CLAUDE_CONFIG_DIR` in your environment) with a prompt that runs one `Bash`
+It starts the real Claude Code CLI inside the run's namespace with the runner's sign-in, as a real run
+does: the runner's `configDir` (else `CLAUDE_CONFIG_DIR`, else `~/.claude`) is `CLAUDE_CONFIG_DIR`,
+mounted writable, and `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` are passed from your environment.
+**Run it as the account the service runs as**, with the same `PATH`, so it finds the same `claude` and
+sign-in; a CLI that is not signed in fails the check as "the Claude Code CLI is not signed in". It runs
+the runner's configured `command`; if that is not installed the error names it and the `PATH` searched. The CLI is started with a prompt that runs one `Bash`
 command against an allowed host and one against a refused host, and fails unless the first succeeds
 and the second is refused.
 
