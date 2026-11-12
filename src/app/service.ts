@@ -21,16 +21,16 @@ import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition
 import { ConveyorStore, type StoredIssue, type StoredQuestion } from "../db/store";
 import type { Harness } from "../harness/types";
 import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt, type WebhookSettings } from "../core/plugins";
-import { GitHubAdapter, GitHubTransportError } from "../plugins/github/shared/adapter";
+import { isSourceAccessDenied, type HookDeliveryAttempt, type ItemSourceClient } from "../source/client";
 import { followUpsFromBody } from "../source/managed-sections";
-import { GitHubRepositoryTrust } from "../plugins/github/shared/trust";
+import { RepositoryActorTrust, type ActorTrust } from "../source/trust";
 import { isIssueGone, type SourceIssue } from "../source/types";
 import type { DeliveredActors } from "../core/reconciler";
 import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
 import { changeAction, pushAndEnsureChange, recoverClosedChange } from "../codehost/actions";
-import { renderStatusComment } from "../plugins/github/items/status-comment";
+import { renderStatusComment } from "../source/status-comment";
 import { canonicalToolName } from "../tasks/aliases";
 import type { Feedback } from "../tasks/context";
 import { conveyorToolGuidance } from "../mcp/guidance";
@@ -75,7 +75,7 @@ import { withEventContext } from "../events/context";
 import type { WaitKind } from "../events/topics";
 import { WaitDispatcher } from "./wait-dispatcher";
 import type { DashboardSources, LiveIssueStatus } from "./dashboard-sources";
-import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../plugins/github/shared/call-meter";
+import { CALL_SOURCES, CallMeter, withCallSource, type CallSource, type CallSummary, type ProviderCallMeter } from "../source/calls";
 import type { FindingType } from "../db/review-findings";
 import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
 
@@ -88,16 +88,13 @@ const CODE_HOST_WRITES = new Set([
   "createFinding", "resolveFindingProjection", "resolveNativeFinding", "deleteBranch",
 ]);
 
-/** GitHub adapter methods that can change a source repository. */
-const GITHUB_WRITES = new Set([
+/** Item source methods that change a source repository; each is refused while the repository is paused. */
+const SOURCE_WRITES = new Set<string>([
   "setIssueType", "setIssueFieldValues", "setTitle", "setParent", "setDependencies",
   "replaceConveyorLabels", "replaceManagedProjectLabels", "upsertStatusComment", "addComment",
-  "createComment", "updateComment", "createReviewComment", "deleteBranchRef", "replyToReviewComment",
-  "reactToReviewComment", "reactToIssueComment", "replyToReviewThread", "resolveReviewThread",
-  "reactToReviewThread", "updateManagedSection", "ensurePullRequest", "setPullRequestChecklist",
-  "setPullRequestDescription", "retriggerLabel", "rerunJob", "squashMerge", "closeIssue",
-  "createChildIssue", "createIssue", "ensureLabels", "ensureWebhook", "pingHook", "redeliverHookDelivery",
-]);
+  "updateManagedSection", "closeIssue", "createChildIssue", "createIssue", "ensureLabels", "ensureWebhook",
+  "pingHook", "redeliverHookDelivery",
+] satisfies ReadonlyArray<keyof ItemSourceClient>);
 
 
 interface ActiveRun {
@@ -133,7 +130,7 @@ interface McpGrant {
 }
 
 /** What `conveyor doctor` and the dashboard show of the service's GitHub requests. */
-export interface GitHubCallReport extends GitHubCallSummary {
+export interface GitHubCallReport extends CallSummary {
   /** When counting started; a window reaching further back covers only the time since. */
   countingSince: string;
   windowMs: number;
@@ -155,8 +152,8 @@ interface ServiceImplementations {
   harnesses?: Record<string, Harness>;
   /** How long a stop-summary run may take; ten minutes by default. */
   stopSummaryTimeoutMs?: number;
-  /** Counts the GitHub requests of the adapter's transport; a fresh meter when it has none. */
-  githubCalls?: GitHubCallMeter;
+  /** Counts the item source's requests to its provider; a fresh meter when it has none. */
+  githubCalls?: ProviderCallMeter;
   /** Event sinks beyond the configured ones (an embedding application's own consumers). */
   eventSinks?: EventSink[];
 }
@@ -356,7 +353,7 @@ function hasTransientScriptCause(error: unknown): boolean {
 
 export class ConveyorService {
   readonly store: ConveyorStore;
-  readonly github: GitHubAdapter;
+  readonly itemSource: ItemSourceClient;
   readonly #codeHosts: CodeHostRegistry;
   readonly workspaceManager: WorkspaceManager;
   readonly #active = new Map<string, ActiveRun>();
@@ -440,7 +437,7 @@ export class ConveyorService {
   #retentionActive = 0;
   #githubCallTimer: ReturnType<typeof setInterval> | null = null;
   /** Counts every GitHub request this service makes, by why it was made. */
-  readonly githubCalls: GitHubCallMeter;
+  readonly githubCalls: ProviderCallMeter;
   /** Every committed change, published in order after its transaction; subscribers react to them. */
   readonly events: EventBus;
   /** The only way the dashboard and the CLI change anything. */
@@ -471,20 +468,20 @@ export class ConveyorService {
   readonly #plugins: PluginRegistry;
   readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
   readonly #manualGateApprovals: ManualGateApprovals;
-  readonly #issueTrust: GitHubRepositoryTrust;
+  readonly #issueTrust: ActorTrust;
 
   constructor(
     readonly config: ConveyorConfig,
     store: ConveyorStore,
-    github: GitHubAdapter,
+    itemSource: ItemSourceClient,
     implementations: ServiceImplementations = {},
   ) {
     this.store = store;
-    this.github = github;
-    this.#issueTrust = new GitHubRepositoryTrust(github);
+    this.itemSource = itemSource;
+    this.#issueTrust = new RepositoryActorTrust(itemSource);
     this.#plugins = implementations.plugins ?? new PluginRegistry([], pluginContext(config));
     this.#codeHosts = implementations.codeHosts ?? this.#plugins.codeHosts();
-    this.githubCalls = implementations.githubCalls ?? new GitHubCallMeter();
+    this.githubCalls = implementations.githubCalls ?? new CallMeter();
     this.events = new EventBus();
     store.events().attach(this.events);
     this.commands = new CommandBus(store.events());
@@ -538,7 +535,7 @@ export class ConveyorService {
 
   static async create(
     config: ConveyorConfig,
-    github: GitHubAdapter,
+    itemSource: ItemSourceClient,
     implementations: Pick<ServiceImplementations, "plugins" | "codeHosts" | "githubCalls"> = {},
   ): Promise<ConveyorService> {
     await ensureRuntimeDirectories(config);
@@ -549,9 +546,9 @@ export class ConveyorService {
     }
     // The snapshot is history, not a credential store: values that came from !secret are redacted.
     store.recordConfigSnapshot(config.hash, redactSecrets(config, config.secrets ?? []));
-    // The copy of GitHub lives in the database, so a restart does not read it all again.
-    github.useMirror?.(store.githubMirror(), config.settings.githubCache);
-    const service = new ConveyorService(config, store, github, implementations);
+    // The source's read cache lives in the database, so a restart does not read it all again.
+    itemSource.useMirror?.(store.githubMirror(), config.settings.githubCache);
+    const service = new ConveyorService(config, store, itemSource, implementations);
     const recovered = store.recoverInterruptedExecutions(config.hash);
     if (recovered.runs > 0 || recovered.stages > 0) {
       log.warn("Recovered interrupted work after restart", { runs: recovered.runs, stages: recovered.stages });
@@ -611,7 +608,7 @@ export class ConveyorService {
     const hookId = this.#webhookIds.get(repositoryId);
     if (!this.webhookUrl(repositoryId) || !address || hookId === undefined) return false;
     try {
-      await this.executionGitHub(repositoryId).pingHook(address, hookId);
+      await this.executionSource(repositoryId).pingHook(address, hookId);
       this.#webhookPingedAt.set(repositoryId, Date.now());
       return true;
     } catch (error) {
@@ -654,11 +651,11 @@ export class ConveyorService {
     const address = this.config.repositories[repositoryId]?.address;
     const hookId = this.#webhookIds.get(repositoryId);
     if (!address || hookId === undefined || this.#redeliveryDenied.has(repositoryId)) return 0;
-    let deliveries: Awaited<ReturnType<GitHubAdapter["listHookDeliveries"]>>;
+    let deliveries: HookDeliveryAttempt[];
     try {
-      deliveries = await this.github.listHookDeliveries(address, hookId);
+      deliveries = await this.itemSource.listHookDeliveries(address, hookId);
     } catch (error) {
-      if (error instanceof GitHubTransportError && /\(HTTP 40[34]\)/.test(`${error.stderr} ${error.message}`)) {
+      if (isSourceAccessDenied(error)) {
         this.#redeliveryDenied.add(repositoryId);
         log.warn("Cannot list webhook deliveries; missed deliveries are not redelivered", { repository: repositoryId }, error);
       } else {
@@ -677,7 +674,7 @@ export class ConveyorService {
     let redelivered = 0;
     for (const delivery of missed) {
       try {
-        await this.executionGitHub(repositoryId).redeliverHookDelivery(address, hookId, delivery.id);
+        await this.executionSource(repositoryId).redeliverHookDelivery(address, hookId, delivery.id);
         redelivered += 1;
       } catch (error) {
         if (error instanceof RepositoryPausedError) break;
@@ -706,7 +703,7 @@ export class ConveyorService {
   private async recordRepositoryTrustStatus(id: string, address: string): Promise<void> {
     const checkedAt = new Date().toISOString();
     try {
-      const visibility = await this.github.repositoryVisibility(address);
+      const visibility = await this.itemSource.repositoryVisibility(address);
       this.store.setRepositoryTrustStatus({ repositoryId: id, visibility, checkedAt, warning: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -795,7 +792,7 @@ export class ConveyorService {
         },
         stages: pipeline.stages.map((stage) => stage.id),
         labels: this.config.labels,
-        source: this.executionGitHub(id),
+        source: this.executionSource(id),
         trust: this.#issueTrust,
         extraTrustedLogins: repository.extraTrustedLogins ?? [],
         expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
@@ -878,7 +875,7 @@ export class ConveyorService {
   private async createIssueNow(repositoryId: string, title: string, body: string): Promise<{ issueId: string; number: number; url: string }> {
     const started = performance.now();
     const repository = this.config.repositories[repositoryId]!;
-    const created = await this.executionGitHub(repositoryId).createIssue({
+    const created = await this.executionSource(repositoryId).createIssue({
       address: repository.address, title, body, labels: [this.config.labels.enrollment],
     });
     const forgeDone = performance.now();
@@ -915,7 +912,7 @@ export class ConveyorService {
         repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
         stages: pipeline.stages.map((stage) => stage.id),
         labels: this.config.labels,
-        source: this.executionGitHub(repositoryId),
+        source: this.executionSource(repositoryId),
         trust: { isTrusted: async () => true },
         extraTrustedLogins: repository.extraTrustedLogins ?? [],
         expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
@@ -931,7 +928,7 @@ export class ConveyorService {
 
   private async runRepositorySync(repositoryId: string): Promise<{ issues: number; failed: boolean }> {
     // A sync reads everything again: nothing held about the repository is reused.
-    this.github.forgetRepository?.(this.config.repositories[repositoryId]!.address);
+    this.itemSource.forgetRepository?.(this.config.repositories[repositoryId]!.address);
     this.forgetRelationships(repositoryId, this.store.listIssues(repositoryId).map((issue) => issue.sourceNumber));
     await this.reconcileOne(repositoryId, "full", { verifyTrust: true });
     await this.backfillCiIndicators(repositoryId);
@@ -956,7 +953,7 @@ export class ConveyorService {
       if (issue.sourceState !== "open" || !issue.labels.includes(this.config.labels.enrollment)) continue;
       if (issue.metadata.fieldsSyncedAt === issue.sourceUpdatedAt) continue;
       try {
-        const values = await this.github.getIssueFieldValues(repository.address, issue.sourceNumber);
+        const values = await this.itemSource.getIssueFieldValues(repository.address, issue.sourceNumber);
         const configured = Object.fromEntries(Object.entries(values).filter(([name]) =>
           refinement.fields.some((field) => field.toLocaleLowerCase() === name.toLocaleLowerCase())));
         this.store.setIssueMetadata(issue.id, { fields: configured, fieldsSyncedAt: issue.sourceUpdatedAt });
@@ -1013,7 +1010,7 @@ export class ConveyorService {
     this.#startupCompleted = false;
     this.#startupFailed = false;
     for (const id of Object.keys(this.config.repositories)) this.#startupRepositories.set(id, "waiting");
-    void withGitHubCallSource("startup", async () => {
+    void withCallSource("startup", async () => {
       await this.recoverWorkspaceScratch();
       await Promise.all(Object.entries(this.config.repositories).map(async ([id, repository]) => {
         const startedAt = Date.now();
@@ -1071,12 +1068,12 @@ export class ConveyorService {
     await this.recordRepositoryTrustStatus(id, repository.address);
     if (this.store.repositoryPause(id)) return;
     try {
-      await this.executionGitHub(id).ensureLabels(repository.address, labelDefinitions(this.config, id));
+      await this.executionSource(id).ensureLabels(repository.address, labelDefinitions(this.config, id));
       const webhook = this.webhookSettings(repository.source);
       const url = this.webhookUrl(id);
       if (webhook && url) {
         if (!webhook.secret) throw new Error(`a webhook secret is required for webhooks: set webhookSecret on the items provider ${repository.source}`);
-        this.#webhookIds.set(id, await this.executionGitHub(id).ensureWebhook({ address: repository.address, url, secret: webhook.secret }));
+        this.#webhookIds.set(id, await this.executionSource(id).ensureWebhook({ address: repository.address, url, secret: webhook.secret }));
       }
       if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
     } catch (error) {
@@ -1097,7 +1094,7 @@ export class ConveyorService {
   /** The last hour of GitHub requests by source and repository, with the token's remaining rate limit. */
   async githubCallReport(): Promise<GitHubCallReport> {
     let rateLimit: GitHubCallReport["rateLimit"] = null;
-    try { rateLimit = (await this.github.rateLimit()).core; }
+    try { rateLimit = (await this.itemSource.rateLimit()).core; }
     catch { rateLimit = null; }
     return { countingSince: this.githubCalls.startedAt, windowMs: GITHUB_CALL_SUMMARY_MS, ...this.githubCalls.summary(GITHUB_CALL_SUMMARY_MS), rateLimit };
   }
@@ -1108,10 +1105,10 @@ export class ConveyorService {
    */
   async logGitHubCalls(): Promise<void> {
     const summary = this.githubCalls.summary(GITHUB_CALL_SUMMARY_MS);
-    const counts = (bySource: Partial<Record<GitHubCallSource, number>>) =>
-      Object.fromEntries(GITHUB_CALL_SOURCES.filter((source) => bySource[source]).map((source) => [source, bySource[source]!]));
-    let limits: Awaited<ReturnType<GitHubAdapter["rateLimit"]>> | null = null;
-    try { limits = await this.github.rateLimit(); }
+    const counts = (bySource: Partial<Record<CallSource, number>>) =>
+      Object.fromEntries(CALL_SOURCES.filter((source) => bySource[source]).map((source) => [source, bySource[source]!]));
+    let limits: Awaited<ReturnType<ItemSourceClient["rateLimit"]>> | null = null;
+    try { limits = await this.itemSource.rateLimit(); }
     catch (error) { log.warn("Could not read the GitHub rate limit", {}, error); }
     const core = limits?.core ?? null;
     log.info("GitHub calls in the last hour", {
@@ -1196,7 +1193,7 @@ export class ConveyorService {
     if (this.#shuttingDown || this.#startupRunning || this.#tickRunning) return;
     this.#tickRunning = true;
     try {
-      await withGitHubCallSource("tick", async () => {
+      await withCallSource("tick", async () => {
         await this.reconcileAll({ skipFresh: true });
         await this.recoverClosedItems();
       });
@@ -1219,7 +1216,7 @@ export class ConveyorService {
         const leftOpen = this.stoppedForIssueLeftOpen(repositoryId, issue);
         if (leftOpen) {
           const repository = this.config.repositories[repositoryId];
-          if (repository) this.github.forgetIssue?.(repository.address, issue.sourceNumber);
+          if (repository) this.itemSource.forgetIssue?.(repository.address, issue.sourceNumber);
         } else if (issue.projectionChangedAt > before) continue;
         await this.recoverClosedItem(repositoryId, issue);
       }
@@ -1246,7 +1243,7 @@ export class ConveyorService {
     if (!repository) return;
     let sourceIssue: SourceIssue;
     try {
-      sourceIssue = deliveredIssue ?? await this.executionGitHub(repositoryId).getIssue(repository.address, issue.sourceNumber);
+      sourceIssue = deliveredIssue ?? await this.executionSource(repositoryId).getIssue(repository.address, issue.sourceNumber);
     } catch (error) {
       log.warn("Could not read an item for closed-item recovery", this.itemFields(issue.id), error);
       return;
@@ -1295,7 +1292,7 @@ export class ConveyorService {
       const enrollment = this.store.getActiveEnrollment(issue.id);
       await applyClosedItemOffboarding({
         store: this.store,
-        source: this.executionGitHub(repositoryId),
+        source: this.executionSource(repositoryId),
         sourceName: repository.source,
         address: repository.address,
         transitionId: `closed-item-offboard:${issue.id}:${enrollment?.generation ?? "untracked"}`,
@@ -1344,7 +1341,7 @@ export class ConveyorService {
       }
       const applied = await applyStageTransition({
         store: this.store,
-        source: this.executionGitHub(repositoryId),
+        source: this.executionSource(repositoryId),
         sourceName: repository.source,
         address: repository.address,
         configHash: this.config.hash,
@@ -1397,7 +1394,7 @@ export class ConveyorService {
       repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
       stages: pipeline.stages.map((stage) => stage.id),
       labels: this.config.labels,
-      source: this.executionGitHub(repositoryId),
+      source: this.executionSource(repositoryId),
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
@@ -1538,7 +1535,7 @@ export class ConveyorService {
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
       // A stage run outlives the sync that scheduled it, so it must not inherit that sync's held lock.
-      void this.#heldRepositoryLocks.exit(() => withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal, candidate.gateOnly === true))).finally(() => {
+      void this.#heldRepositoryLocks.exit(() => withCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal, candidate.gateOnly === true))).finally(() => {
         this.#active.delete(issue.id);
         this.store.events().append("worker.released", { stageId: candidate.stageId }, { issueId: issue.id });
         if (this.#drain && !active.interrupted) {
@@ -1853,7 +1850,7 @@ export class ConveyorService {
   private async pollAdvisoryCi(): Promise<void> {
     if (this.#shuttingDown || this.#advisoryPolling) return;
     this.#advisoryPolling = true;
-    try { await withGitHubCallSource("advisory", () => this.#advisoryWatches.pollDueWatches(Date.now())); }
+    try { await withCallSource("advisory", () => this.#advisoryWatches.pollDueWatches(Date.now())); }
     finally { this.#advisoryPolling = false; }
     if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
     this.#advisoryTimer = null;
@@ -1867,7 +1864,7 @@ export class ConveyorService {
   }
 
   /** Why a stage run starts: an early wake of a parked task, its wake-up time passing, or other stage work. */
-  private executionCallSource(issueId: string): GitHubCallSource {
+  private executionCallSource(issueId: string): CallSource {
     const woken = this.#wokenEarly.delete(issueId);
     if (this.store.executions().getCursor(issueId)?.state !== "pending") return "stage";
     return woken ? "wait" : "fallback";
@@ -2082,7 +2079,7 @@ export class ConveyorService {
     return {
       store: this.store,
       config: this.config,
-      items: this.executionGitHub(repository.id),
+      items: this.executionSource(repository.id),
       repository,
       issueId,
       sourceGuidance: SOURCE_GUIDANCE,
@@ -2349,7 +2346,7 @@ export class ConveyorService {
       config: this.config,
       store: this.store,
       sourceName: repository.source,
-      source: this.executionGitHub(issue.repositoryId),
+      source: this.executionSource(issue.repositoryId),
       workspaceManager: this.workspaceManager,
       recoverWorkspaceChange: async (currentIssue, currentRepository, workspace) => {
         const codeHost = this.executionCodeHost(currentIssue.id, this.codeHostFor(currentRepository.id));
@@ -2549,7 +2546,7 @@ export class ConveyorService {
   /** Probes GitHub for an item waiting out an outage; true when it answers. */
   private async githubHealthy(repositoryId: string): Promise<boolean> {
     try {
-      await this.executionGitHub(repositoryId).rateLimit();
+      await this.executionSource(repositoryId).rateLimit();
       return true;
     } catch {
       return false;
@@ -2568,7 +2565,7 @@ export class ConveyorService {
     });
     await applyStageTransition({
       store: this.store,
-      source: this.executionGitHub(issue.repositoryId),
+      source: this.executionSource(issue.repositoryId),
       sourceName: repository.source,
       address: repository.address,
       configHash: this.config.hash,
@@ -2674,7 +2671,7 @@ export class ConveyorService {
   /** Drops the cached GitHub reads of the item's change request, so the next read sees what a push did. */
   private forgetChange(issueId: string, address: string): void {
     const stored = this.store.getCurrentPullRequest(issueId);
-    if (stored) this.github.forgetChange(address, stored.number);
+    if (stored) this.itemSource.forgetChange?.(address, stored.number);
   }
 
   private async loadDeliveryState(
@@ -2755,13 +2752,13 @@ export class ConveyorService {
   }
 
   /** Fences every item-task source mutation at the durable repository pause boundary. */
-  private executionGitHub(repositoryId: string): GitHubAdapter {
+  private executionSource(repositoryId: string): ItemSourceClient {
     const store = this.store;
-    return new Proxy(this.github, {
+    return new Proxy(this.itemSource, {
       get(target, property, receiver) {
         const value: unknown = Reflect.get(target, property, receiver);
         if (typeof value !== "function") return value;
-        if (!GITHUB_WRITES.has(String(property))) return value.bind(target) as unknown;
+        if (!SOURCE_WRITES.has(String(property))) return value.bind(target) as unknown;
         return async (...args: unknown[]) => {
           if (store.repositoryPause(repositoryId)) throw new RepositoryPausedError();
           return Reflect.apply(value, target, args) as unknown;
@@ -2857,7 +2854,7 @@ export class ConveyorService {
     // Run artifacts are found through the run records, so they go before the records do.
     for (const runId of this.store.listRunIdsForIssue(issueId)) await removeRunArtifacts(this.config.settings.artifacts, runId);
     this.store.finishPurge(issueId);
-    this.github.forgetIssue?.(repository.address, issue.sourceNumber);
+    this.itemSource.forgetIssue?.(repository.address, issue.sourceNumber);
     log.info("Item purged", { issue: issueId, number: issue.sourceNumber });
     this.schedule();
   }
@@ -2938,7 +2935,7 @@ export class ConveyorService {
       },
       stages: pipeline.stages.map((stage) => stage.id),
       labels: this.config.labels,
-      source: this.executionGitHub(repositoryId),
+      source: this.executionSource(repositoryId),
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
@@ -2966,7 +2963,7 @@ export class ConveyorService {
     const followUpBodies = this.followUpBodies(repositoryId);
     const issues = (await Promise.all([...new Set(numbers)].map(async (number) => {
       try {
-        return await this.github.getIssue(repository.address, number);
+        return await this.itemSource.getIssue(repository.address, number);
       } catch (error) {
         if (!isIssueGone(error)) throw error;
         // 404/410: the issue is gone, which is the same as having no Conveyor labels.
@@ -2981,7 +2978,7 @@ export class ConveyorService {
       repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
       stages: pipeline.stages.map((stage) => stage.id),
       labels: this.config.labels,
-      source: this.executionGitHub(repositoryId),
+      source: this.executionSource(repositoryId),
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
@@ -3016,8 +3013,8 @@ export class ConveyorService {
     // Healthy webhooks report relationship changes, so a read is trusted for longer.
     const reuseMs = this.webhookUrl(issue.repositoryId) ? HEALTHY_RELATIONSHIP_REUSE_MS : RELATIONSHIP_REUSE_MS;
     if (cached && cached.updatedAt === issue.sourceUpdatedAt && Date.now() - cached.readAt < reuseMs) return cached;
-    const children = await this.github.listSubIssues(address, issue.sourceNumber);
-    const dependencies = await this.github.listDependencies(address, issue.sourceNumber);
+    const children = await this.itemSource.listSubIssues(address, issue.sourceNumber);
+    const dependencies = await this.itemSource.listDependencies(address, issue.sourceNumber);
     const read = { updatedAt: issue.sourceUpdatedAt, readAt: Date.now(), children, dependencies };
     this.#relationships.set(issue.id, read);
     return read;
@@ -3086,7 +3083,7 @@ export class ConveyorService {
     doneLabel: string | undefined,
   ): Promise<void> {
     if (this.store.repositoryPause(repositoryId)) return;
-    const github = this.executionGitHub(repositoryId);
+    const github = this.executionSource(repositoryId);
     const repository = this.config.repositories[repositoryId]!;
     const stageLabel = parent.projectedStage
       ? [this.config.labels.stageTemplate.replace("{stage}", parent.projectedStage)]
@@ -3210,7 +3207,7 @@ export class ConveyorService {
       if (error instanceof RepositoryPausedError) throw error;
       // GitHub can apply the close and still answer with an error (a 422 was seen in production), so
       // the issue's state decides: a closed issue is a completed close, not a failure to retry.
-      const observed = await this.github.getIssue(address, parent.sourceNumber).catch(() => null);
+      const observed = await this.itemSource.getIssue(address, parent.sourceNumber).catch(() => null);
       if (observed?.state === "closed") {
         this.store.completeSourceMutation(closeMutation.id, { state: observed.state, stateReason: observed.stateReason ?? null });
         this.recordClosedRollupParent(parent, observed);
@@ -3427,7 +3424,7 @@ export class ConveyorService {
           try {
             applied = await applyRollupTransition({
               store: this.store,
-              source: this.executionGitHub(repositoryId),
+              source: this.executionSource(repositoryId),
               sourceName: this.config.repositories[repositoryId]!.source,
               address,
               configHash: this.config.hash,
@@ -3688,11 +3685,11 @@ export class ConveyorService {
     if (callId) {
       const prior = grant.calls.get(callId);
       if (prior) return prior;
-      const call = withEventContext({ actor: { kind: "agent", id: grant.runId } }, () => withGitHubCallSource("agent", () => this.handleMcpRequest(payload, grant)));
+      const call = withEventContext({ actor: { kind: "agent", id: grant.runId } }, () => withCallSource("agent", () => this.handleMcpRequest(payload, grant)));
       grant.calls.set(callId, call);
       return call;
     }
-    return withEventContext({ actor: { kind: "agent", id: grant.runId } }, () => withGitHubCallSource("agent", () => this.handleMcpRequest(payload, grant)));
+    return withEventContext({ actor: { kind: "agent", id: grant.runId } }, () => withCallSource("agent", () => this.handleMcpRequest(payload, grant)));
   }
 
   private async handleMcpRequest(payload: unknown, grant: McpGrant): Promise<unknown> {
@@ -4015,7 +4012,7 @@ export class ConveyorService {
       }
       return;
     }
-    const work = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withGitHubCallSource("webhook", async () => {
+    const work = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withCallSource("webhook", async () => {
       await this.applyCiEvent(repositoryId, event)
         .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: event.type }, error));
       if (isEventOf(event, "itemSource.itemChanged")) {
@@ -4087,7 +4084,7 @@ export class ConveyorService {
       repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
       stages: pipeline.stages.map((stage) => stage.id),
       labels: this.config.labels,
-      source: this.executionGitHub(repositoryId),
+      source: this.executionSource(repositoryId),
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
@@ -4341,7 +4338,7 @@ export class ConveyorService {
     repository: ConveyorConfig["repositories"][string],
   ): Promise<void> {
     this.assertRepositoryActive(issue.repositoryId);
-    const github = this.executionGitHub(issue.repositoryId);
+    const github = this.executionSource(issue.repositoryId);
     // Before replying, only what resuming needs: the source's needs-input label goes first (a sync
     // that still saw it would stop the item again), then the parked agent wakes. Mirroring the answer
     // as a comment, re-syncing the repository and the status comment follow in the background.
@@ -4445,7 +4442,7 @@ export class ConveyorService {
   async #answerFollowUp(issueId: string, questionId: string, response: string, address: string, sourceNumber: number, source: string, scheduled = false): Promise<boolean> {
     const issue = this.store.getIssue(issueId);
     if (!issue || this.store.repositoryPause(issue.repositoryId)) return false;
-    const github = this.executionGitHub(issue.repositoryId);
+    const github = this.executionSource(issue.repositoryId);
     // The answer is mirrored as an issue comment once, retried a few times when the source is unavailable.
     const mirrorKey = `question-answer:${questionId}`;
     if (!this.#answerMirrorsInFlight.has(mirrorKey)) {
@@ -4975,7 +4972,7 @@ export class ConveyorService {
     // have moved on since (checked, then unchecked), so skip only when it is the last write.
     if (mutation.status === "succeeded" && this.#statusCommentDigests.get(issue.id) === digest) return;
     try {
-      const commentId = await this.executionGitHub(issue.repositoryId).upsertStatusComment(
+      const commentId = await this.executionSource(issue.repositoryId).upsertStatusComment(
         repository.address,
         issue.sourceNumber,
         markdown,
@@ -5077,7 +5074,7 @@ export class ConveyorService {
       });
       if (mutation.status !== "succeeded") {
         try {
-          await this.executionGitHub(issue.repositoryId).replaceConveyorLabels(
+          await this.executionSource(issue.repositoryId).replaceConveyorLabels(
             repository.address,
             issue.sourceNumber,
             labels,
@@ -5127,7 +5124,7 @@ export class ConveyorService {
     const issue = this.store.getIssue(issueId);
     const repository = issue && this.config.repositories[issue.repositoryId];
     if (!issue || !repository) throw new Error("item is not on this configured board");
-    const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+    const live = await this.itemSource.getIssue(repository.address, issue.sourceNumber);
     const recordedStop = latestStop(this.store, issueId);
     const evidenceText = evidence.trim();
     if (!evidenceText) throw new Error("scheduled retry evidence must not be blank");
@@ -5171,7 +5168,7 @@ export class ConveyorService {
     if (!issue || !repository || issue.projectedState === "unlisted") throw new Error("question belongs to an ineligible board item");
     let evidenceText: string | undefined;
     try {
-      const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+      const live = await this.itemSource.getIssue(repository.address, issue.sourceNumber);
       evidenceText = evidence.trim();
       if (!evidenceText) throw new Error("scheduled answer evidence must not be blank");
       const sources = [live.title, live.body, ...criteriaOf(live.body).map((criterion) => criterion.text), ...this.store.listConversationMessages(issue.id).map((message) => message.message)];
@@ -5366,7 +5363,7 @@ export class ConveyorService {
       const priorMutation = this.store.getLatestSourceMutationByKeyPrefix(stopMutationKeyPrefix);
       const stopLabels = Object.entries(this.config.labels.states)
         .flatMap(([state, label]) => state === "done" ? [] : [label]);
-      const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+      const live = await this.itemSource.getIssue(repository.address, issue.sourceNumber);
       const sourceAlreadyResumed = live.number === issue.sourceNumber &&
         live.state === "open" &&
         live.labels.includes(this.config.labels.enrollment) &&
@@ -5397,7 +5394,7 @@ export class ConveyorService {
       }
       // The local relationship projection can lag a user unlinking every child.
       // Read GitHub at the mutation boundary so a stale action cannot resume a non-parent.
-      if ((await this.github.listSubIssues(repository.address, issue.sourceNumber)).length === 0) {
+      if ((await this.itemSource.listSubIssues(repository.address, issue.sourceNumber)).length === 0) {
         throw new Error("roll-up parent no longer has children; refresh before resuming waiting for children");
       }
 
@@ -5420,7 +5417,7 @@ export class ConveyorService {
       });
       if (mutation.status !== "succeeded") {
         try {
-          await this.executionGitHub(issue.repositoryId).replaceConveyorLabels(
+          await this.executionSource(issue.repositoryId).replaceConveyorLabels(
             repository.address,
             issue.sourceNumber,
             conveyorLabels,
@@ -5429,7 +5426,7 @@ export class ConveyorService {
           this.store.completeSourceMutation(mutation.id, { labels: conveyorLabels });
         } catch (error) {
           if (error instanceof RepositoryPausedError) throw error;
-          const observed = await this.github.getIssue(repository.address, issue.sourceNumber).catch(() => null);
+          const observed = await this.itemSource.getIssue(repository.address, issue.sourceNumber).catch(() => null);
           if (observed?.state === "open" && observed.labels.includes(this.config.labels.enrollment) &&
             !observed.labels.some((label) => stopLabels.includes(label))) {
             this.store.completeSourceMutation(mutation.id, { labels: observed.labels });
@@ -5465,7 +5462,7 @@ export class ConveyorService {
       }
       const pipeline = this.config.pipelines[repository.pipeline];
       if (!pipeline) throw new Error("issue pipeline is not configured");
-      const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+      const live = await this.itemSource.getIssue(repository.address, issue.sourceNumber);
       const evaluated = evaluateIssueState({
         sourceState: live.state,
         sourceLabels: live.labels,
@@ -5504,7 +5501,7 @@ export class ConveyorService {
         },
       });
       try {
-        await this.executionGitHub(issue.repositoryId).replaceConveyorLabels(
+        await this.executionSource(issue.repositoryId).replaceConveyorLabels(
           repository.address,
           issue.sourceNumber,
           conveyorLabels,
@@ -5620,7 +5617,7 @@ export class ConveyorService {
     const resumedAt = new Date().toISOString();
     // A paused cleanup has already recorded its source-mutation intent. Retry it immediately
     // after the write fence lifts instead of making a just-closed item wait for the hourly pass.
-    await withGitHubCallSource("command", async () => {
+    await withCallSource("command", async () => {
       for (const issue of this.store.listRecoveryCandidates(repositoryId, resumedAt)) {
         await this.recoverClosedItem(repositoryId, issue);
       }
@@ -5679,7 +5676,7 @@ export class ConveyorService {
     if (!repository) return;
     for (const issue of this.store.listPendingPauseRelabels().sort((left, right) => left.sourceNumber - right.sourceNumber)) {
       if (issue.repositoryId !== repositoryId) continue;
-      const live = await this.executionGitHub(repositoryId).getIssue(repository.address, issue.sourceNumber);
+      const live = await this.executionSource(repositoryId).getIssue(repository.address, issue.sourceNumber);
       if (live.state === "open") {
         const labels = [...new Set([...this.conveyorLabels(live.labels), this.config.labels.enrollment, this.config.labels.metadata.paused])].sort((left, right) => left.localeCompare(right));
         await this.replaceLabelsRecorded(issue, repository, "issue.labels.upgrade-pause", labels);
@@ -5694,7 +5691,7 @@ export class ConveyorService {
     const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
     if (!issue || !repository || issue.projectedState === "unlisted") throw new Error("item not found");
     this.assertRepositoryActive(issue.repositoryId);
-    const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+    const live = await this.itemSource.getIssue(repository.address, issue.sourceNumber);
     if (live.state !== "open") throw new Error("the item is closed");
     if (!live.labels.includes(this.config.labels.enrollment)) throw new Error("the item has left Conveyor (it has no conveyor label)");
     return { issue, repository, live };
@@ -5716,7 +5713,7 @@ export class ConveyorService {
       request: { issueId: issue.id, issueNumber: issue.sourceNumber, labels },
     });
     try {
-      await this.executionGitHub(issue.repositoryId).replaceConveyorLabels(
+      await this.executionSource(issue.repositoryId).replaceConveyorLabels(
         repository.address,
         issue.sourceNumber,
         labels,

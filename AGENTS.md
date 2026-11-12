@@ -57,7 +57,7 @@ Run these from the repository root.
 | `src/config/` | `schema.ts` (zod schemas), loader, packaged defaults, migration. |
 | `src/core/plugins.ts` | The plugin contract and registry: item source, code host, CI, harness and presentation plugins by `type`. |
 | `src/plugins/` | Plugin implementations, one folder per provider and one per role inside it: `github/{shared,items,code,ci}`, `codex/`, `claude-code/`, and `dashboard/` (the dashboard's view models in `views.ts`, its live feed in `feed.ts`). `index.ts` is the list the composition root registers. |
-| `src/source/`, `src/codehost/` | Item source and code host ports (`types.ts`: `ItemReader`, `ItemSections`, `ItemMarkers`, … combined as `ItemTracker`), Conveyor's managed-section codec (`managed-sections.ts`), item types and fields (`item-metadata.ts`), and provider-neutral change actions. |
+| `src/source/`, `src/codehost/` | Item source and code host ports (`types.ts`: `ItemReader`, `ItemSections`, `ItemMarkers`, … combined as `ItemTracker`; `client.ts`: the service-only ports combined as `ItemSourceClient`, the type the service holds instead of a provider client), call metering and the reason each request is made (`calls.ts`), who may act (`trust.ts`), the status comment (`status-comment.ts`), Conveyor's managed-section codec (`managed-sections.ts`), item types and fields (`item-metadata.ts`), and provider-neutral change actions. |
 | `src/harness/`, `src/runner/` | The harness port (`harness/types.ts`) and the process runners behind the Codex and Claude Code plugins. |
 | `src/isolation/` | Sanitized agent environment, network sandbox, egress proxies. |
 | `src/web/` | `server.ts` (HTTP routes, SSE), `model.ts` (the live dashboard model and its patches), `render.tsx` (Preact markup), `types.ts` (view models), `styles.ts` (CSS), `app/` (the browser application: `main.tsx`, `store.ts`, `derive.ts`, `behaviour.ts`). |
@@ -194,8 +194,8 @@ a service mutation directly.
 
 1. Extend the port, not its callers: add the smallest method or interface the consumer needs to
    the port (`src/codehost/types.ts`, `src/app/ci-provider.ts`, `src/harness/types.ts`,
-   `src/source/types.ts`), implement it in the provider or harness module, and give the consumer
-   only that interface.
+   `src/source/types.ts`, `src/source/client.ts`), implement it in the provider or harness
+   module, and give the consumer only that interface.
 2. Keep provider vocabulary (labels, issue numbers, check runs, `Closes #N`) inside the provider
    module; the core speaks of items, changes, checks and markers.
 3. Put the implementation in its plugin folder (`src/plugins/<provider>/<role>/`), declare it with

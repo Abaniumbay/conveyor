@@ -529,8 +529,8 @@ test("concurrent status refreshes for an issue share one source-comment write", 
   const w = await setup();
   let active = 0;
   let maximum = 0;
-  const upsert = w.service.github.upsertStatusComment.bind(w.service.github);
-  w.service.github.upsertStatusComment = async (...args) => {
+  const upsert = w.service.itemSource.upsertStatusComment.bind(w.service.itemSource);
+  w.service.itemSource.upsertStatusComment = async (...args) => {
     active += 1;
     maximum = Math.max(maximum, active);
     await Bun.sleep(5);

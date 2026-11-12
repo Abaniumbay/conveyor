@@ -14,7 +14,8 @@ import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
 import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
-import { GitHubCallMeter, MeteredGitHubTransport, currentGitHubCallSource, githubRoute } from "../../src/plugins/github/shared/call-meter";
+import { MeteredGitHubTransport, githubRoute } from "../../src/plugins/github/shared/call-meter";
+import { CallMeter, currentCallSource } from "../../src/source/calls";
 import { githubPlugins } from "../support/plugins";
 import { GitHubSimulator } from "../support/github-simulator";
 import { GitHubReadCache } from "../../src/plugins/github/shared/read-cache";
@@ -42,7 +43,7 @@ class Tap implements GitHubTransport {
   readonly calls: Recorded[] = [];
   constructor(private readonly inner: GitHubTransport) {}
   request<T>(request: GitHubTransportRequest): Promise<T> {
-    this.calls.push({ at: Date.now(), source: currentGitHubCallSource(), call: `${request.method} ${githubRoute(request.path)}` });
+    this.calls.push({ at: Date.now(), source: currentCallSource(), call: `${request.method} ${githubRoute(request.path)}` });
     return this.inner.request<T>(request);
   }
 }
@@ -129,7 +130,7 @@ repositories:
   const config = await loadConfig(path.join(root, "config.yml"));
   const simulator = new GitHubSimulator();
   const tap = new Tap(simulator);
-  const meter = new GitHubCallMeter();
+  const meter = new CallMeter();
   const github = new GitHubAdapter(new GitHubReadCache(new MeteredGitHubTransport(tap, meter)), "conveyor");
   // Background issues: open, not enrolled, as in a real repository.
   for (let number = 1; number <= options.openIssues; number += 1) simulator.addIssue(ADDRESS, { number, labels: ["bug"] });

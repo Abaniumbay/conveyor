@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import { renderStatusComment } from "../../../../src/plugins/github/items/status-comment";
+import { renderStatusComment } from "../../src/source/status-comment";
 
-describe("GitHub status comment renderer", () => {
+describe("status comment renderer", () => {
   test("renders issue progress, criteria evidence, relationships, run data, and delivery state", () => {
     expect(renderStatusComment({
       issue: { number: 42, title: "Ship status", state: "open" },

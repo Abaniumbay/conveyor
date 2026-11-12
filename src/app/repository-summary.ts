@@ -6,8 +6,8 @@ import { isLightweightRepositoryStage } from "./stage-capacity";
 import type { ConveyorConfig } from "../config/load";
 import type { ConversationStore, EvidenceStore, ItemStore, JournalStore, ReportStore, RunLogStore } from "../db/ports";
 import type { StoredIssue } from "../db/store";
-import type { GitHubCallSummary } from "../plugins/github/shared/call-meter";
-import { publicRepositoryTrustPolicy } from "../plugins/github/shared/trust";
+import type { CallSummary } from "../source/calls";
+import { publicRepositoryTrustPolicy } from "../source/trust";
 import { concise, displayName } from "../tasks/agent-support";
 
 export type RepositoryItemState = "Running" | "Queued" | "Waiting" | "Needs you" | "Blocked";
@@ -104,7 +104,7 @@ export interface BuildRepositorySummariesInput {
   /** Per repository: whether its webhook delivers; absent until checked. */
   webhookHealth?: ReadonlyMap<string, boolean>;
   /** The service's GitHub requests of the last hour. */
-  githubCalls?: GitHubCallSummary;
+  githubCalls?: CallSummary;
   now?: Date;
 }
 

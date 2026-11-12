@@ -83,7 +83,7 @@ function optionalLine(label: string, value: string | undefined): string | undefi
 
 function issueNumber(number: number): string {
   if (!Number.isSafeInteger(number) || number <= 0) {
-    throw new RangeError(`invalid GitHub issue number: ${number}`);
+    throw new RangeError(`invalid issue number: ${number}`);
   }
   return `#${number}`;
 }
@@ -138,7 +138,7 @@ function section(title: string, lines: readonly (string | undefined)[]): string[
   return content.length === 0 ? [] : [`### ${title}`, ...content];
 }
 
-/** Render a deterministic, plain Markdown status comment for a GitHub issue. */
+/** Render a deterministic, plain Markdown status comment for an item. */
 export function renderStatusComment(input: StatusCommentInput): string {
   const lines = [
     `## Conveyor status: ${issueNumber(input.issue.number)} — ${text(input.issue.title)}`,

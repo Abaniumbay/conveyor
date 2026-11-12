@@ -1,9 +1,10 @@
 import type { ItemsPlugin, PluginContext } from "../../../core/plugins";
-import { githubClient, type GitHubClient } from "../shared/client";
+import type { ItemSourceConnection } from "../../../source/client";
+import { githubClient } from "../shared/client";
 import { githubSourceSchema } from "./config";
 import { githubWebhookReceiver } from "./webhook";
 
-/** GitHub Issues as the item source: today its webhook deliveries; the tracker ports join with #673. */
+/** GitHub Issues as the item source: its webhook deliveries here, its client through `githubItems`. */
 export const githubItemsPlugin: ItemsPlugin = {
   role: "items",
   type: "github",
@@ -11,10 +12,8 @@ export const githubItemsPlugin: ItemsPlugin = {
   create: (context) => ({ webhook: githubWebhookReceiver(context) }),
 };
 
-/**
- * The GitHub client the service still uses for items until the tracker ports exist (#673), so this
- * returns the client rather than a port.
- */
-export function githubItems(context: PluginContext): GitHubClient {
-  return githubClient(context);
+/** GitHub Issues as the service's item source: the shared GitHub client, behind the item source ports. */
+export function githubItems(context: PluginContext): ItemSourceConnection {
+  const { adapter, calls } = githubClient(context);
+  return { client: adapter, calls };
 }

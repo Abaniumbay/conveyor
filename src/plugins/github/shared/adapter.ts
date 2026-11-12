@@ -3,7 +3,8 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import { z } from "zod";
 
 import type { GitHubCacheLifetimes, GitHubMirrorStorage } from "./read-cache";
-import type { ItemTracker, PullRequestReference, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../../../source/types";
+import type { ItemSourceClient } from "../../../source/client";
+import type { PullRequestReference, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../../../source/types";
 import type { IssueFieldDataType, IssueFieldDefinition, ResolvedFieldValue } from "../../../source/item-metadata";
 import {
   parseManagedSections,
@@ -51,6 +52,11 @@ export class GitHubTransportError extends Error {
     readonly stderr: string,
   ) {
     super(message);
+  }
+
+  /** GitHub refused the request for a missing permission; it answers 404 as well as 403 to hide what exists. */
+  get accessDenied(): boolean {
+    return /\(HTTP 40[34]\)/.test(`${this.stderr} ${this.message}`);
   }
 }
 
@@ -383,7 +389,7 @@ interface CachingTransport extends GitHubTransport {
 const caching = (transport: GitHubTransport): transport is CachingTransport =>
   "applyDelivery" in transport && "forgetRepository" in transport && "forgetChange" in transport && "forgetIssue" in transport;
 
-export class GitHubAdapter implements ItemTracker {
+export class GitHubAdapter implements ItemSourceClient {
   constructor(
     private readonly transport: GitHubTransport,
     private readonly labelPrefix: string,

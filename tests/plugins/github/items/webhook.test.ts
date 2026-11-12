@@ -4,7 +4,7 @@ import { createHmac } from "node:crypto";
 import type { ConveyorConfig } from "../../../../src/config/load";
 import { pluginContext } from "../../../../src/core/plugins";
 import { githubClient } from "../../../../src/plugins/github/shared/client";
-import { GitHubCallMeter } from "../../../../src/plugins/github/shared/call-meter";
+import { CallMeter } from "../../../../src/source/calls";
 import type { GitHubAdapter } from "../../../../src/plugins/github/shared/adapter";
 import { githubWebhookReceiver } from "../../../../src/plugins/github/items/webhook";
 
@@ -20,7 +20,7 @@ const config = {
 function receiver(applied: Array<[string, unknown]> = []) {
   const context = pluginContext(config);
   const adapter = { applyDelivery: (eventType: string, payload: unknown) => { applied.push([eventType, payload]); } } as unknown as GitHubAdapter;
-  githubClient(context, () => ({ adapter, calls: new GitHubCallMeter() }));
+  githubClient(context, () => ({ adapter, calls: new CallMeter() }));
   return githubWebhookReceiver(context);
 }
 
