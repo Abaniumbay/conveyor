@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Operator verification for agent egress enforcement (needs the real network; not part of `bun test`).
-// Usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--home <conveyor-home>] [--runner <claude-code-runner-id>]
+// Usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--home <conveyor-home>] [--runner <claude-code-runner-id> [--live]]
 //
 // Clones the repository locally, runs its dependency restore inside the network sandbox with an empty
 // task-scoped cache and only the repository's `agentEgress.httpsHosts` reachable, then proves that
@@ -11,7 +11,13 @@
 // With `--runner <id>` naming a Claude Code runner, it also launches probes the way the Claude Code
 // runner does: the process itself may reach only the runner's `controlPlaneHosts` (through the
 // token-protected control-plane proxy), its commands (`CLAUDE_CODE_SHELL_PREFIX`) only `httpsHosts`,
-// and neither may reach api.github.com or a direct IP.
+// and neither may reach api.github.com or a direct IP. Commands are run exactly as Claude Code runs
+// them: the prefix gets ONE argument, a command string.
+//
+// With `--live` (needs a Claude Code runner, its CLI and credentials) it also starts the real Claude
+// Code CLI inside the run's namespace with a prompt that runs one `Bash` command against an allowed
+// host and one against a refused host, and fails unless the first succeeds and the second is refused.
+// Without `--live` the real CLI is not exercised, and the output says so.
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -81,13 +87,14 @@ const CURL = "curl -sS --max-time 15 -o /dev/null";
 
 /**
  * Probes for a Claude Code run, executed by `sh -c` as the Claude Code process would be: plain `curl`
- * is the process (control-plane proxy), `"$CLAUDE_CODE_SHELL_PREFIX" curl` (quoted: one executable path, as Claude Code runs it) is one of its `Bash` commands.
+ * is the process (control-plane proxy), `"$CLAUDE_CODE_SHELL_PREFIX" '<command string>'` (one executable path, one argument, as Claude Code runs it) is one of its `Bash` commands.
  */
 export function claudeCodeChecks(options: { httpsHosts: readonly string[]; controlPlaneHosts: readonly string[] }): SandboxCheck[] {
   const [control] = options.controlPlaneHosts;
   const allowed = options.httpsHosts.find((host) => !options.controlPlaneHosts.includes(host));
   const command = (name: string, script: string, expectFailure: boolean): SandboxCheck => ({ name, argv: ["sh", "-c", script], expectFailure });
-  const prefixed = (curl: string): string => `"$CLAUDE_CODE_SHELL_PREFIX" ${curl}`;
+  // One argument: the whole command string, as Claude Code calls the prefix.
+  const prefixed = (command: string): string => `"$CLAUDE_CODE_SHELL_PREFIX" ${quote(command)}`;
   const checks: SandboxCheck[] = [];
   if (control) {
     checks.push(command(`claude-code process reaches its control-plane host ${control}`, `${CURL} ${quote(`https://${control}`)}`, false));
@@ -101,7 +108,7 @@ export function claudeCodeChecks(options: { httpsHosts: readonly string[]; contr
     command("claude-code command: api.github.com is refused", prefixed(`${CURL} https://api.github.com`), true),
     command("claude-code command: direct IP connection is refused", prefixed(`${CURL} --noproxy '*' https://1.1.1.1`), true),
     command("claude-code process: api.github.com is refused", `${CURL} https://api.github.com`, true),
-    command("claude-code command does not receive the control-plane credential", prefixed(`sh -c 'case "$HTTPS_PROXY" in *conveyor:*) exit 1;; esac'`), false),
+    command("claude-code command does not receive the control-plane credential", prefixed(`case "$HTTPS_PROXY" in *conveyor:*) exit 1;; esac`), false),
   );
   return checks;
 }
@@ -202,6 +209,98 @@ async function runClaudeCodeCheck(options: {
   }
 }
 
+export interface LiveHosts { allowed: string; refused: string }
+
+/** The hosts the live check probes: the first non-control `httpsHosts` entry, and one outside `httpsHosts`. */
+export function liveHosts(options: { httpsHosts: readonly string[]; controlPlaneHosts: readonly string[] }): LiveHosts | undefined {
+  const allowed = options.httpsHosts.find((host) => !options.controlPlaneHosts.includes(host));
+  if (!allowed) return undefined;
+  const refused = ["api.github.com", "example.com"].find((host) => !options.httpsHosts.includes(host) && !options.controlPlaneHosts.includes(host));
+  return refused ? { allowed, refused } : undefined;
+}
+
+const liveCommand = (host: string): string => `${CURL} https://${host}`;
+
+/** The prompt for the real CLI: two `Bash` calls, one per host, reported verbatim. */
+export function livePrompt(hosts: LiveHosts): string {
+  return [
+    "This is a network policy check. Use the Bash tool exactly twice, one command per call, in this order, and do not retry or modify either command:",
+    `1. ${liveCommand(hosts.allowed)}`,
+    `2. ${liveCommand(hosts.refused)}`,
+    "Then reply with one line saying whether each command succeeded.",
+  ].join("\n");
+}
+
+export interface LiveVerdict { passed: boolean; problems: string[] }
+
+/** Reads Claude Code's stream-json output: the allowed command's `Bash` call must succeed, the refused one's must fail. */
+export function judgeLiveOutput(output: string, hosts: LiveHosts): LiveVerdict {
+  const calls = new Map<string, string>();
+  const errored = new Map<string, boolean>();
+  for (const line of output.split("\n")) {
+    let event: { message?: { content?: unknown } };
+    try { event = JSON.parse(line); } catch { continue; }
+    const content = event.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content as { type?: string; id?: string; name?: string; input?: { command?: string }; tool_use_id?: string; is_error?: boolean }[]) {
+      if (block.type === "tool_use" && block.name === "Bash" && block.id && typeof block.input?.command === "string") calls.set(block.id, block.input.command);
+      if (block.type === "tool_result" && block.tool_use_id) errored.set(block.tool_use_id, block.is_error === true);
+    }
+  }
+  const problems: string[] = [];
+  const outcome = (host: string): boolean | undefined => {
+    const found = [...calls].find(([, command]) => command.includes(host));
+    return found ? errored.get(found[0]) : undefined;
+  };
+  const allowed = outcome(hosts.allowed);
+  const refused = outcome(hosts.refused);
+  if (allowed === undefined) problems.push(`no completed Bash command against ${hosts.allowed}`);
+  else if (allowed) problems.push(`the Bash command against allowed host ${hosts.allowed} failed`);
+  if (refused === undefined) problems.push(`no completed Bash command against ${hosts.refused}`);
+  else if (!refused) problems.push(`the Bash command against ${hosts.refused} succeeded; it must be refused`);
+  return { passed: problems.length === 0, problems };
+}
+
+/** Claude Code's arguments for the live check: only `Bash`, no user settings, no prompts. */
+export function liveArguments(): string[] {
+  return ["-p", "--output-format", "stream-json", "--verbose", "--setting-sources", "", "--tools", "Bash", "--allowedTools", "Bash", "--permission-mode", "dontAsk"];
+}
+
+const LIVE_TIMEOUT_MS = 300_000;
+
+/** Starts the real Claude Code CLI in the run's network namespace, exactly as the runner launches it, and judges its two `Bash` calls. */
+export async function runLiveClaudeCheck(options: {
+  cli: string; scratch: string; workspace: string; base: Record<string, string>;
+  egress: NonNullable<ReturnType<typeof agentEgressFor>>; hosts: LiveHosts;
+  /** Credentials the CLI needs for its own control-plane connection. */
+  credentials?: Record<string, string>; timeoutMs?: number;
+}): Promise<LiveVerdict & { output: string }> {
+  const directory = await mkdtemp(path.join(options.scratch, "live-"));
+  const [artifacts, home, temporary] = ["artifacts", "home", "tmp"].map((name) => path.join(directory, name)) as [string, string, string];
+  await Promise.all([artifacts, home, temporary].map((target) => mkdir(target, { recursive: true })));
+  const environment = { ...options.base, ...options.credentials, HOME: home, TMPDIR: temporary };
+  const configDirectory = options.credentials?.CLAUDE_CONFIG_DIR;
+  const launch = await claudeLaunch({
+    command: options.cli,
+    environment,
+    artifactsDirectory: artifacts,
+    egress: options.egress,
+    filesystem: { command: options.cli, env: environment, workspace: options.workspace, artifacts, home, scratch: temporary, ...(configDirectory ? { readable: [configDirectory] } : {}) },
+    buildArguments: liveArguments,
+  });
+  try {
+    const child = Bun.spawn(launch.argv, { cwd: options.workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    child.stdin.write(livePrompt(options.hosts));
+    void child.stdin.end();
+    const timer = setTimeout(() => child.kill(), options.timeoutMs ?? LIVE_TIMEOUT_MS);
+    const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]).finally(() => clearTimeout(timer));
+    const verdict = judgeLiveOutput(out, options.hosts);
+    return { ...verdict, output: verdict.passed ? out : `${verdict.problems.join("\n")}\n${err || out}` };
+  } finally {
+    await launch.network.close();
+  }
+}
+
 /** Loads the configuration for the check; with the Conveyor home, `!include builtin:` entrypoints resolve. */
 export function loadCheckConfig(target: string, home?: string): Promise<ConveyorConfig> {
   return loadConfig(target, null, home ? { home } : {});
@@ -212,13 +311,15 @@ async function main(): Promise<number> {
   const repositoryId = args[0];
   const configDirectory = args[args.indexOf("--config") + 1];
   if (!repositoryId || args.indexOf("--config") < 0 || !configDirectory) {
-    console.error("usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--home <conveyor-home>] [--runner <claude-code-runner-id>]");
+    console.error("usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--home <conveyor-home>] [--runner <claude-code-runner-id> [--live]]");
     return 2;
   }
+  const live = args.includes("--live");
   const runnerId = args.includes("--runner") ? args[args.indexOf("--runner") + 1] : undefined;
   const homeIndex = args.indexOf("--home");
   const home = homeIndex >= 0 ? args[homeIndex + 1] : undefined;
   if (homeIndex >= 0 && !home) throw new Error("--home needs the Conveyor home directory");
+  if (live && !runnerId) throw new Error("--live needs --runner <claude-code-runner-id>");
   const config = await loadCheckConfig(configDirectory, home);
   const runner = runnerId ? config.runners[runnerId] : undefined;
   if (runnerId && runner?.type !== "claude-code") throw new Error(`--runner ${runnerId} must name a configured claude-code runner`);
@@ -267,6 +368,19 @@ async function main(): Promise<number> {
         const result = await runClaudeCodeCheck({ check, scratch, workspace: work, base, egress });
         if (!result.passed) failures += 1;
         console.log(`${result.passed ? "PASS" : "FAIL"} ${check.name}${result.passed ? "" : ` (exit ${result.exitCode})`}`);
+        if (!result.passed) console.log(result.output.split("\n").slice(-15).join("\n"));
+      }
+      if (!live) {
+        console.log("NOTE the real Claude Code CLI was not exercised; run again with --live before turning on agentEgress for Claude Code agents");
+      } else {
+        const hosts = liveHosts({ httpsHosts: repository.agentEgress.httpsHosts, controlPlaneHosts });
+        if (!hosts) throw new Error("--live needs an httpsHosts entry that is not a control-plane host");
+        const credentials = Object.fromEntries(
+          (["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"] as const).flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : [])),
+        );
+        const result = await runLiveClaudeCheck({ cli: runner.command, scratch, workspace: work, base, egress, hosts, credentials });
+        if (!result.passed) failures += 1;
+        console.log(`${result.passed ? "PASS" : "FAIL"} live claude-code: Bash reaches ${hosts.allowed} and is refused ${hosts.refused}`);
         if (!result.passed) console.log(result.output.split("\n").slice(-15).join("\n"));
       }
     }

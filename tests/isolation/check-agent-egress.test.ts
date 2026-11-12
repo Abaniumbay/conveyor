@@ -2,10 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import net from "node:net";
 import path from "node:path";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
-import { claudeCodeChecks, loadCheckConfig, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
+import { claudeCodeChecks, judgeLiveOutput, liveArguments, liveHosts, livePrompt, loadCheckConfig, runLiveClaudeCheck, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
@@ -71,15 +71,86 @@ describe("claudeCodeChecks", () => {
     expect(find("process reaches its control-plane host api.anthropic.com")).toMatchObject({ expectFailure: false });
     expect(find("process reaches its control-plane host").argv[2]).not.toContain("CLAUDE_CODE_SHELL_PREFIX");
     expect(find("process is refused non-control host registry.npmjs.org")).toMatchObject({ expectFailure: true });
-    expect(find("command reaches allowed host registry.npmjs.org").argv[2]).toStartWith('"$CLAUDE_CODE_SHELL_PREFIX" curl');
+    expect(find("command reaches allowed host registry.npmjs.org").argv[2]).toStartWith(`"$CLAUDE_CODE_SHELL_PREFIX" 'curl`);
     expect(find("command is refused the control-plane host")).toMatchObject({ expectFailure: true });
   });
 
   test("checks the GitHub API and direct IP denials for commands and the credential separation", () => {
     expect(find("command: api.github.com is refused").expectFailure).toBe(true);
-    expect(find("command: direct IP connection is refused").argv[2]).toContain("--noproxy '*' https://1.1.1.1");
+    expect(find("command: direct IP connection is refused").argv[2]).toContain("--noproxy");
     expect(find("process: api.github.com is refused").expectFailure).toBe(true);
     expect(find("does not receive the control-plane credential").expectFailure).toBe(false);
+  });
+});
+
+describe("claudeCodeChecks calling convention", () => {
+  test("every prefixed probe passes the prefix exactly one quoted argument", () => {
+    const prefixed = claudeCodeChecks({ httpsHosts: ["registry.npmjs.org"], controlPlaneHosts: ["api.anthropic.com"] }).filter((check) => check.argv[2]!.includes("CLAUDE_CODE_SHELL_PREFIX"));
+    expect(prefixed.length).toBeGreaterThan(4);
+    for (const check of prefixed) expect(check.argv[2]).toMatch(/^"\$CLAUDE_CODE_SHELL_PREFIX" '(?:[^']|'\\'')*'$/);
+  });
+});
+
+describe("live Claude Code check", () => {
+  const hosts = { allowed: "registry.fake.test", refused: "api.github.com" };
+  const events = (allowedError: boolean, refusedError: boolean) => [
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "a", name: "Bash", input: { command: `curl https://${hosts.allowed}` } }] } },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "a", is_error: allowedError }] } },
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "b", name: "Bash", input: { command: `curl https://${hosts.refused}` } }] } },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b", is_error: refusedError }] } },
+  ].map((event) => JSON.stringify(event)).join("\n");
+
+  test("picks an allowed non-control host and a refused host outside httpsHosts", () => {
+    expect(liveHosts({ httpsHosts: ["api.github.com", "registry.npmjs.org"], controlPlaneHosts: ["api.anthropic.com"] })).toEqual({ allowed: "api.github.com", refused: "example.com" });
+    expect(liveHosts({ httpsHosts: ["api.anthropic.com"], controlPlaneHosts: ["api.anthropic.com"] })).toBeUndefined();
+    expect(livePrompt(hosts)).toContain(`https://${hosts.refused}`);
+    expect(liveArguments()).toContain("stream-json");
+  });
+
+  test("passes only when the allowed command succeeds and the refused one fails", () => {
+    expect(judgeLiveOutput(events(false, true), hosts)).toEqual({ passed: true, problems: [] });
+    expect(judgeLiveOutput(events(true, true), hosts).passed).toBe(false);
+    expect(judgeLiveOutput(events(false, false), hosts).problems.join()).toContain("must be refused");
+    expect(judgeLiveOutput("", hosts).problems).toHaveLength(2);
+  });
+
+  const unavailableLive = bwrapUnavailableReason();
+  test.skipIf(unavailableLive !== undefined)("starts the CLI binary in the run's namespace and fails when the refused command is not refused", async () => {
+    const directory = await shortTemporaryDirectory("egress-live-", { socketPath: "artifacts/live-x/artifacts/net/control.sock", visibleInSandbox: true });
+    const servers: net.Server[] = [];
+    try {
+      const cli = path.join(directory, "claude");
+      // Stub CLI: runs both commands through the real command prefix (one string argument) and reports them as stream-json.
+      await writeFile(cli, `#!/usr/bin/env bun
+const prompt = await new Response(Bun.stdin.stream()).text();
+const out = (event) => console.log(JSON.stringify(event));
+const probe = (host) => 'bun -e \'const s=require("node:net").connect(Number(new URL(process.env.HTTPS_PROXY).port),"127.0.0.1");let r="";s.on("data",c=>{r+=c;process.exit(r.split(" ")[1]==="200"?0:1)});s.write("CONNECT ${"$"}{host}:443 HTTP/1.1\\r\\nHost: ${"$"}{host}:443\\r\\n\\r\\n")\'';
+let id = 0;
+for (const host of ["registry.fake.test", "api.github.com"]) {
+  const key = String(id++);
+  out({ type: "assistant", message: { content: [{ type: "tool_use", id: key, name: "Bash", input: { command: "curl https://" + host } }] } });
+  const result = Bun.spawnSync([process.env.CLAUDE_CODE_SHELL_PREFIX, probe(host).replaceAll("${"$"}{host}", host)], { env: process.env });
+  out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: key, is_error: result.exitCode !== 0 }] } });
+}
+if (!prompt.includes("registry.fake.test") || !process.argv.includes("Bash")) process.exit(3);
+`);
+      await chmod(cli, 0o755);
+      const model = net.createServer((socket) => socket.on("error", () => {}));
+      servers.push(model);
+      await new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve));
+      const port = (model.address() as net.AddressInfo).port;
+      const workspace = path.join(directory, "workspace");
+      await mkdir(workspace);
+      const egress = { httpsHosts: ["registry.fake.test"], resolve: async () => ["203.0.113.1"], dial: () => net.connect(port, "127.0.0.1") };
+      const result = await runLiveClaudeCheck({ cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "" }, egress, hosts: { allowed: "registry.fake.test", refused: "api.github.com" } });
+      expect(result.problems).toEqual([]);
+      expect(result.passed).toBe(true);
+      const permissive = await runLiveClaudeCheck({ cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "" }, egress: { ...egress, httpsHosts: ["registry.fake.test", "api.github.com"] }, hosts: { allowed: "registry.fake.test", refused: "api.github.com" } });
+      expect(permissive.passed).toBe(false);
+    } finally {
+      for (const server of servers) server.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 

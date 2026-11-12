@@ -172,8 +172,10 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
 
 /**
  * Writes the executable `CLAUDE_CODE_SHELL_PREFIX` names. Claude Code runs the prefix as one program
- * path, never as a word-split command line, so the policy lives in a script: it removes the variables
- * the harness holds for itself, sets the data-plane proxy environment and `exec`s its arguments.
+ * path, never as a word-split command line, and hands it exactly one argument: a complete command
+ * string written for its own shell (`$SHELL`). It also launches MCP servers this way, as one string.
+ * So the policy lives in a script that removes the variables the harness holds for itself, sets the
+ * data-plane proxy environment and runs that string with `$SHELL -c` (`/bin/sh` when unset).
  * Returns the script's path, which contains no whitespace.
  */
 export async function writeClaudeShellPrefix(file: string, dataEnv: Record<string, string>): Promise<string> {
@@ -182,7 +184,7 @@ export async function writeClaudeShellPrefix(file: string, dataEnv: Record<strin
     "#!/bin/sh",
     `unset ${CLAUDE_COMMAND_UNSET.join(" ")}`,
     ...Object.entries(dataEnv).map(([name, value]) => `export ${name}=${shellQuote(value)}`),
-    'exec "$@"',
+    'exec "${SHELL:-/bin/sh}" -c "$1"',
     "",
   ];
   await writeFile(file, lines.join("\n"), { mode: 0o755 });
