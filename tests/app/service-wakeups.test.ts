@@ -12,6 +12,7 @@ import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
 import { renderDashboard } from "../support/render-dashboard";
 import { githubPlugins } from "../support/plugins";
+import { dashboardViews } from "../support/dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -279,7 +280,7 @@ describe("persisted wake-ups", () => {
     addRunningHolder(first.store, config, 4);
     const before = first.store.getIssue("issue")!;
 
-    const board = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
+    const board = dashboardViews(first.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
     expect(board.selectedIssue).toMatchObject({
       state: "active",
       working: false,
@@ -287,7 +288,7 @@ describe("persisted wake-ups", () => {
       reason: null,
     });
     expect(board.selectedIssue!.waiting!.reason).not.toContain("slots");
-    expect(first.service.issueDetails("csrf", "issue")).toMatchObject({
+    expect(dashboardViews(first.service).issueDetails("csrf", "issue")).toMatchObject({
       waiting: { kind: "waiting", reason: "Waiting for dependencies: #2, #3" },
       reason: null,
     });
@@ -300,21 +301,21 @@ describe("persisted wake-ups", () => {
       id: "second-blocker", repositoryId: "repo", sourceNumber: 3, sourceUrl: "https://example.test/3", title: "Second blocker", body: "",
       sourceState: "closed", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-02T00:00:00Z",
     });
-    const queued = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    const queued = dashboardViews(first.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
     expect(queued).toMatchObject({
       state: "active",
       waiting: { kind: "queued", reason: "global runner slots 1/1 busy: #4; implementation slots 1/1 busy: #4; repo slots 1/1 busy: #4" },
       reason: null,
     });
-    expect(first.service.issueDetails("csrf", "issue")).toMatchObject({
+    expect(dashboardViews(first.service).issueDetails("csrf", "issue")).toMatchObject({
       waiting: { kind: "queued", reason: "global runner slots 1/1 busy: #4; implementation slots 1/1 busy: #4; repo slots 1/1 busy: #4" },
       reason: null,
     });
 
     first.store.setStageState({ issueId: "holder", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
-    const cleared = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    const cleared = dashboardViews(first.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
     expect(cleared).toMatchObject({ state: "active", waiting: null, reason: null });
-    expect(first.service.issueDetails("csrf", "issue")).toMatchObject({ waiting: null, reason: null });
+    expect(dashboardViews(first.service).issueDetails("csrf", "issue")).toMatchObject({ waiting: null, reason: null });
     expect(first.store.getIssue("issue")).toMatchObject({
       projectedStage: before.projectedStage,
       projectedState: before.projectedState,
@@ -406,7 +407,7 @@ describe("persisted wake-ups", () => {
 
     schedule(first.service);
     expect(first.executed).toContain("issue");
-    const dashboard = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "parent" });
+    const dashboard = dashboardViews(first.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "parent" });
     expect(dashboard.selectedIssue?.children).toEqual([expect.objectContaining({ id: "blocker", satisfied: true })]);
     await first.service.close();
   });
@@ -453,7 +454,7 @@ describe("persisted wake-ups", () => {
       currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
       updateStatusComment(issueId: string): Promise<void>;
     };
-    const queuedCard = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    const queuedCard = dashboardViews(first.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
     expect(queuedCard).toMatchObject({ waiting: { kind: "queued" }, reason: null });
     expect(internals.currentIssueStatus(first.store.getIssue("issue")!)).toEqual({
       kind: "queued",
@@ -540,7 +541,7 @@ describe("persisted wake-ups", () => {
     internals.retryLater = (issueId, _delayMs) => retry(issueId, 0);
     first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "error", feedbackCycle: 0, configHash: config.hash });
     await internals.handleInfrastructureFailure(first.store.getIssue("issue")!, new Error("runner unavailable"));
-    expect(first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting)
+    expect(dashboardViews(first.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting)
       .toMatchObject({ kind: "waiting", reason: "Execution failed: runner unavailable" });
 
     const deadline = Date.now() + 1_000;
@@ -562,10 +563,10 @@ describe("persisted wake-ups", () => {
 
     const query = { view: "board" as const, column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" };
     const deadline = Date.now() + 1_000;
-    let dashboard = service.dashboard("csrf", query);
+    let dashboard = dashboardViews(service).dashboard("csrf", query);
     while (dashboard.selectedIssue?.waiting?.kind !== "waiting" && Date.now() < deadline) {
       await Bun.sleep(10);
-      dashboard = service.dashboard("csrf", query);
+      dashboard = dashboardViews(service).dashboard("csrf", query);
     }
     expect(dashboard.selectedIssue?.waiting).toMatchObject({
       kind: "waiting",
@@ -653,7 +654,7 @@ describe("persisted wake-ups", () => {
     schedule(first.service);
     expect(first.executed).toEqual([]);
     expect(first.store.getStageState("issue")?.status).toBe("waiting-in-flight");
-    const card = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    const card = dashboardViews(first.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
     expect(card).toMatchObject({ waiting: { kind: "waiting", reason: "Waiting for an in-progress slot in repo: #2" } });
 
     // The holder leaves the code pipeline: the waiter is promoted without an operator retry.
@@ -661,7 +662,7 @@ describe("persisted wake-ups", () => {
     first.store.setStageState({ issueId: "holder", stageId: "release", status: "ready", feedbackCycle: 0, configHash: config.hash });
     schedule(first.service);
     expect(first.store.getStageState("issue")?.status).not.toBe("waiting-in-flight");
-    expect(first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting?.reason ?? "")
+    expect(dashboardViews(first.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting?.reason ?? "")
       .not.toContain("in-progress slot");
     await first.service.close();
   });
@@ -675,7 +676,7 @@ describe("persisted wake-ups", () => {
     schedule(first.service);
 
     expect(first.store.getStageState("issue")?.status).toBe("waiting-in-flight");
-    const card = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    const card = dashboardViews(first.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
     expect(card?.waiting?.reason ?? "").not.toContain("in-progress slot");
     await first.service.close();
   });

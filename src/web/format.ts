@@ -1,3 +1,15 @@
+/** A configured id (a stage, a runner, a state) as words: `needs-input` reads "Needs Input", `ci` reads "CI". */
+export function displayName(value: string): string {
+  const acronyms = new Set(["api", "ci", "qa", "sre", "ui", "ux"]);
+  return value
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => acronyms.has(part.toLowerCase())
+      ? part.toUpperCase()
+      : `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+}
+
 export function formatDuration(durationMs: number): string {
   const totalSeconds = Math.max(0, Math.round(durationMs / 1_000));
   const hours = Math.floor(totalSeconds / 3_600);

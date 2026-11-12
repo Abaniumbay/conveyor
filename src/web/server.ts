@@ -17,10 +17,9 @@ import { isFindingType } from "../engine/finding-types";
 import { pwaIcons, pwaManifest, serviceWorker } from "./pwa";
 import { notificationClient } from "./notifications-client";
 import { themeInitScript } from "./styles";
-import { SUPERUSER_ENTITIES, type DashboardItem, type DashboardModel, type DashboardPatch } from "./model";
+import { SUPERUSER_ENTITIES, type DashboardFeedListener, type DashboardFeedSubscription, type DashboardItem, type DashboardModel, type DashboardPatch } from "./model";
 import { dashboardAppBundle } from "./app-bundle";
 import { dashboardAppShell } from "./app-shell";
-import type { DashboardFeedListener, DashboardFeedSubscription } from "../app/dashboard-feed";
 import type { AgentProfileViewModel, DashboardPageSelection, RecentActivityViewModel, SteeringViewModel, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
@@ -79,6 +78,13 @@ export interface WebHandlerDependencies {
   getAgentProfile: (agentId: string) => AgentProfileViewModel | null | Promise<AgentProfileViewModel | null>;
   maxBodyBytes?: number;
 }
+
+/** The dashboard's reads: what the dashboard plugin serves to these routes. */
+export type DashboardReads = Pick<WebHandlerDependencies,
+  | "getIssueDetails" | "getDashboardSnapshot" | "subscribeDashboardFeed" | "getDashboardFeedStatus" | "getDashboardDone"
+  | "getRecentActivity" | "getSteeringView" | "getSteeringRun" | "getSteeringEvents" | "getIssueActivity" | "getIssueRunEvents"
+  | "getIssueConversation" | "getIssueJourney"
+>;
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 export { PROFILE_AVATARS } from "./account-pages";

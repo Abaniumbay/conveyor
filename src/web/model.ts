@@ -95,6 +95,19 @@ export const dashboardPatchSchema = z.object({
 }).strict();
 export type DashboardPatch = z.infer<typeof dashboardPatchSchema>;
 
+/** What the live feed sends an open dashboard: a patch of the model, or a new server status. */
+export type DashboardFeedMessage =
+  | { kind: "patch"; patch: DashboardPatch }
+  | { kind: "status"; status: SystemStatusViewModel };
+
+export type DashboardFeedListener = (message: DashboardFeedMessage) => void;
+
+export interface DashboardFeedSubscription {
+  /** Patches the dashboard missed since the sequence it named, or null when they are no longer all kept. */
+  replay: DashboardPatch[] | null;
+  unsubscribe(): void;
+}
+
 const modelShape = z.object({
   items: z.record(z.string(), z.record(z.string(), z.unknown())),
   stages: z.record(z.string(), z.record(z.string(), z.unknown())),

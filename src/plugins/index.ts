@@ -4,10 +4,11 @@
 import type { Plugin } from "../core/plugins";
 import { claudeCodePlugin } from "./claude-code";
 import { codexPlugin } from "./codex";
+import { dashboardPlugin } from "./dashboard";
 import { githubActions } from "./github/ci";
 import { githubCode } from "./github/code";
 import { githubItemsPlugin } from "./github/items";
 
 export { githubItems } from "./github/items";
 
-export const PLUGINS: readonly Plugin[] = [githubItemsPlugin, githubCode, githubActions, codexPlugin, claudeCodePlugin];
+export const PLUGINS: readonly Plugin[] = [githubItemsPlugin, githubCode, githubActions, codexPlugin, claudeCodePlugin, dashboardPlugin];

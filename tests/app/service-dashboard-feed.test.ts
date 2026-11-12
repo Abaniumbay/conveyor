@@ -3,12 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { DashboardFeedMessage } from "../../src/app/dashboard-feed";
+import type { DashboardFeedMessage } from "../../src/web/model";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
 import type { DashboardPatch } from "../../src/web/model";
+import { webDependenciesOf } from "../support/dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -74,7 +75,7 @@ repositories:
     async replaceConveyorLabels() {},
   };
   const service = new ConveyorService(config, store, github as never);
-  const web = service.webDependencies({} as never, "operator");
+  const web = webDependenciesOf(service, {} as never, "operator");
   return { store, service, source, web };
 }
 

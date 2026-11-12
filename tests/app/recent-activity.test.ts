@@ -7,6 +7,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import type { DashboardPageSelection, RecentActivityType } from "../../src/web/types";
+import { dashboardViews } from "../support/dashboard";
 
 const directories: string[] = [];
 
@@ -56,10 +57,10 @@ describe("Recent activity dashboard", () => {
     const now = spyOn(Date, "now").mockReturnValue(new Date("2026-10-15T12:00:00.000Z").valueOf());
     try {
       const service = new ConveyorService(config, store, {} as never);
-      const first = service.dashboard("csrf", page()).recent!;
+      const first = dashboardViews(service).dashboard("csrf", page()).recent!;
       expect(first.events).toHaveLength(48);
       expect(first.nextCursor).not.toBeNull();
-      const second = service.dashboard("csrf", page([], [], first.nextCursor)).recent!;
+      const second = dashboardViews(service).dashboard("csrf", page([], [], first.nextCursor)).recent!;
       expect(second.events).toHaveLength(4);
       expect(second.nextCursor).toBeNull();
       expect([...first.events, ...second.events].map((event) => event.id)).toHaveLength(52);
@@ -120,16 +121,16 @@ describe("Recent activity dashboard", () => {
     const now = spyOn(Date, "now").mockReturnValue(new Date("2026-10-15T12:30:00.000Z").valueOf());
     try {
       const service = new ConveyorService(config, store, {} as never);
-      const all = service.dashboard("csrf", page()).recent!;
+      const all = dashboardViews(service).dashboard("csrf", page()).recent!;
       expect(all.events.map((event) => event.type)).toEqual(["done", "moved-forward", "done", "sent-back", "stopped", "new", "resumed"]);
       expect(all.events.find((event) => event.issueNumber === 20)).toMatchObject({ type: "done", occurredAt: "2026-10-15T12:09:30.000Z" });
       expect(all.events.filter((event) => event.issueNumber === 20 && event.type === "done")).toHaveLength(1);
       expect(all.events.find((event) => event.issueNumber === 21)).toMatchObject({ type: "done", occurredAt: "2026-10-15T12:08:30.000Z" });
       expect(all.events.some((event) => event.issueNumber === 7)).toBe(false);
 
-      const doneAndStopped = service.dashboard("csrf", page(["done", "stopped"])).recent!;
+      const doneAndStopped = dashboardViews(service).dashboard("csrf", page(["done", "stopped"])).recent!;
       expect(doneAndStopped.events.map((event) => event.type)).toEqual(["done", "done", "stopped"]);
-      expect(service.dashboard("csrf", page([], ["alpha"])).recent!.events.every((event) => event.repository === "alpha")).toBe(true);
+      expect(dashboardViews(service).dashboard("csrf", page([], ["alpha"])).recent!.events.every((event) => event.repository === "alpha")).toBe(true);
       expect(all.types).not.toContain("rollup");
 
       for (let index = 0; index < 501; index += 1) {
@@ -139,10 +140,10 @@ describe("Recent activity dashboard", () => {
         store.completeStageTransition(`transition-${id}`);
         store.sqlite().query("UPDATE stage_transitions SET created_at = ? WHERE id = ?").run("2026-10-15T12:00:00.000Z", `transition-${id}`);
       }
-      const bounded = service.dashboard("csrf", page(["stopped"], ["alpha"])).recent!;
+      const bounded = dashboardViews(service).dashboard("csrf", page(["stopped"], ["alpha"])).recent!;
       expect(bounded.events).toEqual([]);
       expect(bounded.nextCursor).not.toBeNull();
-      expect(service.dashboard("csrf", page(["done"], ["missing"])).recent).toMatchObject({ events: [], nextCursor: null });
+      expect(dashboardViews(service).dashboard("csrf", page(["done"], ["missing"])).recent).toMatchObject({ events: [], nextCursor: null });
     } finally {
       now.mockRestore();
       store.close();

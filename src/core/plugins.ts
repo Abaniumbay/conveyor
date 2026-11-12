@@ -1,16 +1,19 @@
-// The plugin contract (#670). A plugin implements one role (item source, code host, CI, agent harness) for one
-// configuration `type` and hands the core only that role's port. Plugins of one provider share
+// The plugin contract (#670). A plugin implements one role (item source, code host, CI, agent harness,
+// presentation) for one configuration `type` and hands the core only that role's port. Plugins of one provider share
 // resources (an API client, its cache and call meter) through the context, never by importing each
 // other. The composition root registers the plugins (src/plugins/index.ts) and builds them here.
 
 import type { z } from "zod";
 
 import type { CiProvider } from "../app/ci-provider";
+import type { DashboardSources } from "../app/dashboard-sources";
 import type { CodeHost } from "../codehost/types";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ConveyorConfig } from "../config/load";
+import type { EventBus } from "../events/bus";
 import type { Observation } from "../events/catalogue";
 import type { Harness } from "../harness/types";
+import type { DashboardReads } from "../web/server";
 
 /** What a plugin receives when it is built. */
 export interface PluginContext {
@@ -109,7 +112,25 @@ export interface HarnessPlugin {
   create(context: PluginContext): Harness;
 }
 
-export type Plugin = ItemsPlugin | CodePlugin | CiPlugin | HarnessPlugin;
+/** What a presentation plugin is built from: the committed changes, and what it may read. */
+export interface PresentationOptions {
+  events: EventBus;
+  sources: DashboardSources;
+}
+
+/** What a presentation plugin provides: the reads its web routes serve. */
+export interface PresentationModule {
+  readonly reads: DashboardReads;
+}
+
+/** A presentation of Conveyor's state (the dashboard), fed by events and reads, never part of the core. */
+export interface PresentationPlugin {
+  readonly role: "presentation";
+  readonly type: string;
+  create(context: PluginContext, options: PresentationOptions): PresentationModule;
+}
+
+export type Plugin = ItemsPlugin | CodePlugin | CiPlugin | HarnessPlugin | PresentationPlugin;
 
 /** The CI type a repository uses when it names no CI provider. */
 export const DEFAULT_CI_TYPE = "github-actions";
@@ -152,6 +173,11 @@ export class PluginRegistry {
   itemSource(type: string): ItemSourceModule | null {
     const plugin = this.#find("items", type);
     return plugin ? this.context.shared(`items:${type}`, () => plugin.create(this.context)) : null;
+  }
+
+  /** The presentation of a type, built from `options`, or null when no plugin provides it. */
+  presentation(type: string, options: PresentationOptions): PresentationModule | null {
+    return this.#find("presentation", type)?.create(this.context, options) ?? null;
   }
 
   /** Every harness by runner type. */

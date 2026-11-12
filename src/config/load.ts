@@ -78,7 +78,7 @@ function completeProviders(data: ConveyorConfigData, plugins: readonly Plugin[])
     const entries = data[key];
     for (const [name, entry] of Object.entries(entries)) {
       const plugin = plugins.find((candidate) => candidate.role === role && candidate.type === entry.type);
-      if (!plugin || plugin.role === "harness") {
+      if (!plugin || plugin.role === "harness" || plugin.role === "presentation") {
         const known = plugins.filter((candidate) => candidate.role === role).map((candidate) => candidate.type);
         errors.push({ path: [key, name, "type"], message: `: no ${role} plugin provides type "${entry.type}" (known: ${known.join(", ") || "none"})` });
         continue;

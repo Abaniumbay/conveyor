@@ -110,8 +110,15 @@ export const serve: Command = {
       throw new CliError("the session secret must be at least 32 bytes (web.sessionSecret or CONVEYOR_SESSION_SECRET)", EXIT.config);
     }
     const operator = accounts.find((account) => account.role === "superuser")?.username ?? accounts[0]!.username;
+    // The dashboard is a plugin: it reads what the service exposes to it and follows its events.
+    const dashboard = plugins.presentation("dashboard", { events: service.events, sources: service.dashboardSources() });
+    if (!dashboard) {
+      await service.close();
+      throw new CliError("this build ships no dashboard plugin", EXIT.failure);
+    }
     const webDependencies = {
       ...service.webDependencies(auth, operator, pushConfiguration(config.web.push)),
+      ...dashboard.reads,
       handleOperatorMcp: createOperatorMcpHandler({
         facade: {
           store: service.store,

@@ -16,6 +16,7 @@ import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 import { fakeCommandBus } from "../support/web-commands";
+import { dashboardViews, webDependenciesOf } from "../support/dashboard";
 
 const directories: string[] = [];
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -348,7 +349,7 @@ describe("operating through the CLI", () => {
     const { cli, issues, service, store } = await running({ ciRetryRoute: true });
     const shown = await cli("item", "show", "app:1");
     expect(shown.out).toContain("retry to implementation: conveyor item retry app:1");
-    expect(service.issueDetails("control-token", "issue-1")).toMatchObject({ retryTargetStage: "implementation" });
+    expect(dashboardViews(service).issueDetails("control-token", "issue-1")).toMatchObject({ retryTargetStage: "implementation" });
 
     const retried = await cli("item", "retry", "app:1");
     expect(retried.code).toBe(EXIT.ok);
@@ -363,7 +364,7 @@ describe("operating through the CLI", () => {
       sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     });
     const session = auth.createSession({ id: "operator", username: "operator", role: "superuser", avatar: "🛠️", sessionVersion: 1 })!;
-    const handler = createWebHandler(service.webDependencies(auth, "operator"));
+    const handler = createWebHandler(webDependenciesOf(service, auth, "operator"));
     const response = await handler(new Request("http://localhost/api/issues/issue-1/retry", {
       method: "POST",
       headers: { cookie: session.cookie, "content-type": "application/x-www-form-urlencoded" },
@@ -414,7 +415,7 @@ describe("operating through the CLI", () => {
       accountByUsername: () => reader,
     });
     const session = auth.createSession({ id: "reader", username: "reader", role: "user", avatar: "🦊", sessionVersion: 1 })!;
-    const handler = createWebHandler(service.webDependencies(auth, "reader"));
+    const handler = createWebHandler(webDependenciesOf(service, auth, "reader"));
 
     const response = await handler(new Request(`http://localhost/api/issues/issue-1/findings/${finding.id}/dismiss`, {
       method: "POST",
@@ -466,15 +467,15 @@ describe("operating through the CLI", () => {
     const reason = "global runner slots 1/1 busy: #2; implementation slots 1/1 busy: #2; app slots 1/1 busy: #2";
     const before = store.getIssue("issue-1")!;
 
-    expect(service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue-1" }).selectedIssue)
+    expect(dashboardViews(service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue-1" }).selectedIssue)
       .toMatchObject({ state: "active", waiting: { kind: "queued", reason }, reason: null });
-    expect(service.issueDetails("csrf", "issue-1")).toMatchObject({ waiting: { kind: "queued", reason }, reason: null });
+    expect(dashboardViews(service).issueDetails("csrf", "issue-1")).toMatchObject({ waiting: { kind: "queued", reason }, reason: null });
     const queued = await cli("item", "show", "app:1");
     expect(queued.out).toContain("Stage: implementation   State: Queued");
     expect(queued.out).toContain(`Blocker: ${reason}`);
 
     store.setStageState({ issueId: "issue-2", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
-    expect(service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue-1" }).selectedIssue)
+    expect(dashboardViews(service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue-1" }).selectedIssue)
       .toMatchObject({ state: "active", waiting: null, reason: null });
     const cleared = await cli("item", "show", "app:1");
     expect(cleared.out).toContain("Stage: implementation   State: active");

@@ -3,9 +3,9 @@
 // out to every open dashboard. The work per change is the same for one dashboard or many, and
 // nothing is built while no dashboard is open.
 
-import { log } from "../log/logger";
-import { diffDashboard, type DashboardModel, type DashboardPatch } from "../web/model";
-import type { SystemStatusViewModel } from "../web/types";
+import { log } from "../../log/logger";
+import { diffDashboard, type DashboardFeedListener, type DashboardFeedSubscription, type DashboardModel, type DashboardPatch } from "../../web/model";
+import type { SystemStatusViewModel } from "../../web/types";
 
 const DASHBOARD_EVENT_GROUPS = new Set(["item.", "stage.", "journey.", "gate.", "finding.", "todo.", "criterion.", "change.", "indicator.", "advisoryCi.", "repository.", "service.", "admission.", "account.", "question.", "answer.", "message.", "workspace."]);
 
@@ -28,18 +28,6 @@ export interface DashboardFeedOptions {
   statusIntervalMs?: number;
   /** How many patches are kept for a reconnecting dashboard. */
   replayLimit?: number;
-}
-
-export type DashboardFeedMessage =
-  | { kind: "patch"; patch: DashboardPatch }
-  | { kind: "status"; status: SystemStatusViewModel };
-
-export type DashboardFeedListener = (message: DashboardFeedMessage) => void;
-
-export interface DashboardFeedSubscription {
-  /** Patches the dashboard missed since the sequence it named, or null when they are no longer all kept. */
-  replay: DashboardPatch[] | null;
-  unsubscribe(): void;
 }
 
 export class DashboardFeed {

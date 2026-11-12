@@ -1,3 +1,6 @@
+/** The states of an item that stopped and waits for a person. */
+export const STOPPED_ISSUE_STATES: ReadonlySet<string> = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
+
 export interface LabelConfiguration {
   enrollment: string;
   stageTemplate: string;

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chromium, type Browser, type Page } from "playwright";
 
-import { DashboardFeed } from "../../../src/app/dashboard-feed";
+import { DashboardFeed } from "../../../src/plugins/dashboard/feed";
 import { createWebAuth, hashPassword } from "../../../src/web/auth";
 import { normalizeDashboard } from "../../../src/web/model";
 import { createWebHandler } from "../../../src/web/server";

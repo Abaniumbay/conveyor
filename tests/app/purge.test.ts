@@ -7,6 +7,7 @@ import { ItemTodos } from "../../src/db/todos";
 import { WorkspaceManager } from "../../src/workspace/manager";
 import { createWorkspace } from "../../src/workspace/lifecycle";
 import { deliveryWorld, git, type DeliveryWorld } from "../support/delivery-world";
+import { dashboardViews } from "../support/dashboard";
 
 let world: DeliveryWorld | null = null;
 afterEach(async () => { await world?.close(); world = null; });
@@ -229,7 +230,7 @@ describe("purging an item that lost its Conveyor labels", () => {
     await w.deliverIssueEvent("unlabeled", "unlabel-1");
     await w.service.purgesSettled();
 
-    expect(JSON.stringify(w.service.dashboard("csrf"))).not.toContain("Add the feature");
+    expect(JSON.stringify(dashboardViews(w.service).dashboard("csrf"))).not.toContain("Add the feature");
     expect(w.store.listIssues("conveyor").map((issue) => issue.id)).not.toContain("issue");
     const states = (w.store.sqlite().query("SELECT DISTINCT projected_state AS state FROM issues").all() as Array<{ state: string | null }>).map((row) => row.state);
     expect(states).not.toContain("missing");

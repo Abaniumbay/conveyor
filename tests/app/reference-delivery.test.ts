@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 
 import { deliveryWorld, REQUIRED_DESCRIPTION, type DeliveryWorld } from "../support/delivery-world";
+import { dashboardViews } from "../support/dashboard";
 
 let world: DeliveryWorld | null = null;
 afterEach(async () => { await world?.close(); world = null; });
@@ -143,7 +144,7 @@ test("an issue closed after the owner was asked resumes cleanup, finishes the it
   const stopped = w.store.getIssue("issue")!;
   w.store.upsertIssue({ ...stopped, labels: ["conveyor", "conveyor:cleanup", "conveyor:needs-intervention"], sourceUpdatedAt: new Date().toISOString() });
   w.store.setIssueProjection("issue", { stage: "cleanup", state: "needs-intervention", warning: null });
-  expect(w.service.dashboard("csrf").needsYou.some((card) => card.number === 1)).toBe(true);
+  expect(dashboardViews(w.service).dashboard("csrf").needsYou.some((card) => card.number === 1)).toBe(true);
 
   await w.closeIssueOnGitHub();
   await w.drive(25);
@@ -152,7 +153,7 @@ test("an issue closed after the owner was asked resumes cleanup, finishes the it
   // The cleanup stage wrote the done label and no stop label with it.
   expect(w.labelWrites.at(-1)).toContain("conveyor:done");
   expect(w.labelWrites.at(-1)).not.toContain("conveyor:needs-intervention");
-  expect(w.service.dashboard("csrf").needsYou.some((card) => card.number === 1)).toBe(false);
+  expect(dashboardViews(w.service).dashboard("csrf").needsYou.some((card) => card.number === 1)).toBe(false);
   expect(w.store.listStageTransitions("issue").filter((transition) => transition.kind === "stopped")).toHaveLength(stoppedBefore);
 });
 

@@ -7,6 +7,7 @@ import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
+import { dashboardViews } from "../support/dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -89,7 +90,7 @@ repositories:
     async replaceConveyorLabels() { source.labelWrites += 1; },
   };
   const service = new ConveyorService(config, store, github as never);
-  const card = () => service.dashboard("csrf").stages.flatMap((stage) => stage.issues).find((issue) => issue.number === 1);
+  const card = () => dashboardViews(service).dashboard("csrf").stages.flatMap((stage) => stage.issues).find((issue) => issue.number === 1);
   return { root, config, store, service, source, card };
 }
 
@@ -140,7 +141,7 @@ test("type and values survive reconciliation without new data, and a restart", a
   const reopened = await ConveyorStore.open(path.join(root, "db.sqlite"));
   expect(reopened.getIssue("github:owner/repo#1")!.metadata).toMatchObject({ type: "Bug", fields: { Effort: "Low" } });
   const again = new ConveyorService(config, reopened, { listIssues: async () => [], listSubIssues: async () => [], listDependencies: async () => [] } as never);
-  expect(again.dashboard("csrf").stages.flatMap((stage) => stage.issues).find((issue) => issue.number === 1)).toMatchObject({ issueType: "Bug", issueFields: [{ name: "Effort", value: "Low" }] });
+  expect(dashboardViews(again).dashboard("csrf").stages.flatMap((stage) => stage.issues).find((issue) => issue.number === 1)).toMatchObject({ issueType: "Bug", issueFields: [{ name: "Effort", value: "Low" }] });
   reopened.close();
 });
 
@@ -162,7 +163,7 @@ test("a failed field read does not stop later enrolled issues from syncing", asy
   source.second = { fields: { Effort: "High" }, updatedAt: "2026-01-02T00:00:00Z" };
   source.failedNumbers.add(1);
   await service.reconcileAll();
-  const second = service.dashboard("csrf").stages.flatMap((stage) => stage.issues).find((issue) => issue.number === 2);
+  const second = dashboardViews(service).dashboard("csrf").stages.flatMap((stage) => stage.issues).find((issue) => issue.number === 2);
   expect(second?.issueFields).toEqual([{ name: "Effort", value: "High" }]);
   expect(source.fieldReads).toBe(2);
   store.close();

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { buildFindingReport, parseSince } from "../app/finding-report";
+import { itemTransitions } from "../app/item-history";
 import type { ConveyorService } from "../app/service";
 import { CommandForbiddenError, CommandInputError, CommandUnavailableError, type CommandActor } from "../commands/bus";
 import { MAX_SOCKET_PATH } from "../isolation/run-network";
@@ -103,7 +104,7 @@ export function status(service: ConveyorService, info: ControlInfo) {
         title: issue.title,
         stage: issue.projectedStage,
         state: issue.projectedState,
-        reason: service.issueJourney(issue.id)?.now.reason ?? issue.warning,
+        reason: service.itemNow(issue.id)?.reason ?? issue.warning,
       })),
     openQuestions: service.store.listOpenQuestions()
       .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "unlisted")
@@ -128,7 +129,7 @@ function board(service: ConveyorService) {
 
 function item(service: ConveyorService, issueId: string) {
   const issue = service.store.getIssue(issueId)!;
-  const journey = service.issueJourney(issueId);
+  const now = service.itemNow(issueId);
   const question = service.store.listOpenQuestions().find((candidate) => candidate.issueId === issueId) ?? null;
   const running = service.activeWork().items.some((entry) => entry.issueId === issueId);
   const paused = issue.labels.includes(service.config.labels.metadata.paused);
@@ -150,10 +151,10 @@ function item(service: ConveyorService, issueId: string) {
     title: issue.title,
     url: issue.sourceUrl,
     sourceState: issue.sourceState,
-    stage: journey?.now.stage ?? issue.projectedStage,
-    state: running ? "running" : journey?.now.state ?? issue.projectedState,
-    since: journey?.now.since ?? null,
-    blocker: journey?.now.reason ?? null,
+    stage: now?.stage ?? issue.projectedStage,
+    state: running ? "running" : now?.state ?? issue.projectedState,
+    since: now?.since ?? null,
+    blocker: now?.reason ?? null,
     warning: issue.warning,
     paused,
     childrenContinue: stoppedRollup,
@@ -248,7 +249,7 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
         const [, method, reference, action] = itemRoute;
         const issueId = resolveItem(service, decodeURIComponent(reference!));
         if (method === "GET" && !action) return json(item(service, issueId));
-        if (method === "GET" && action === "history") return json({ item: itemReference(service, issueId), transitions: service.issueJourney(issueId)?.transitions ?? [] });
+        if (method === "GET" && action === "history") return json({ item: itemReference(service, issueId), transitions: itemTransitions(service.config, service.store, issueId) ?? [] });
         if (method === "GET" && action === "logs") {
           const after = Number(url.searchParams.get("after") ?? "0");
           if (!Number.isSafeInteger(after) || after < 0) throw new ControlError("after must be an event id", 400);

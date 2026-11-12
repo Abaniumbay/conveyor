@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { collectSystemStatus } from "../../src/app/service";
+import { collectSystemStatus } from "../../../src/plugins/dashboard/system-status";
 
 describe("collectSystemStatus", () => {
   test("measures configured artifacts, service temporary, and agent scratch filesystems independently", async () => {

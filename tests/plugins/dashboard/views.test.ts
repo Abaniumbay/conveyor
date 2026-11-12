@@ -3,18 +3,19 @@ import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { ConveyorService } from "../../src/app/service";
-import { createWebAuth, hashPassword } from "../../src/web/auth";
-import { renderDashboard } from "../support/render-dashboard";
-import { configSchema } from "../../src/config/schema";
-import { createWebHandler } from "../../src/web/server";
-import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
-import type { ConveyorConfig } from "../../src/config/load";
-import { ConveyorStore } from "../../src/db/store";
-import { ReviewFindings } from "../../src/db/review-findings";
-import { ItemTodos } from "../../src/db/todos";
-import { ConsoleSink, type LogRecord, log } from "../../src/log/logger";
-import { parseManagedSections } from "../../src/plugins/github/shared/managed-sections";
+import { ConveyorService } from "../../../src/app/service";
+import { createWebAuth, hashPassword } from "../../../src/web/auth";
+import { renderDashboard } from "../../support/render-dashboard";
+import { configSchema } from "../../../src/config/schema";
+import { createWebHandler } from "../../../src/web/server";
+import type { RuntimeIssueContext, ScopedMcpFactory } from "../../../src/app/runtime";
+import type { ConveyorConfig } from "../../../src/config/load";
+import { ConveyorStore } from "../../../src/db/store";
+import { ReviewFindings } from "../../../src/db/review-findings";
+import { ItemTodos } from "../../../src/db/todos";
+import { ConsoleSink, type LogRecord, log } from "../../../src/log/logger";
+import { parseManagedSections } from "../../../src/plugins/github/shared/managed-sections";
+import { dashboardViews, webDependenciesOf } from "../../support/dashboard";
 
 const temporaryDirectories: string[] = [];
 
@@ -92,19 +93,19 @@ describe("ConveyorService dashboard", () => {
     } as unknown as ConveyorConfig;
     const service = new ConveyorService(config, store, {} as never);
     try {
-      expect(service.dashboard("csrf").draining).toBeNull();
+      expect(dashboardViews(service).dashboard("csrf").draining).toBeNull();
 
       service.drain("operator requested <em>maintenance</em>");
-      expect(service.dashboard("csrf").draining).toEqual({
+      expect(dashboardViews(service).dashboard("csrf").draining).toEqual({
         reason: "operator requested <em>maintenance</em>",
         upgrade: null,
       });
 
       service.resumeAdmission();
-      expect(service.dashboard("csrf").draining).toBeNull();
+      expect(dashboardViews(service).dashboard("csrf").draining).toBeNull();
 
       service.drain("upgrade to 9.9.9", { targetVersion: "9.9.9", releaseTag: "v9.9.9" });
-      expect(service.dashboard("csrf").draining).toEqual({
+      expect(dashboardViews(service).dashboard("csrf").draining).toEqual({
         reason: "upgrade to 9.9.9",
         upgrade: {
           version: "9.9.9",
@@ -136,7 +137,7 @@ describe("ConveyorService dashboard", () => {
       sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
       secureCookies: false,
     });
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: createWebHandler(service.webDependencies(auth, "operator")) });
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: createWebHandler(webDependenciesOf(service, auth, "operator")) });
     const sessions = path.join(root, "codex", "sessions");
     await mkdir(sessions, { recursive: true });
     for (let index = 0; index < 1_000; index += 1) {
@@ -260,7 +261,7 @@ describe("ConveyorService dashboard", () => {
       async upsertStatusComment() { return 1; },
     };
     const service = new ConveyorService(config, store, github as never);
-    const before = service.dashboard("csrf");
+    const before = dashboardViews(service).dashboard("csrf");
     const closedCard = [...before.stages.flatMap((stage) => stage.issues), ...before.attention.issues].find((issue) => issue.id === "closed-merged");
     expect(closedCard?.retryable).toBe(true);
     await expect(service.retryIssue("with-note", "Android run passed", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
@@ -431,7 +432,7 @@ describe("ConveyorService dashboard", () => {
       async upsertStatusComment() { return 1; },
     };
     const service = new ConveyorService(config, store, github as never);
-    const dashboard = service.dashboard("csrf");
+    const dashboard = dashboardViews(service).dashboard("csrf");
     const cards = [...dashboard.stages.flatMap((stage) => stage.issues), ...dashboard.attention.issues, ...dashboard.backlog];
     const retryableById = Object.fromEntries(cards.map((issue) => [issue.id, issue.retryable]));
     expect(retryableById).toMatchObject({ blocked: true, error: true, intervention: true, "refinement-rollup": true });
@@ -440,8 +441,8 @@ describe("ConveyorService dashboard", () => {
 
     const resumableRollupById = Object.fromEntries(cards.map((issue) => [issue.id, issue.resumableRollup]));
     expect(resumableRollupById).toMatchObject({ rollup: true, "review-rollup": true, "intervention-rollup": true, "refinement-rollup": false });
-    expect(service.issueDetails("csrf", "rollup")?.resumableRollup).toBe(true);
-    const refinementDetails = service.issueDetails("csrf", "refinement-rollup")!;
+    expect(dashboardViews(service).issueDetails("csrf", "rollup")?.resumableRollup).toBe(true);
+    const refinementDetails = dashboardViews(service).issueDetails("csrf", "refinement-rollup")!;
     expect(refinementDetails).toMatchObject({ retryable: true, resumableRollup: false });
     const refinementHtml = renderDashboard({ ...dashboard, selectedIssue: refinementDetails });
     expect(refinementHtml).toContain("data-retry-form");
@@ -567,7 +568,7 @@ describe("ConveyorService dashboard", () => {
     } });
 
     const service = new ConveyorService(config, store, {} as never);
-    const html = renderDashboard(service.dashboard("csrf"));
+    const html = renderDashboard(dashboardViews(service).dashboard("csrf"));
     expect(html).toContain("82% left");
     expect(html).toContain("94% left");
     expect(html).not.toContain("Stale");
@@ -604,7 +605,7 @@ describe("ConveyorService dashboard", () => {
       const costSummary = spyOn(store, "costSummary");
       const costSummaryByStage = spyOn(store, "costSummaryByStage");
       const countFinishedIssues = spyOn(store, "countFinishedIssues");
-      expect(service.dashboard("csrf").stages.flatMap((stage) => stage.issues)).toHaveLength(count);
+      expect(dashboardViews(service).dashboard("csrf").stages.flatMap((stage) => stage.issues)).toHaveLength(count);
       const calls = {
         listIssues: listIssues.mock.calls.length,
         getIssue: getIssue.mock.calls.map(([issueId]) => issueId),
@@ -614,9 +615,9 @@ describe("ConveyorService dashboard", () => {
         groupedCostQueries: costSummaryByStage.mock.calls.length,
         doneCounts: countFinishedIssues.mock.calls.length,
       };
-      const dashboard = spyOn(service, "dashboard");
+      const dashboard = spyOn(dashboardViews(service), "dashboard");
       const listCallsBeforeDetails = listIssues.mock.calls.length;
-      expect(service.issueDetails("csrf", "item-1")).toMatchObject({
+      expect(dashboardViews(service).issueDetails("csrf", "item-1")).toMatchObject({
         id: "item-1",
         title: "item-1",
         csrfToken: "csrf",
@@ -668,7 +669,7 @@ describe("ConveyorService dashboard", () => {
     new ItemTodos(store.sqlite()).set("with-todos", items, "run-1", "2026-10-03T10:00:00Z");
 
     const service = new ConveyorService(config, store, {} as never);
-    const cards = service.dashboard("csrf").stages.flatMap((stage) => stage.issues);
+    const cards = dashboardViews(service).dashboard("csrf").stages.flatMap((stage) => stage.issues);
     expect(cards.find((card) => card.id === "with-todos")!.todos).toEqual({ finished: 1, total: 2, skipped: 0, current: "Endpoint", items });
     expect(cards.find((card) => card.id === "without")!.todos).toBeNull();
     store.close();
@@ -714,9 +715,9 @@ describe("ConveyorService dashboard", () => {
     store.openQuestion({ issueId: "done-parent", runId: null, prompt: "Confirm release?", reason: "Owner confirmation", options: [], allowFreeText: true });
 
     const service = new ConveyorService(config, store, {} as never);
-    const boardCard = service.dashboard("csrf").done.issues.find((card) => card.id === "done-parent");
+    const boardCard = dashboardViews(service).dashboard("csrf").done.issues.find((card) => card.id === "done-parent");
     expect(boardCard).toBeDefined();
-    expect(service.issueDetails("csrf", "done-parent")).toEqual(boardCard!);
+    expect(dashboardViews(service).issueDetails("csrf", "done-parent")).toEqual(boardCard!);
     expect(boardCard).toMatchObject({
       state: "done",
       reason: "GitHub close reason: not planned.",
@@ -764,16 +765,16 @@ describe("ConveyorService dashboard", () => {
     add("unlisted", 5, null, "unlisted", "closed", ["conveyor"]);
 
     const service = new ConveyorService(config, store, {} as never);
-    const model = service.dashboard("csrf");
+    const model = dashboardViews(service).dashboard("csrf");
     const staged = model.stages.flatMap((column) => column.issues);
     expect(staged.find((card) => card.id === "in-build")).toMatchObject({ stageBadge: { name: "Build", icon: "🛠️" } });
     expect(staged.find((card) => card.id === "in-review")).toMatchObject({ stageBadge: { name: "Review", icon: null } });
     expect(model.backlog.find((card) => card.id === "backlog")).toMatchObject({ stageBadge: { name: "Backlog", icon: null } });
     expect(model.done.issues.find((card) => card.id === "done")).toMatchObject({ stageBadge: { name: "Done", icon: null } });
-    expect(service.issueDetails("csrf", "in-build")).toMatchObject({ stageBadge: { name: "Build", icon: "🛠️" } });
-    expect(service.issueDetails("csrf", "backlog")).toMatchObject({ stageBadge: { name: "Backlog", icon: null } });
-    expect(service.issueDetails("csrf", "done")).toMatchObject({ stageBadge: { name: "Done", icon: null } });
-    expect(service.issueDetails("csrf", "unlisted")).toBeNull();
+    expect(dashboardViews(service).issueDetails("csrf", "in-build")).toMatchObject({ stageBadge: { name: "Build", icon: "🛠️" } });
+    expect(dashboardViews(service).issueDetails("csrf", "backlog")).toMatchObject({ stageBadge: { name: "Backlog", icon: null } });
+    expect(dashboardViews(service).issueDetails("csrf", "done")).toMatchObject({ stageBadge: { name: "Done", icon: null } });
+    expect(dashboardViews(service).issueDetails("csrf", "unlisted")).toBeNull();
     store.close();
   });
 
@@ -790,8 +791,8 @@ describe("ConveyorService dashboard", () => {
     store.setIssueProjection("paused-refinement", { stage: null, state: "paused", warning: null });
 
     const service = new ConveyorService(config, store, {} as never);
-    const detail = service.issueDetails("csrf", "paused-refinement");
-    const dashboard = service.dashboard("csrf");
+    const detail = dashboardViews(service).issueDetails("csrf", "paused-refinement");
+    const dashboard = dashboardViews(service).dashboard("csrf");
     const card = [...dashboard.backlog, ...dashboard.attention.issues].find((issue) => issue.id === "paused-refinement");
     expect(detail).toMatchObject({ stage: null, state: "paused", resumable: true });
     expect(card).toMatchObject({ stage: null, state: "paused", resumable: true });
@@ -800,7 +801,7 @@ describe("ConveyorService dashboard", () => {
       title: "Enrolled paused", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-10-21T00:00:00Z",
     });
     store.setIssueProjection("enrolled-paused", { stage: null, state: "paused", warning: null });
-    expect(service.issueDetails("csrf", "enrolled-paused")).toMatchObject({ resumable: false });
+    expect(dashboardViews(service).issueDetails("csrf", "enrolled-paused")).toMatchObject({ resumable: false });
     store.close();
   });
 
@@ -853,7 +854,7 @@ describe("ConveyorService dashboard", () => {
       projectedStage: "refinement",
       projectedState: "paused",
     });
-    expect(service.issueDetails("csrf", "paused-refinement")).toMatchObject({
+    expect(dashboardViews(service).issueDetails("csrf", "paused-refinement")).toMatchObject({
       stage: "refinement",
       state: "paused",
       resumable: true,
@@ -897,7 +898,7 @@ describe("ConveyorService dashboard", () => {
     });
     const session = auth.createSession();
     if (!session) throw new Error("expected configured web authentication");
-    const handler = createWebHandler(service.webDependencies(auth, "operator"));
+    const handler = createWebHandler(webDependenciesOf(service, auth, "operator"));
 
     const response = await handler(new Request("https://example.com/api/issues/paused-refinement/resume", {
       method: "POST",
@@ -953,7 +954,7 @@ describe("ConveyorService dashboard", () => {
     // A completed dependent is context for its still-current prerequisite.
     store.replaceRelationships("completed-dependent", null, ["working"]);
 
-    const model = new ConveyorService(config, store, {} as never).dashboard("csrf");
+    const model = dashboardViews(new ConveyorService(config, store, {} as never)).dashboard("csrf");
     const cards = [...model.stages.flatMap((column) => column.issues), ...model.done.issues];
     const card = (id: string) => cards.find((candidate) => candidate.id === id)!;
     // Backlog, the three stages, then Done: five stations.
@@ -991,7 +992,7 @@ describe("ConveyorService dashboard", () => {
       expect.objectContaining({ kind: "dependency", from: "finished", to: "unrelated", status: "satisfied" }),
       expect.objectContaining({ kind: "dependency", from: "working", to: "completed-dependent", status: "outstanding" }),
     ]));
-    const filtered = new ConveyorService(config, store, {} as never).dashboard("csrf", {
+    const filtered = dashboardViews(new ConveyorService(config, store, {} as never)).dashboard("csrf", {
       view: "graph", column: null, page: 1, doneLimit: 20, runId: null, issueId: null,
       repositoryIds: ["repo"], graphStage: "review",
     });
@@ -1009,7 +1010,7 @@ describe("ConveyorService dashboard", () => {
       stages: [{ id: "refinement", name: "Refinement" }, { id: "implementation", name: "Implementation" }, { id: "review", name: "Review" }],
     });
     store.replaceRelationships("unrelated", null, ["finished"]);
-    const refreshed = new ConveyorService(config, store, {} as never).dashboard("csrf");
+    const refreshed = dashboardViews(new ConveyorService(config, store, {} as never)).dashboard("csrf");
     expect(refreshed.graph.relationships).not.toContainEqual(expect.objectContaining({ kind: "dependency", from: "stopped", to: "unrelated" }));
     expect(refreshed.graph.relationships).toContainEqual(expect.objectContaining({ kind: "dependency", from: "finished", to: "unrelated", status: "satisfied" }));
     store.close();
@@ -1141,11 +1142,11 @@ describe("ConveyorService dashboard", () => {
     const service = new ConveyorService(config, store, github as never);
     store.seedDashboardSuperuser("operator", "persisted-hash");
 
-    expect(service.dashboard("csrf").stages[0]?.issues[0]).toMatchObject({
+    expect(dashboardViews(service).dashboard("csrf").stages[0]?.issues[0]).toMatchObject({
       state: "blocked",
       reason: "The deployment API rejected the configured token with HTTP 401. A repository owner must replace the expired token before implementation can continue.",
     });
-    expect(service.issueJourney("issue")?.now).toMatchObject({
+    expect(dashboardViews(service).issueJourney("issue")?.now).toMatchObject({
       state: "stopped",
       reason: "The deployment API rejected the configured token with HTTP 401. A repository owner must replace the expired token before implementation can continue.",
     });
@@ -1162,8 +1163,8 @@ describe("ConveyorService dashboard", () => {
       { actor: "operator", message: "The API access blocker is resolved; please continue." },
       { actor: "Conveyor", message: expect.stringContaining("Queued implementation") },
     ]);
-    expect(service.issueConversation("issue")?.messages[0]).toMatchObject({ actorName: "operator", actorAvatar: "🐼" });
-    expect(service.dashboard("csrf").activeWork.runnerCount).toBe(0);
+    expect(dashboardViews(service).issueConversation("issue")?.messages[0]).toMatchObject({ actorName: "operator", actorAvatar: "🐼" });
+    expect(dashboardViews(service).dashboard("csrf").activeWork.runnerCount).toBe(0);
     store.close();
   });
 
@@ -1738,7 +1739,7 @@ describe("ConveyorService dashboard", () => {
     });
     expect(store.listStageTransitions("parent").filter((transition) => transition.kind === "rollup")).toHaveLength(1);
 
-    const board = service.dashboard("csrf");
+    const board = dashboardViews(service).dashboard("csrf");
     const deploy = board.stages.find((column) => column.id === "stage:deploy")!;
     expect(deploy.issues.find((card) => card.id === "parent")).toMatchObject({
       state: "active",
@@ -1754,14 +1755,14 @@ describe("ConveyorService dashboard", () => {
     });
     expect(board.done.issues.some((card) => card.id === "parent")).toBe(false);
 
-    const intermediateDetails = service.issueDetails("csrf", "intermediate")!;
+    const intermediateDetails = dashboardViews(service).issueDetails("csrf", "intermediate")!;
     expect(intermediateDetails.children).toContainEqual(expect.objectContaining({
       id: "merged-child",
       satisfied: false,
       signal: "stop",
       station: expect.objectContaining({ name: "Deploy" }),
     }));
-    const dependentDetails = service.issueDetails("csrf", "dependent")!;
+    const dependentDetails = dashboardViews(service).issueDetails("csrf", "dependent")!;
     expect(dependentDetails.dependencies).toContainEqual(expect.objectContaining({
       id: "merged-child",
       satisfied: true,
@@ -1995,8 +1996,8 @@ describe("ConveyorService dashboard", () => {
     expect(store.listChildren("parent")).toEqual([{ issueId: "child", siblingOrder: 1 }]);
     expect(store.getIssue("parent")).toMatchObject({ projectedStage: "discover", projectedState: "active" });
     expect(writes).toEqual([]);
-    expect(service.dashboard("csrf").needsYou).toEqual([]);
-    expect(service.dashboard("csrf").questions.map((question) => question.prompt)).toEqual(["Which scope?"]);
+    expect(dashboardViews(service).dashboard("csrf").needsYou).toEqual([]);
+    expect(dashboardViews(service).dashboard("csrf").questions.map((question) => question.prompt)).toEqual(["Which scope?"]);
 
     // Paused, offboarded, or closed items keep their question, but no longer ask the owner.
     const parent = {
@@ -2004,22 +2005,22 @@ describe("ConveyorService dashboard", () => {
       title: "Parent", body: "", sourceUpdatedAt: "2026-09-29T00:00:00Z",
     };
     store.upsertIssue({ ...parent, sourceState: "open", labels: [] });
-    expect(service.dashboard("csrf").questions).toEqual([]);
-    expect(service.dashboard("csrf").needsYou).toEqual([]);
+    expect(dashboardViews(service).dashboard("csrf").questions).toEqual([]);
+    expect(dashboardViews(service).dashboard("csrf").needsYou).toEqual([]);
     store.setIssueProjection("parent", { stage: null, state: "unlisted", warning: null });
-    expect(service.dashboard("csrf").questions).toEqual([]);
-    expect(service.dashboard("csrf").needsYou).toEqual([]);
+    expect(dashboardViews(service).dashboard("csrf").questions).toEqual([]);
+    expect(dashboardViews(service).dashboard("csrf").needsYou).toEqual([]);
     const account = store.createDashboardUser("reader", "hash");
     store.putPushSubscription(account.id, "https://push.example/active", { p256dh: "key", auth: "secret" });
     store.setPushPreferences(account.id, { questions: true, stopped: false, done: false });
     store.recordPushEvent({ id: "parent-question", category: "questions", target: "parent" });
-    await service.webDependencies({} as never, "reader", {
+    await webDependenciesOf(service, {} as never, "reader", {
       publicKey: "public", privateKey: "private", subject: "mailto:ops@example.test",
     }).dispatchPushEvents?.();
     expect(store.pendingPushEvents()).toEqual([{ id: "parent-question", category: "questions", target: "parent" }]);
     store.upsertIssue({ ...parent, sourceState: "closed", labels: ["conveyor", "conveyor:discover", "conveyor:needs-input"] });
-    expect(service.dashboard("csrf").questions).toEqual([]);
-    expect(service.dashboard("csrf").needsYou).toEqual([]);
+    expect(dashboardViews(service).dashboard("csrf").questions).toEqual([]);
+    expect(dashboardViews(service).dashboard("csrf").needsYou).toEqual([]);
     expect(store.listOpenQuestions()).toHaveLength(1);
     store.close();
   });
@@ -2132,8 +2133,8 @@ describe("ConveyorService dashboard", () => {
     });
 
     const service = new ConveyorService(config, store, {} as never);
-    const dashboard = service.dashboard("csrf");
-    const reloaded = service.dashboard("csrf");
+    const dashboard = dashboardViews(service).dashboard("csrf");
+    const reloaded = dashboardViews(service).dashboard("csrf");
     const boardCards = [...dashboard.backlog, ...dashboard.stages.flatMap((stage) => stage.issues)];
 
     expect(dashboard.backlog.map((issue) => issue.id)).toEqual(stoppedStates.map((state) => `stopped-${state}`));
@@ -2293,8 +2294,8 @@ describe("ConveyorService dashboard", () => {
     add({ id: "unlisted", number: 11, sourceState: "closed", state: "unlisted", enrolled: true, pullRequest: "merged" });
 
     const service = new ConveyorService(config, store, {} as never);
-    const dashboard = service.dashboard("csrf");
-    const filtered = service.dashboard("csrf", {
+    const dashboard = dashboardViews(service).dashboard("csrf");
+    const filtered = dashboardViews(service).dashboard("csrf", {
       view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null,
       repositoryIds: [], q: "not on this board", state: "running", recentTypes: [], recentCursor: null,
     });
@@ -2598,7 +2599,7 @@ describe("ConveyorService dashboard", () => {
     const service = new ConveyorService(config, store, {} as never);
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.CODEX_HOME = path.join(root, "empty-codex-home");
-    const dashboard = service.dashboard("csrf", {
+    const dashboard = dashboardViews(service).dashboard("csrf", {
       view: "board",
       column: null,
       page: 1,
@@ -2642,7 +2643,7 @@ describe("ConveyorService dashboard", () => {
         deadline: "2099-09-29T12:00:00Z",
       },
     });
-    expect(service.issueJourney("github:owner/repo#31")).toMatchObject({
+    expect(dashboardViews(service).issueJourney("github:owner/repo#31")).toMatchObject({
       now: {
         stage: "implementation",
         state: "waiting",
@@ -2656,13 +2657,13 @@ describe("ConveyorService dashboard", () => {
         active: true,
       }],
     });
-    expect(JSON.stringify(service.issueJourney("github:owner/repo#31"))).not.toContain("Never expose this skipped review body");
+    expect(JSON.stringify(dashboardViews(service).issueJourney("github:owner/repo#31"))).not.toContain("Never expose this skipped review body");
     const findingStore = new ReviewFindings(store.sqlite());
     findingStore.importNative("github:owner/repo#31", [{
       providerKey: "thread:T9", author: "owner", trusted: true, body: "Rename this", url: "https://example.com/reviews/2", path: "a.ts", line: 4, resolved: false,
     }], "head", "2026-09-29T03:01:00Z");
     const finding = findingStore.list("github:owner/repo#31").find((f) => f.providerKey === "thread:T9")!;
-    expect(service.issueJourney("github:owner/repo#31")?.findings).toEqual([
+    expect(dashboardViews(service).issueJourney("github:owner/repo#31")?.findings).toEqual([
       { id: finding.id, type: "general", state: "open", author: "owner", location: "a.ts:4", url: "https://example.com/reviews/2", summary: "Rename this" },
     ]);
     const reclassifications = () => store.events().read({ type: "finding.changed" }).filter((event) => (event.payload as { change: string }).change === "reclassified");
@@ -2679,7 +2680,7 @@ describe("ConveyorService dashboard", () => {
       state: "unlisted",
       warning: null,
     });
-    const repositoryDetail = service.dashboard("csrf", {
+    const repositoryDetail = dashboardViews(service).dashboard("csrf", {
       view: "repository",
       repositoryId: "repo",
       column: null,
@@ -2693,12 +2694,12 @@ describe("ConveyorService dashboard", () => {
       title: "Waiting for CI",
       count: 1,
     });
-    expect(service.issueJourney("github:owner/repo#31")).toMatchObject({
+    expect(dashboardViews(service).issueJourney("github:owner/repo#31")).toMatchObject({
       skippedReviews: [{ author: "outside-reviewer", url: "https://example.com/reviews/1" }],
     });
-    expect(await service.webDependencies({} as never, "operator").getIssueRoute({ repository: "repo", number: 31 }))
+    expect(await webDependenciesOf(service, {} as never, "operator").getIssueRoute({ repository: "repo", number: 31 }))
       .toEqual({ id: "github:owner/repo#31", repository: "repo", number: 31 });
-    const offboardedDashboard = service.dashboard("csrf", {
+    const offboardedDashboard = dashboardViews(service).dashboard("csrf", {
       view: "repository",
       repositoryId: "repo",
       column: null,
@@ -2709,7 +2710,7 @@ describe("ConveyorService dashboard", () => {
     });
     // An item that left Conveyor has no card, not even a read-only history one.
     expect(offboardedDashboard.selectedIssue).toBeNull();
-    expect(service.issueDetails("csrf", "github:owner/repo#31")).toBeNull();
+    expect(dashboardViews(service).issueDetails("csrf", "github:owner/repo#31")).toBeNull();
     expect(dashboard.repositories.find((repository) => repository.id === "repo")?.trust).toEqual({
       visibility: "public",
       checkedAt: "2026-09-29T03:00:00Z",
@@ -2735,14 +2736,14 @@ describe("ConveyorService dashboard", () => {
       repository: "repo",
       repositoryColor: 2,
     });
-    expect(service.issueActivity("github:owner/repo#27")).toMatchObject({
+    expect(dashboardViews(service).issueActivity("github:owner/repo#27")).toMatchObject({
       issueId: "github:owner/repo#27",
       runs: [{ id: "active-run" }],
       nextRunBefore: "active-run",
     });
-    expect(service.issueActivity("github:owner/repo#27")?.runs).toHaveLength(1);
-    expect(service.issueActivity("github:owner/repo#27")?.runs[0]?.events).toHaveLength(5);
-    expect(service.issueActivity("github:owner/repo#27")?.runs[0]?.events[0]).toMatchObject({
+    expect(dashboardViews(service).issueActivity("github:owner/repo#27")?.runs).toHaveLength(1);
+    expect(dashboardViews(service).issueActivity("github:owner/repo#27")?.runs[0]?.events).toHaveLength(5);
+    expect(dashboardViews(service).issueActivity("github:owner/repo#27")?.runs[0]?.events[0]).toMatchObject({
       type: "progress",
       payload: { message: "Step 7" },
     });
@@ -2764,7 +2765,7 @@ describe("ConveyorService dashboard", () => {
     });
     expect(dashboard.counts).toEqual({ board: 5, attention: 1 });
 
-    const expanded = service.dashboard("csrf", {
+    const expanded = dashboardViews(service).dashboard("csrf", {
       view: "board",
       column: null,
       page: 1,
@@ -2807,20 +2808,20 @@ describe("ConveyorService dashboard", () => {
     add("target", "alpha", 245, "closed", "Needle title", "2026-09-01T00:00:00Z");
     for (let index = 1; index <= 21; index += 1) add(`done-${index}`, "beta", 300 + index, "closed", `Recent ${index}`, `2026-10-${String(index).padStart(2, "0")}T00:00:00Z`);
     const service = new ConveyorService(config, store, {} as never);
-    const all = service.dashboard("csrf");
+    const all = dashboardViews(service).dashboard("csrf");
     expect(all.stages[0]?.issues).toHaveLength(21);
     expect(all.stages[0]?.totalPages).toBe(1);
     expect((all.stages[0]?.issues.find((issue) => issue.repository === "alpha")?.searchActors ?? []).map((actor) => actor.name)).toEqual(["Alice"]);
     expect((all.stages[0]?.issues.find((issue) => issue.repository === "beta")?.searchActors ?? []).map((actor) => actor.name)).toEqual(["Beatrice"]);
     expect(all.done.issues.map((issue) => issue.id)).not.toContain("target");
     const cardCosts = spyOn(store, "costSummary");
-    const beforeHistory = service.dashboard("csrf");
+    const beforeHistory = dashboardViews(service).dashboard("csrf");
     const cardsBeforeHistory = cardCosts.mock.calls.length;
     const visibleDoneBeforeHistory = beforeHistory.done.issues.map((issue) => issue.id);
     for (let index = 1; index <= 350; index += 1) {
       add(`history-${index}`, "beta", 1_000 + index, "closed", `Archived ${index}`, "2025-01-01T00:00:00Z");
     }
-    const afterHistory = service.dashboard("csrf");
+    const afterHistory = dashboardViews(service).dashboard("csrf");
     // Done history affects its count, but not the bounded card work or open-board projections.
     expect(afterHistory.done.totalIssues).toBe(beforeHistory.done.totalIssues + 350);
     expect(afterHistory.done.issues.map((issue) => issue.id)).toEqual(visibleDoneBeforeHistory);
@@ -2830,11 +2831,11 @@ describe("ConveyorService dashboard", () => {
       .toEqual(beforeHistory.repositories.map(({ id, backlog, stages, done }) => ({ id, backlog, stages, done })));
     expect(cardCosts.mock.calls.length - cardsBeforeHistory).toBe(cardsBeforeHistory);
     const filters = (q: string, repositoryIds: string[]) => ({ view: "board" as const, repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null, q, repositoryIds, state: null });
-    const byNumber = service.dashboard("csrf", filters("#245", []));
+    const byNumber = dashboardViews(service).dashboard("csrf", filters("#245", []));
     expect(byNumber.done.issues.map((issue) => issue.id)).toEqual(["target"]);
-    const byFieldsAndAgent = service.dashboard("csrf", filters("BACKEND feature large alice", ["alpha"]));
+    const byFieldsAndAgent = dashboardViews(service).dashboard("csrf", filters("BACKEND feature large alice", ["alpha"]));
     expect(byFieldsAndAgent.done.issues.map((issue) => issue.id)).toEqual(["target"]);
-    expect(service.dashboard("csrf", filters("private body phrase", [])).done.totalIssues).toBe(0);
+    expect(dashboardViews(service).dashboard("csrf", filters("private body phrase", [])).done.totalIssues).toBe(0);
     // The database count uses the same literal search and enrollment predicates as the rendered
     // Done cards. In particular, closed offboarded relationship stubs are not board items, and
     // SQLite LIKE metacharacters in a user query are ordinary text for the board filter.
@@ -2842,8 +2843,8 @@ describe("ConveyorService dashboard", () => {
     store.setIssueProjection("unlisted", { stage: "implementation", state: "unlisted", warning: null });
     add("literal-query", "beta", 901, "closed", "Literal _% query", "2026-10-03T00:00:00Z");
     add("wildcard-only", "beta", 902, "closed", "Literal AX query", "2026-10-03T00:00:00Z");
-    expect(service.dashboard("csrf").done.totalIssues).toBe(afterHistory.done.totalIssues + 2);
-    const literalSearch = service.dashboard("csrf", filters("literal _%", []));
+    expect(dashboardViews(service).dashboard("csrf").done.totalIssues).toBe(afterHistory.done.totalIssues + 2);
+    const literalSearch = dashboardViews(service).dashboard("csrf", filters("literal _%", []));
     expect(literalSearch.done.totalIssues).toBe(1);
     expect(literalSearch.done.issues.map((issue) => issue.id)).toEqual(["literal-query"]);
     // Owner-action work belongs to its panel, not the board filter model.
@@ -2871,7 +2872,7 @@ describe("board column order", () => {
       repositories: { one: repository("delivery"), two: repository("paid-ci-delivery") },
       agents: {},
     } as unknown as ConveyorConfig;
-    const model = new ConveyorService(config, store, {} as never).dashboard("csrf");
+    const model = dashboardViews(new ConveyorService(config, store, {} as never)).dashboard("csrf");
     expect(model.stages.map((column) => column.id)).toEqual(["refinement", "implementation", "review", "ci-gate", "merge", "cleanup"].map((id) => `stage:${id}`));
   });
 
@@ -2890,7 +2891,7 @@ describe("board column order", () => {
       repositories: { gated: repository({ overrides: { stages: { "ci-gate": {} } } }), skipping: repository({ overrides: { stages: { verify: { skip: true } } } }) },
       agents: {},
     } as unknown as ConveyorConfig;
-    const model = new ConveyorService(config, store, {} as never).dashboard("csrf");
+    const model = dashboardViews(new ConveyorService(config, store, {} as never)).dashboard("csrf");
     expect(model.stages.map((column) => column.id)).toEqual(["refinement", "implementation", "verify", "ci-gate", "review", "merge", "cleanup"].map((id) => `stage:${id}`));
   });
 });
@@ -2917,7 +2918,7 @@ describe("pause eligibility", () => {
     add("done", 6, ["conveyor"], "open", "refinement", "done");
 
     const service = new ConveyorService(config, store, {} as never);
-    const dashboard = service.dashboard("csrf");
+    const dashboard = dashboardViews(service).dashboard("csrf");
     const cards = [
       ...dashboard.backlog, ...dashboard.attention.issues, ...dashboard.done.issues,
       ...dashboard.stages.flatMap((stage) => [...stage.issues]),
@@ -2933,7 +2934,7 @@ describe("pause eligibility", () => {
     for (const [id, flags] of Object.entries(expected)) {
       const card = cards.find((c) => c.id === id);
       if (card) expect(card).toMatchObject(flags);
-      expect(service.issueDetails("csrf", id)).toMatchObject(flags);
+      expect(dashboardViews(service).issueDetails("csrf", id)).toMatchObject(flags);
     }
     expect(cards.find((c) => c.id === "running")).toBeDefined();
     expect(cards.find((c) => c.id === "paused")).toBeDefined();
