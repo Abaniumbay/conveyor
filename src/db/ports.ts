@@ -32,7 +32,7 @@ export type JournalStore = Pick<ConveyorStore,
 
 /** What gates read: findings, criterion approvals and test evidence, review threads, todos, indicators, manual gates and advisory CI. */
 export type EvidenceStore = Pick<ConveyorStore,
-  | "findings" | "criterionApprovals" | "reviewThreads" | "todos" | "manualGates" | "advisoryWatches"
+  | "findings" | "criterionApprovals" | "reviewThreads" | "todos" | "manualGates" | "advisoryWatchStore"
   | "criterionTestEvidence" | "replaceCriterionTestEvidence" | "refreshCriterionTestEvidence"
   | "saveIndicator" | "listIndicators" | "clearIndicator" | "findIssueIdsByIndicatorHead"
 >;

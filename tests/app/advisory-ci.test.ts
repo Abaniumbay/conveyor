@@ -5,7 +5,7 @@ import path from "node:path";
 
 import type { CiChange, CiProvider, CiRun } from "../../src/app/ci-provider";
 import { ConveyorStore } from "../../src/db/store";
-import { AdvisoryCiWatches } from "../../src/db/advisory-ci";
+import { AdvisoryCiWatches } from "../../src/app/advisory-ci";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -39,7 +39,7 @@ async function setup(directory?: string) {
   }
   const provider = new FakeCi();
   const posted: Array<{ itemId: string; stage: string; message: string }> = [];
-  const watches = new AdvisoryCiWatches(store.sqlite(), store.executions(), {
+  const watches = new AdvisoryCiWatches(store.advisoryWatchStore(), store.executions(), {
     resolve: () => ({ provider, address: "owner/sample", ignoreChecks: [] }),
     post: (itemId, stage, message) => { posted.push({ itemId, stage, message }); },
   });
@@ -208,7 +208,7 @@ describe("AdvisoryCiWatches", () => {
 describe("AdvisoryCiWatches and events", () => {
   async function withPoll(pollMs: (repositoryId: string) => number) {
     const base = await setup();
-    const watches = new AdvisoryCiWatches(base.store.sqlite(), base.store.executions(), {
+    const watches = new AdvisoryCiWatches(base.store.advisoryWatchStore(), base.store.executions(), {
       resolve: () => ({ provider: base.provider, address: "owner/sample", ignoreChecks: [] }),
       post: (itemId, stage, message) => { base.posted.push({ itemId, stage, message }); },
       pollMs,

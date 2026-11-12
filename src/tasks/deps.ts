@@ -3,7 +3,13 @@
 
 import type { CodeHost } from "../codehost/types";
 import type { ConveyorConfig } from "../config/load";
-import type { ConveyorStore } from "../db/store";
+import type { ConversationStore, EvidenceStore, ItemStore, JournalStore, RunLogStore } from "../db/ports";
+
+/**
+ * The storage tasks may use: items, the journal, gate evidence, run logs and conversations. Accounts,
+ * the event log, the provider cache, webhook deliveries and the database handle are not theirs.
+ */
+export type TaskStore = ItemStore & JournalStore & EvidenceStore & RunLogStore & ConversationStore;
 import type { GitHubAdapter } from "../plugins/github/shared/adapter";
 import type { GitOps } from "../workspace/git";
 import type { WorkspaceLifecycleManager } from "../workspace/lifecycle";
@@ -13,7 +19,7 @@ import type { CiProvider } from "../app/ci-provider";
 import type { AgentActor } from "./agent-support";
 
 export interface TaskDeps {
-  store: ConveyorStore;
+  store: TaskStore;
   config: ConveyorConfig;
   /** The source adapter methods the item group uses. */
   items: Pick<

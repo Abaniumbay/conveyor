@@ -7,7 +7,7 @@ import type { Indicator, StoredIndicator } from "../app/indicators";
 import type { Observation } from "../events/catalogue";
 import { EventThrottle } from "../events/throttle";
 import type { GitHubMirrorStorage } from "../plugins/github/shared/read-cache";
-import { AdvisoryCiWatches, type AdvisoryCiOptions } from "./advisory-ci";
+import { AdvisoryCiWatchStore } from "./advisory-ci";
 import { vacuumInto } from "./backup";
 import { eventLog, type EventLog } from "./event-log";
 import { ExecutionStore } from "./journal";
@@ -414,6 +414,7 @@ export class ConveyorStore {
   readonly #manualGates: ManualGateApprovals;
   readonly #todos: ItemTodos;
   readonly #reports: ReportQueries;
+  readonly #advisoryWatchStore: AdvisoryCiWatchStore;
   /** Transcript lines are many: they are recorded as at most one `run.progressed` per run and second. */
   readonly #runProgress: EventThrottle;
 
@@ -427,6 +428,7 @@ export class ConveyorStore {
     this.#manualGates = new ManualGateApprovals(database);
     this.#todos = new ItemTodos(database);
     this.#reports = new ReportQueries(database);
+    this.#advisoryWatchStore = new AdvisoryCiWatchStore(database, this.#executions);
     this.#runProgress = new EventThrottle(1_000, (runId) => {
       const owner = this.#database.query("SELECT issue_id FROM runs WHERE id = ?").get(runId) as { issue_id: string | null } | null;
       this.#events.append("run.progressed", { runId }, { issueId: owner?.issue_id ?? null });
@@ -503,8 +505,9 @@ export class ConveyorStore {
    * Advisory CI watches over this database. Each call makes a new poller with its own options;
    * the service keeps one, since the poller remembers whether a poll is under way.
    */
-  advisoryWatches(options: AdvisoryCiOptions): AdvisoryCiWatches {
-    return new AdvisoryCiWatches(this.#database, this.#executions, options);
+  /** The stored advisory CI watches; their polling is AdvisoryCiWatches in src/app/advisory-ci.ts. */
+  advisoryWatchStore(): AdvisoryCiWatchStore {
+    return this.#advisoryWatchStore;
   }
 
   /** Runs `work` in one transaction (a savepoint inside another), committing when it returns and rolling back when it throws. */
