@@ -91,20 +91,20 @@ Each event has:
 | `indicator.changed` | fact | A board indicator (such as CI) changed state, progress or head. | `indicatorId`: string<br>`state`: string<br>`progress`: string<br>`headSha`: string \| null |
 | `indicator.cleared` | fact | A board indicator was removed. | `indicatorId`: string |
 
-### GitHub
+### Providers
 
 | Event | Class | Meaning | Payload |
 | --- | --- | --- | --- |
-| `github.changeUpdated` | ingest | GitHub reported a change to a pull request (opened, synchronize, closed, ...). | `repository`: string<br>`number`: integer<br>`action`: string<br>`headSha`: string \| null<br>`merged`: boolean |
-| `github.ciUpdated` | ingest | GitHub reported CI progress for a commit; `completed` when a workflow run or check suite finished. | `repository`: string<br>`sha`: string<br>`pullRequests`: integer[]<br>`completed`: boolean |
-| `github.issueUpdated` | ingest | GitHub reported a change to an issue or its comments; `pullRequest` when the issue is a pull request. | `repository`: string<br>`number`: integer<br>`action`: string<br>`pullRequest`: boolean |
-| `github.ping` | ingest | GitHub confirmed the webhook (a ping). | `repository`: string |
-| `github.relationshipChanged` | ingest | GitHub reported changed sub-issues or blockers; `numbers` are the issues of this repository involved. | `repository`: string<br>`numbers`: integer[] |
+| `ci.runUpdated` | ingest | A CI provider reported progress for a commit; `completed` when a run finished. `changes` are the change requests it belongs to. | `repository`: string<br>`sha`: string<br>`changes`: integer[]<br>`completed`: boolean |
+| `code.changeUpdated` | ingest | A code host reported a change to a change request (opened, synchronize, closed, ...). | `repository`: string<br>`number`: integer<br>`action`: string<br>`headSha`: string \| null<br>`merged`: boolean |
+| `itemSource.itemChanged` | ingest, content | An item source reported a change to an item or its comments; `pullRequest` when the item is a change request. `item` is the item as the delivery describes it and `actors` who changed what, when the delivery carries them; otherwise Conveyor reads the item. | `repository`: string<br>`number`: integer<br>`action`: string<br>`pullRequest`: boolean<br>`item`: object \| null<br>`actors`: object \| null |
+| `itemSource.pinged` | ingest | An item source confirmed its webhook (a ping). | `repository`: string |
+| `itemSource.relationsChanged` | ingest | An item source reported changed children or blockers; `numbers` are the items of this repository involved. | `repository`: string<br>`numbers`: integer[] |
 | `source.mutationCompleted` | fact | A source change completed. | `mutationId`: string<br>`operation`: string |
 | `source.mutationFailed` | fact | A source change failed. | `mutationId`: string<br>`operation`: string |
 | `source.mutationStarted` | fact | Conveyor recorded a change it is about to make at the source. | `mutationId`: string<br>`operation`: string |
 | `webhook.healthChanged` | fact | A repository's webhook started or stopped delivering: unhealthy when a ping went undelivered, healthy again with the next delivery. | `healthy`: boolean |
-| `webhook.received` | ingest | A verified webhook delivery was stored. | `deliveryId`: string<br>`eventType`: string |
+| `webhook.received` | ingest | A plugin verified and stored a webhook delivery. | `deliveryId`: string<br>`eventType`: string |
 
 ### Workspaces
 

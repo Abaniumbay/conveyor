@@ -352,6 +352,8 @@ event answer.recorded
 event change.headObserved
 event change.opened
 event change.stateChanged
+event ci.runUpdated
+event code.changeUpdated
 event command.accepted
 event command.rejected
 event config.recorded
@@ -362,11 +364,6 @@ event gate.approved
 event gate.boardApprovalChanged
 event gate.boardApproved
 event gate.requirementChanged
-event github.changeUpdated
-event github.ciUpdated
-event github.issueUpdated
-event github.ping
-event github.relationshipChanged
 event indicator.changed
 event indicator.cleared
 event item.discovered
@@ -380,6 +377,9 @@ event item.relationshipsChanged
 event item.requeued
 event item.stageChanged
 event item.updated
+event itemSource.itemChanged
+event itemSource.pinged
+event itemSource.relationsChanged
 event journey.recorded
 event message.posted
 event notifications.settingsChanged
@@ -433,6 +433,15 @@ event-field change.opened number
 event-field change.opened state
 event-field change.stateChanged number
 event-field change.stateChanged state
+event-field ci.runUpdated changes
+event-field ci.runUpdated completed
+event-field ci.runUpdated repository
+event-field ci.runUpdated sha
+event-field code.changeUpdated action
+event-field code.changeUpdated headSha
+event-field code.changeUpdated merged
+event-field code.changeUpdated number
+event-field code.changeUpdated repository
 event-field command.accepted command
 event-field command.rejected command
 event-field command.rejected reason
@@ -456,22 +465,6 @@ event-field gate.boardApproved stageId
 event-field gate.requirementChanged gateId
 event-field gate.requirementChanged required
 event-field gate.requirementChanged stageId
-event-field github.changeUpdated action
-event-field github.changeUpdated headSha
-event-field github.changeUpdated merged
-event-field github.changeUpdated number
-event-field github.changeUpdated repository
-event-field github.ciUpdated completed
-event-field github.ciUpdated pullRequests
-event-field github.ciUpdated repository
-event-field github.ciUpdated sha
-event-field github.issueUpdated action
-event-field github.issueUpdated number
-event-field github.issueUpdated pullRequest
-event-field github.issueUpdated repository
-event-field github.ping repository
-event-field github.relationshipChanged numbers
-event-field github.relationshipChanged repository
 event-field indicator.changed headSha
 event-field indicator.changed indicatorId
 event-field indicator.changed progress
@@ -492,6 +485,31 @@ event-field item.stageChanged toStage
 event-field item.stageChanged toState
 event-field item.updated changed
 event-field item.updated number
+event-field itemSource.itemChanged action
+event-field itemSource.itemChanged actors
+event-field itemSource.itemChanged actors.body
+event-field itemSource.itemChanged actors.body.login
+event-field itemSource.itemChanged actors.enrollment
+event-field itemSource.itemChanged actors.enrollment.login
+event-field itemSource.itemChanged actors.title
+event-field itemSource.itemChanged actors.title.login
+event-field itemSource.itemChanged item
+event-field itemSource.itemChanged item.body
+event-field itemSource.itemChanged item.id
+event-field itemSource.itemChanged item.labels
+event-field itemSource.itemChanged item.number
+event-field itemSource.itemChanged item.state
+event-field itemSource.itemChanged item.stateReason
+event-field itemSource.itemChanged item.title
+event-field itemSource.itemChanged item.type
+event-field itemSource.itemChanged item.updatedAt
+event-field itemSource.itemChanged item.url
+event-field itemSource.itemChanged number
+event-field itemSource.itemChanged pullRequest
+event-field itemSource.itemChanged repository
+event-field itemSource.pinged repository
+event-field itemSource.relationsChanged numbers
+event-field itemSource.relationsChanged repository
 event-field journey.recorded fromStage
 event-field journey.recorded kind
 event-field journey.recorded status

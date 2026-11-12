@@ -22,11 +22,12 @@ import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type Sc
 import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue, type StoredQuestion } from "../db/store";
 import type { Harness } from "../harness/types";
-import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry } from "../core/plugins";
-import { GitHubAdapter, GitHubTransportError, isStatusComment, verifyGitHubSignature } from "../plugins/github/shared/adapter";
+import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt } from "../core/plugins";
+import { GitHubAdapter, GitHubTransportError } from "../plugins/github/shared/adapter";
 import { followUpsFromBody } from "../plugins/github/shared/managed-sections";
 import { GitHubRepositoryTrust } from "../plugins/github/shared/trust";
 import { isIssueGone, type SourceIssue } from "../source/types";
+import type { DeliveredActors } from "../core/reconciler";
 import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
@@ -78,8 +79,6 @@ import { EventBus } from "../events/bus";
 import { JsonlEventSink, SinkRunner, type EventSink } from "../events/sinks";
 import { isEventOf, type EventPayload, type EventType, type StoredEvent } from "../events/catalogue";
 import { withEventContext } from "../events/context";
-import { normalizeGitHubEvent } from "../plugins/github/shared/events";
-import { deliveredIssueChange } from "../plugins/github/items/delivery-issue";
 import type { WaitKind } from "../events/topics";
 import { WaitDispatcher } from "./wait-dispatcher";
 import { changesDashboard, DashboardFeed } from "./dashboard-feed";
@@ -147,6 +146,12 @@ export interface GitHubCallReport extends GitHubCallSummary {
   countingSince: string;
   windowMs: number;
   rateLimit: { limit: number; remaining: number; resetAt: string } | null;
+}
+
+/** An item as a delivery described it, and who made each change. */
+interface DeliveredIssue {
+  issue: SourceIssue;
+  actors: DeliveredActors;
 }
 
 interface ServiceImplementations {
@@ -2022,13 +2027,13 @@ export class ConveyorService {
     this.events.subscribe("criterion.approvalChanged", "refresh criterion approval status", (event) => {
       if (event.issueId) this.refreshStatusComments([event.issueId]);
     });
-    for (const type of ["github.issueUpdated", "github.relationshipChanged", "github.changeUpdated", "github.ciUpdated"] as const) {
-      this.events.subscribe(type, "webhook projection", (event) => this.reactToGitHubEvent(event));
+    for (const type of ["itemSource.itemChanged", "itemSource.relationsChanged", "code.changeUpdated", "ci.runUpdated"] as const) {
+      this.events.subscribe(type, "source observation", (event) => this.reactToObservation(event));
     }
-    for (const type of ["github.ciUpdated", "github.changeUpdated", "item.updated", "item.stageChanged"] as const) {
+    for (const type of ["ci.runUpdated", "code.changeUpdated", "item.updated", "item.stageChanged"] as const) {
       this.events.subscribe(type, "wake waiting tasks", (event) => this.#waitDispatcher.handle(event));
     }
-    this.events.subscribe("github.ciUpdated", "wake advisory CI watches", (event) => {
+    this.events.subscribe("ci.runUpdated", "wake advisory CI watches", (event) => {
       if (!event.payload.completed || !event.repositoryId) return;
       if (this.#advisoryWatches.wakeHead(event.repositoryId, event.payload.sha, Date.now()) > 0) {
         void this.pollAdvisoryCi().catch((error) => log.warn("Advisory CI poll failed", {}, error));
@@ -4005,49 +4010,59 @@ export class ConveyorService {
   }
 
   async handleWebhook(rawBody: Uint8Array, headers: Headers): Promise<void> {
-    // Providers may use different secrets on one webhook path: find the one that signed this delivery.
-    const candidates = [...new Set(Object.keys(this.config.sources).map((name) => this.webhookSecretFor(name)).filter(Boolean))];
-    const signature = headers.get("x-hub-signature-256");
-    const secret = candidates.find((candidate) => verifyGitHubSignature(rawBody, signature, candidate));
-    if (!secret) {
-      throw new Error("invalid GitHub webhook signature");
+    // Each item source type that receives webhooks tries the delivery with its providers' secrets;
+    // providers may use different secrets on one webhook path.
+    let receipt: WebhookReceipt | null = null;
+    let sourceType = "";
+    let failure: unknown = new Error("no item source receives webhooks");
+    for (const type of new Set(Object.values(this.config.sources).map((source) => source.type))) {
+      const receiver = this.#plugins.itemSource(type)?.webhook;
+      if (!receiver) continue;
+      const secrets = [...new Set(Object.entries(this.config.sources)
+        .filter(([, source]) => source.type === type)
+        .map(([name]) => this.webhookSecretFor(name))
+        .filter(Boolean))];
+      try {
+        receipt = receiver.receive(rawBody, headers, secrets);
+        sourceType = type;
+        break;
+      } catch (error) {
+        failure = error;
+      }
     }
-    const deliveryId = headers.get("x-github-delivery");
-    const eventType = headers.get("x-github-event");
-    if (!deliveryId || !eventType) throw new Error("missing GitHub webhook headers");
-    const payload = JSON.parse(new TextDecoder().decode(rawBody)) as unknown;
-    const repositoryAddress = object(object(payload).repository).full_name;
-    const repository = typeof repositoryAddress === "string"
-      ? Object.entries(this.config.repositories).find(([, candidate]) => candidate.address.toLowerCase() === repositoryAddress.toLowerCase())
-      : undefined;
+    if (!receipt) throw failure;
+    if (receipt.kind === "ignored") return;
+    const { delivery, secret } = receipt;
+    const address = delivery.repositoryAddress?.toLowerCase();
+    const repository = address === undefined
+      ? undefined
+      : Object.entries(this.config.repositories).find(([, candidate]) => candidate.address.toLowerCase() === address);
     // A delivery counts only for a repository whose own provider's secret signed it.
-    if (repository && this.webhookSecretFor(repository[1].source) !== secret) throw new Error("invalid GitHub webhook signature for this repository");
-    // Conveyor's own status-comment writes come back as deliveries; they carry nothing to read, and
-    // reconciling on them made every write trigger more writes.
-    if (eventType === "issue_comment" && isStatusComment(fields(fields(payload).comment).body)) return;
-    // The delivery and what it means are recorded together; subscribers react once it committed.
-    const normalized = repository ? normalizeGitHubEvent(eventType, payload) : null;
-    const recorded = withEventContext({ actor: { kind: "webhook", id: deliveryId } }, () =>
-      this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload, repositoryId: repository?.[0] ?? null, normalized }));
+    if (repository && this.webhookSecretFor(repository[1].source) !== secret) throw new Error("invalid webhook signature for this repository");
+    // The delivery and what it reports are recorded together; subscribers react once it committed.
+    const recorded = withEventContext({ actor: { kind: "webhook", id: delivery.deliveryId } }, () =>
+      this.store.recordSourceEvent({
+        source: sourceType, deliveryId: delivery.deliveryId, eventType: delivery.eventType, payload: delivery.payload,
+        repositoryId: repository?.[0] ?? null, observations: repository ? delivery.observations : [],
+      }));
     if (!recorded) return;
-    // Before anything reacts to it: the copy now says what the delivery says.
-    if (repository) this.github.applyDelivery?.(eventType, payload);
-    if (typeof repositoryAddress !== "string") return;
+    if (repository) delivery.recorded?.();
+    if (address === undefined) return;
     if (!repository) this.schedule();
   }
 
   /**
-   * The projection's reaction to a GitHub event: the CI indicator first, so the board shows a
-   * finished run within seconds, then a reconcile of the issues the event names. It runs in the
-   * background: GitHub counts a delivery as failed after ten seconds, and the event bus must not
-   * wait for GitHub either.
+   * The projection's reaction to what a provider observed: the CI indicator first, so the board shows
+   * a finished run within seconds, then the item the observation carries, or a reconcile of the items
+   * it names. It runs in the background: a provider may count a delivery as failed after a few
+   * seconds, and the event bus must not wait for the provider either.
    */
-  private reactToGitHubEvent(event: StoredEvent): void {
+  private reactToObservation(event: StoredEvent): void {
     const repositoryId = event.repositoryId;
     if (!repositoryId || !this.config.repositories[repositoryId]) return;
     // A deleted or transferred issue is gone: purge its item now, synchronously, so its run is aborted
     // before anything makes another GitHub request, and without a read or a sync.
-    if (isEventOf(event, "github.issueUpdated") && !event.payload.pullRequest && (event.payload.action === "deleted" || event.payload.action === "transferred")) {
+    if (isEventOf(event, "itemSource.itemChanged") && !event.payload.pullRequest && (event.payload.action === "deleted" || event.payload.action === "transferred")) {
       const gone = event.payload.number;
       for (const issue of this.store.listIssues(repositoryId)) {
         if (issue.sourceNumber === gone && issue.projectedState !== "unlisted") void this.purgeItem(issue.id);
@@ -4057,16 +4072,22 @@ export class ConveyorService {
     const work = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withGitHubCallSource("webhook", async () => {
       await this.applyCiEvent(repositoryId, event)
         .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: event.type }, error));
-      if (isEventOf(event, "github.issueUpdated")) {
+      if (isEventOf(event, "itemSource.itemChanged")) {
         // A comment on a pull request changes nothing on the item's issue.
         if (event.payload.pullRequest) {
           const named = new Set(this.issueNumbersFor(repositoryId, event));
           this.refreshStatusComments(this.store.listIssues(repositoryId).filter((issue) => named.has(issue.sourceNumber)).map((issue) => issue.id));
           return;
         }
-        if (await this.applyIssueDelivery(repositoryId, event.actor.id)) return;
+        const { item, actors } = event.payload;
+        if (item && actors) {
+          // An item source that reports no issue type or close reason leaves them out, which differs from null.
+          const { stateReason, type, ...fields } = item;
+          const issue: SourceIssue = { ...fields, ...(stateReason !== undefined ? { stateReason } : {}), ...(type !== undefined ? { type } : {}) };
+          if (await this.applyIssueDelivery(repositoryId, { issue, actors })) return;
+        }
       }
-      if (isEventOf(event, "github.changeUpdated") && event.payload.action === "closed" && event.payload.merged) {
+      if (isEventOf(event, "code.changeUpdated") && event.payload.action === "closed" && event.payload.merged) {
         const named = new Set(this.issueNumbersFor(repositoryId, event));
         for (const issue of this.store.listIssues(repositoryId).filter((candidate) => named.has(candidate.sourceNumber))) {
           await this.recoverClosedItem(repositoryId, issue);
@@ -4078,14 +4099,14 @@ export class ConveyorService {
       if (issueNumbers.length === 0) return;
       // CI and pull request events change no issue data: the indicator is updated above, a waiting
       // task reads the change itself, and the status comments of the items involved are refreshed.
-      if (isEventOf(event, "github.ciUpdated") || isEventOf(event, "github.changeUpdated")) {
+      if (isEventOf(event, "ci.runUpdated") || isEventOf(event, "code.changeUpdated")) {
         // CI progress changes nothing the comment shows.
-        if (isEventOf(event, "github.ciUpdated") && !event.payload.completed) return;
+        if (isEventOf(event, "ci.runUpdated") && !event.payload.completed) return;
         const named = new Set(issueNumbers);
         this.refreshStatusComments(this.store.listIssues(repositoryId).filter((issue) => named.has(issue.sourceNumber)).map((issue) => issue.id));
         return;
       }
-      if (isEventOf(event, "github.relationshipChanged")) this.forgetRelationships(repositoryId, event.payload.numbers);
+      if (isEventOf(event, "itemSource.relationsChanged")) this.forgetRelationships(repositoryId, event.payload.numbers);
       await this.queueWebhookReconcile(repositoryId, issueNumbers);
     }));
     this.#webhookWork.add(work);
@@ -4093,24 +4114,20 @@ export class ConveyorService {
   }
 
   /**
-   * Applies the issue an `issues` or `issue_comment` delivery carries, with no GitHub request: the
-   * delivery holds the issue's current state and names who made the change. False when the delivery
-   * cannot stand in for a read (a transfer, an unknown action), so the caller reads the issue instead.
+   * Applies the item an observation carries, with no request to the item source: the plugin read the
+   * item's current state and who made the change from the delivery. An observation that cannot stand
+   * in for a read (a transfer, an unknown action) carries no item, and the caller reads it instead.
    */
-  private async applyIssueDelivery(repositoryId: string, deliveryId: string | null): Promise<boolean> {
+  private async applyIssueDelivery(repositoryId: string, change: DeliveredIssue): Promise<boolean> {
     const repository = this.config.repositories[repositoryId];
-    const stored = deliveryId ? this.store.sourceEvent("github", deliveryId) : null;
-    if (!repository || !stored) return false;
-    const change = deliveredIssueChange(repository.address, stored.eventType, stored.payload, this.config.labels.enrollment);
-    // A delivery that cannot be applied answers at once, so the caller can queue it with its burst.
-    if (!change) return false;
+    if (!repository) return false;
     return this.withRepositoryLock(repositoryId, () => this.applyIssueDeliveryLocked(repositoryId, repository, change));
   }
 
   private async applyIssueDeliveryLocked(
     repositoryId: string,
     repository: NonNullable<ConveyorConfig["repositories"][string]>,
-    change: NonNullable<ReturnType<typeof deliveredIssueChange>>,
+    change: DeliveredIssue,
   ): Promise<boolean> {
     const number = change.issue.number;
     const prior = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
@@ -4167,10 +4184,10 @@ export class ConveyorService {
         return pullRequest && wanted.has(pullRequest.number) ? [issue.sourceNumber] : [];
       });
     };
-    if (isEventOf(event, "github.issueUpdated")) return event.payload.pullRequest ? forPullRequests([event.payload.number]) : [event.payload.number];
-    if (isEventOf(event, "github.relationshipChanged")) return event.payload.numbers;
-    if (isEventOf(event, "github.changeUpdated")) return forPullRequests([event.payload.number]);
-    if (isEventOf(event, "github.ciUpdated")) return forPullRequests(event.payload.pullRequests);
+    if (isEventOf(event, "itemSource.itemChanged")) return event.payload.pullRequest ? forPullRequests([event.payload.number]) : [event.payload.number];
+    if (isEventOf(event, "itemSource.relationsChanged")) return event.payload.numbers;
+    if (isEventOf(event, "code.changeUpdated")) return forPullRequests([event.payload.number]);
+    if (isEventOf(event, "ci.runUpdated")) return forPullRequests(event.payload.changes);
     return [];
   }
 
@@ -4224,14 +4241,14 @@ export class ConveyorService {
     let head: string;
     let numbers: readonly number[];
     let newHead: boolean;
-    if (isEventOf(event, "github.ciUpdated")) {
+    if (isEventOf(event, "ci.runUpdated")) {
       // Progress (requested, in progress) changes nothing a reader of the indicator acts on;
       // ci.start already shows the head's CI as starting. Only a finished run is read.
       if (!event.payload.completed) return;
       head = event.payload.sha;
-      numbers = event.payload.pullRequests;
+      numbers = event.payload.changes;
       newHead = false;
-    } else if (isEventOf(event, "github.changeUpdated") && ["opened", "reopened", "synchronize"].includes(event.payload.action) && event.payload.headSha) {
+    } else if (isEventOf(event, "code.changeUpdated") && ["opened", "reopened", "synchronize"].includes(event.payload.action) && event.payload.headSha) {
       head = event.payload.headSha;
       numbers = [event.payload.number];
       newHead = true;

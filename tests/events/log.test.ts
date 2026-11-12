@@ -183,9 +183,9 @@ describe("event classes, sources and causes", () => {
     const { store } = await open();
     store.recordSourceEvent({
       source: "github", deliveryId: "d-1", eventType: "ping", payload: {}, repositoryId: "repo",
-      normalized: { type: "github.ping", payload: { repository: "owner/my-app" } },
+      observations: [{ type: "itemSource.pinged", payload: { repository: "owner/my-app" } }],
     });
-    expect(store.events().read({ type: "github.ping" })[0]).toMatchObject({ class: "ingest", source: "github" });
+    expect(store.events().read({ type: "itemSource.pinged" })[0]).toMatchObject({ class: "ingest", source: "github" });
     expect(store.events().read({ type: "webhook.received" })[0]).toMatchObject({ class: "ingest", source: "github" });
     store.close();
   });

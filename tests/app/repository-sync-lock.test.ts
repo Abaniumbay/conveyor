@@ -10,6 +10,7 @@ import type { CodeHost } from "../../src/codehost/types";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
+import { githubPlugins } from "../support/plugins";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -127,6 +128,7 @@ repositories:
     deleteBranch: unexpected, listReviewArtifacts: unexpected, listReviewThreadStates: unexpected,
   };
   const conveyor = new ConveyorService(config, store, github as never, {
+    plugins: githubPlugins(config, github as never),
     codeHosts: new CodeHostRegistry().register("github", codeHost),
   });
   // Deliveries and syncs run; a stage run starts only when the test asks for it.

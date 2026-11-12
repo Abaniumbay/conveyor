@@ -5,10 +5,10 @@ import { randomUUID } from "node:crypto";
 
 import type { Indicator, StoredIndicator } from "../app/indicators";
 import { ExecutionStore } from "../engine/journal";
+import type { Observation } from "../events/catalogue";
 import { eventLog, type EventLog } from "../events/log";
 import { EventThrottle } from "../events/throttle";
 import type { GitHubMirrorStorage } from "../plugins/github/shared/read-cache";
-import type { NormalizedGitHubEvent } from "../plugins/github/shared/events";
 import { migrations } from "./migrations";
 
 export interface RepositoryRecord {
@@ -2107,8 +2107,8 @@ export class ConveyorStore {
     payload: unknown;
     /** The configured repository the delivery is for, when it is for one. */
     repositoryId?: string | null;
-    /** What the delivery means for Conveyor, recorded with it; absent when nothing reacts to it. */
-    normalized?: NormalizedGitHubEvent | null;
+    /** What the delivery reports, as neutral observations recorded with it; none when nothing reacts to it. */
+    observations?: readonly Observation[];
   }): boolean {
     return this.#database.transaction(() => {
       const result = this.#database
@@ -2122,20 +2122,19 @@ export class ConveyorStore {
       // The plugin that received the delivery is the source of what it reports.
       const scope = { repositoryId: event.repositoryId ?? null, source: event.source };
       this.#events.append("webhook.received", { deliveryId: event.deliveryId, eventType: event.eventType }, scope);
-      const normalized = event.normalized;
-      if (normalized) this.#appendGitHubEvent(normalized, scope);
+      for (const observation of event.observations ?? []) this.#appendObservation(observation, scope);
       return true;
     })();
   }
 
-  #appendGitHubEvent(event: NormalizedGitHubEvent, scope: { repositoryId: string | null; source: string }): void {
+  #appendObservation(observation: Observation, scope: { repositoryId: string | null; source: string }): void {
     // Each branch narrows the payload to its own type.
-    switch (event.type) {
-      case "github.issueUpdated": return this.#events.append(event.type, event.payload, scope);
-      case "github.relationshipChanged": return this.#events.append(event.type, event.payload, scope);
-      case "github.changeUpdated": return this.#events.append(event.type, event.payload, scope);
-      case "github.ciUpdated": return this.#events.append(event.type, event.payload, scope);
-      case "github.ping": return this.#events.append(event.type, event.payload, scope);
+    switch (observation.type) {
+      case "itemSource.itemChanged": return this.#events.append(observation.type, observation.payload, scope);
+      case "itemSource.relationsChanged": return this.#events.append(observation.type, observation.payload, scope);
+      case "itemSource.pinged": return this.#events.append(observation.type, observation.payload, scope);
+      case "code.changeUpdated": return this.#events.append(observation.type, observation.payload, scope);
+      case "ci.runUpdated": return this.#events.append(observation.type, observation.payload, scope);
     }
   }
 

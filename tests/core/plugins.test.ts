@@ -72,4 +72,12 @@ describe("PluginRegistry", () => {
     expect(second).toBe(first);
     expect(created).toBe(1);
   });
+
+  test("builds one item source module per type and none for an unknown type", () => {
+    let built = 0;
+    const registry = new PluginRegistry([{ role: "items", type: "jira", create: () => { built += 1; return {}; } }], pluginContext(config()));
+    expect(registry.itemSource("jira")).toBe(registry.itemSource("jira"));
+    expect(built).toBe(1);
+    expect(registry.itemSource("github")).toBeNull();
+  });
 });
