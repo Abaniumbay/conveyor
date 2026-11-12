@@ -376,6 +376,7 @@ event item.queueChanged
 event item.relationshipsChanged
 event item.requeued
 event item.stageChanged
+event item.stopSummaryRecorded
 event item.updated
 event itemSource.itemChanged
 event itemSource.pinged
@@ -483,6 +484,7 @@ event-field item.stageChanged fromStage
 event-field item.stageChanged fromState
 event-field item.stageChanged toStage
 event-field item.stageChanged toState
+event-field item.stopSummaryRecorded stopId
 event-field item.updated changed
 event-field item.updated number
 event-field itemSource.itemChanged action
@@ -661,6 +663,7 @@ task operator.findItem
 task operator.getBoard
 task operator.getItemHistory
 task operator.moveBacklogItem
+task operator.recordStopSummary
 task operator.reportStoppedItemOutcome
 task operator.retryItem
 task operator.retryStoppedItem
@@ -800,6 +803,9 @@ task-input operator.getItemHistory runLimit
 task-input operator.moveBacklogItem beforeItemId
 task-input operator.moveBacklogItem itemId
 task-input operator.moveBacklogItem position
+task-input operator.recordStopSummary itemId
+task-input operator.recordStopSummary stopId
+task-input operator.recordStopSummary summary
 task-input operator.reportStoppedItemOutcome itemId
 task-input operator.reportStoppedItemOutcome reason
 task-input operator.retryItem itemId

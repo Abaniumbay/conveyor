@@ -1165,4 +1165,18 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX events_class_occurred_at ON events(class, occurred_at);
     `,
   },
+  {
+    version: 50,
+    sql: `
+      -- The Operator's short advice about an item's current stop. One row per item: the summary of the
+      -- stop named by stop_id (a completed "stopped" stage transition). It is read only while that
+      -- stop is still the item's latest completed transition, so a resumed or re-stopped item shows none.
+      CREATE TABLE item_stop_summaries (
+        issue_id TEXT PRIMARY KEY REFERENCES issues(id) ON DELETE CASCADE,
+        stop_id TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      );
+    `,
+  },
 ];

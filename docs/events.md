@@ -34,6 +34,7 @@ Each event has:
 | `item.relationshipsChanged` | fact | An item's stored parent or blockers changed. | `parentId`: string \| null<br>`dependencies`: string[] |
 | `item.requeued` | fact | A person asked for an item's stage to run again: a retry, a message, a resume or an answer. | `reason`: `"retry"` \| `"message"` \| `"resume"` \| `"answer"` |
 | `item.stageChanged` | fact | An item's projected stage or state changed. | `fromStage`: string \| null<br>`fromState`: string \| null<br>`toStage`: string \| null<br>`toState`: string \| null |
+| `item.stopSummaryRecorded` | fact | The Operator recorded a short advice summary for an item's current stop; `stopId` names the stop. The text is not in the event. | `stopId`: string |
 | `item.updated` | fact | A source issue's title, body, state, labels, parent or accepted text changed; `changed` names the fields. | `number`: integer<br>`changed`: (`"title"` \| `"body"` \| `"state"` \| `"labels"` \| `"parent"` \| `"acceptedText"`)[] |
 | `journey.recorded` | fact | A journey entry (a stage transition, resume or restart) completed or failed. | `transitionId`: string<br>`kind`: string<br>`fromStage`: string \| null<br>`toStage`: string \| null<br>`status`: `"completed"` \| `"failed"` |
 | `stage.stateChanged` | fact | An item's stage record (stage, status or feedback cycle) changed. | `stageId`: string<br>`status`: string<br>`feedbackCycle`: integer |

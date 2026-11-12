@@ -69,6 +69,7 @@ export const EVENT_CATALOGUE = {
   "item.requeued": define("Items", "A person asked for an item's stage to run again: a retry, a message, a resume or an answer.", z.object({
     reason: z.enum(["retry", "message", "resume", "answer"]),
   }).strict()),
+  "item.stopSummaryRecorded": define("Items", "The Operator recorded a short advice summary for an item's current stop; `stopId` names the stop. The text is not in the event.", z.object({ stopId: id }).strict()),
   "item.queueChanged": define("Items", "An item's backlog position changed; null rank leaves the queue.", z.object({ rank: z.number().nullable() }).strict()),
   "item.relationshipsChanged": define("Items", "An item's stored parent or blockers changed.", z.object({
     parentId: nullableId, dependencies: z.array(id),

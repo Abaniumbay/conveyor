@@ -23,7 +23,7 @@ export type ItemStore = Pick<ConveyorStore,
 export type JournalStore = Pick<ConveyorStore,
   | "executions"
   | "setStageState" | "claimStageExecution" | "releaseFencedStageExecution" | "getStageState"
-  | "recordJourneyEvent"
+  | "recordJourneyEvent" | "currentStopId" | "recordStopSummary" | "currentStopSummary"
   | "beginStageTransition" | "beginStageTransitionWithMutation" | "completeStageTransition" | "failStageTransition"
   | "listStageTransitions" | "listPendingStageTransitions"
   | "beginSourceMutation" | "completeSourceMutation" | "failSourceMutation"

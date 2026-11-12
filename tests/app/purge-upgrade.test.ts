@@ -65,7 +65,7 @@ test("migration 47 queues the rows of the removed missing and offboarded states;
   }
   // Offboarding had ended the enrollment of the first and marked its workspace stale.
   store.endActiveEnrollment("gone", "offboarded");
-  store.sqlite().exec(UNDO_EVENT_CLASSES + " DROP TABLE pending_purges; DROP TABLE purged_generations; DELETE FROM schema_migrations WHERE version >= 47;");
+  store.sqlite().exec(UNDO_EVENT_CLASSES + " DROP TABLE pending_purges; DROP TABLE purged_generations; DROP TABLE item_stop_summaries; DELETE FROM schema_migrations WHERE version >= 47;");
   store.close();
   for (const { path: workspacePath } of worktrees.values()) expect(existsSync(workspacePath)).toBe(true);
 
