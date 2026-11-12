@@ -3,13 +3,13 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import { z } from "zod";
 
 import type { GitHubCacheLifetimes, GitHubMirrorStorage } from "./read-cache";
-import type { PullRequestReference, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../../../source/types";
-import type { IssueFieldDataType, IssueFieldDefinition, ResolvedFieldValue } from "../items/issue-metadata";
+import type { ItemTracker, PullRequestReference, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../../../source/types";
+import type { IssueFieldDataType, IssueFieldDefinition, ResolvedFieldValue } from "../../../source/item-metadata";
 import {
   parseManagedSections,
   upsertManagedSection,
   type ManagedSectionName,
-} from "./managed-sections";
+} from "../../../source/managed-sections";
 
 export interface GitHubTransportRequest {
   method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
@@ -383,7 +383,7 @@ interface CachingTransport extends GitHubTransport {
 const caching = (transport: GitHubTransport): transport is CachingTransport =>
   "applyDelivery" in transport && "forgetRepository" in transport && "forgetChange" in transport && "forgetIssue" in transport;
 
-export class GitHubAdapter {
+export class GitHubAdapter implements ItemTracker {
   constructor(
     private readonly transport: GitHubTransport,
     private readonly labelPrefix: string,

@@ -5,7 +5,7 @@ import {
   resolveFieldValues,
   resolveIssueType,
   type IssueFieldDefinition,
-} from "../../../../src/plugins/github/items/issue-metadata";
+} from "../../src/source/item-metadata";
 
 const fields: IssueFieldDefinition[] = [
   { id: 1, name: "Effort", dataType: "single_select", options: ["High", "Medium", "Low"] },

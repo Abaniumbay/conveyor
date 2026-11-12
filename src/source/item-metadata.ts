@@ -1,7 +1,7 @@
 // Organization issue types and issue fields: what the owner defines, and validation of what
 // refinement writes against it. Pure; the adapter does the GitHub calls.
 
-import { ToolRequestError } from "../../../tasks/errors";
+import { ToolRequestError } from "../tasks/errors";
 
 export type IssueFieldDataType = "text" | "number" | "date" | "single_select" | "multi_select";
 

@@ -8,7 +8,7 @@ import {
   ManagedSectionError,
   parseManagedSections,
   upsertManagedSection,
-} from "../../../../src/plugins/github/shared/managed-sections";
+} from "../../src/source/managed-sections";
 
 describe("managed GitHub issue body sections", () => {
   test("parses managed sections and hashes the complete source body", () => {

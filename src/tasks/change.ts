@@ -7,7 +7,7 @@ import { z } from "zod";
 import { pushAndEnsureChange } from "../codehost/actions";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
 import { changeTopic } from "../events/topics";
-import { parseManagedSections } from "../plugins/github/shared/managed-sections";
+import { parseManagedSections } from "../source/managed-sections";
 import type { ChangeContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import { checkCriterion, criterionTestsPassed, criterionTestsVerified, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, recordCriterionTests, syncChecklist, uncheckCriterion } from "./change-criteria";

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { parseManagedSections, upsertManagedSection } from "../../src/plugins/github/shared/managed-sections";
+import { parseManagedSections, upsertManagedSection } from "../../src/source/managed-sections";
 import { dispatchTool } from "../../src/tasks/dispatch";
 import type { ChangeDelivery, ChangeRequest, CodeHost, MergeChangeResult, ReviewArtifact, ReviewThreadState } from "../../src/codehost/types";
 import { ConveyorStore } from "../../src/db/store";

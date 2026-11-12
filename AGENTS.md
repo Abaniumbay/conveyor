@@ -57,7 +57,7 @@ Run these from the repository root.
 | `src/config/` | `schema.ts` (zod schemas), loader, packaged defaults, migration. |
 | `src/core/plugins.ts` | The plugin contract and registry: item source, code host, CI, harness and presentation plugins by `type`. |
 | `src/plugins/` | Plugin implementations, one folder per provider and one per role inside it: `github/{shared,items,code,ci}`, `codex/`, `claude-code/`, and `dashboard/` (the dashboard's view models in `views.ts`, its live feed in `feed.ts`). `index.ts` is the list the composition root registers. |
-| `src/source/`, `src/codehost/` | Item source and code host ports (`types.ts`) and provider-neutral change actions. |
+| `src/source/`, `src/codehost/` | Item source and code host ports (`types.ts`: `ItemReader`, `ItemSections`, `ItemMarkers`, … combined as `ItemTracker`), Conveyor's managed-section codec (`managed-sections.ts`), item types and fields (`item-metadata.ts`), and provider-neutral change actions. |
 | `src/harness/`, `src/runner/` | The harness port (`harness/types.ts`) and the process runners behind the Codex and Claude Code plugins. |
 | `src/isolation/` | Sanitized agent environment, network sandbox, egress proxies. |
 | `src/web/` | `server.ts` (HTTP routes, SSE), `model.ts` (the live dashboard model and its patches), `render.tsx` (Preact markup), `types.ts` (view models), `styles.ts` (CSS), `app/` (the browser application: `main.tsx`, `store.ts`, `derive.ts`, `behaviour.ts`). |

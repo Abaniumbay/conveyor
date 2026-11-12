@@ -14,7 +14,7 @@ import { ConveyorStore } from "../../../src/db/store";
 import { ReviewFindings } from "../../../src/db/review-findings";
 import { ItemTodos } from "../../../src/db/todos";
 import { ConsoleSink, type LogRecord, log } from "../../../src/log/logger";
-import { parseManagedSections } from "../../../src/plugins/github/shared/managed-sections";
+import { parseManagedSections } from "../../../src/source/managed-sections";
 import { dashboardViews, webDependenciesOf } from "../../support/dashboard";
 
 const temporaryDirectories: string[] = [];
