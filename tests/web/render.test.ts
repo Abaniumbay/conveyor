@@ -730,13 +730,46 @@ describe("renderDashboard", () => {
     expect(html).toContain("Reconciling startup state");
   });
 
-  test("Needs you shows a stopped item's reason only up to its first paragraph", () => {
-    const excerpt = "(fail) dashboard live refresh position > keeps Recent usable";
-    const stopped = { ...parent, reason: `The same required CI failure repeated. Another automatic retry will not fix it.\n\nFirst failure: https://example.com/pull/1 at abc1234.\n\n${excerpt}` };
-    const html = renderDashboard({ ...dashboard, needsYou: [stopped] });
-    const needsYou = html.slice(html.indexOf('<section class="needs-you"'), html.indexOf("</section>", html.indexOf('<section class="needs-you"')));
-    expect(needsYou).toContain("<p>The same required CI failure repeated. Another automatic retry will not fix it.</p>");
-    expect(needsYou).not.toContain(excerpt);
+  const FULL_REASON = "The same required CI failure repeated. Another automatic retry will not fix it.\n\nFirst failure: https://example.com/pull/1 at abc1234.\n\n(fail) dashboard live refresh position > keeps Recent usable";
+  const blockedBox = (html: string) => html.slice(html.indexOf('<section class="blocked-summary"'), html.indexOf("</section>", html.indexOf('<section class="blocked-summary"')));
+  const needsYouList = (html: string) => html.slice(html.indexOf('<section class="needs-you"'), html.indexOf("</section>", html.indexOf('<section class="needs-you"')));
+
+  test("with a stop summary the Blocking reason box shows only the summary, attributed to the Operator", () => {
+    const issue = { ...backlogIssue, blocked: true, reason: FULL_REASON, stopSummary: "CI failed twice; fix the flaky refresh test.", stopHeadline: "The same required CI failure repeated. Another automatic retry will not fix it." };
+    const html = renderDashboard({ ...dashboard, selectedIssue: issue });
+    const box = blockedBox(html);
+    expect(box).toContain("CI failed twice; fix the flaky refresh test.");
+    expect(box).toContain("Summary by the Operator");
+    expect(box).toContain("View full result");
+    expect(box).not.toContain("The same required CI failure");
+    expect(box).not.toContain("First failure");
+    expect(box).not.toContain("keeps Recent usable");
+    expect(box).not.toContain("<dialog");
+  });
+
+  test("without a stop summary the box shows the headline, and View full result opens the full reason outside the box", () => {
+    const headline = "The same required CI failure repeated. Another automatic retry will not fix it.";
+    const issue = { ...backlogIssue, blocked: true, reason: FULL_REASON, stopSummary: null, stopHeadline: headline };
+    const html = renderDashboard({ ...dashboard, selectedIssue: issue });
+    const box = blockedBox(html);
+    expect(box).toContain(`<p class="blocked-summary-text">${headline}</p>`);
+    expect(box).not.toContain("Summary by the Operator");
+    expect(box).not.toContain("First failure");
+    expect(box).toContain("data-full-result-open=");
+    const dialog = html.slice(html.indexOf('<dialog class="full-result"'));
+    expect(dialog).toContain("First failure: https://example.com/pull/1 at abc1234.");
+    expect(dialog).toContain("(fail) dashboard live refresh position > keeps Recent usable");
+  });
+
+  test("Needs you shows the summary, or the headline when none exists, instead of the raw reason", () => {
+    const withSummary = { ...parent, reason: FULL_REASON, stopSummary: "Fix the flaky refresh test.", stopHeadline: "headline text" };
+    const html = renderDashboard({ ...dashboard, needsYou: [withSummary] });
+    expect(needsYouList(html)).toContain("<p>Fix the flaky refresh test.</p>");
+    expect(needsYouList(html)).not.toContain("The same required CI failure");
+    const headlineOnly = { ...parent, reason: FULL_REASON, stopSummary: null, stopHeadline: "The same required CI failure repeated. Another automatic retry will not fix it." };
+    const second = needsYouList(renderDashboard({ ...dashboard, needsYou: [headlineOnly] }));
+    expect(second).toContain("<p>The same required CI failure repeated. Another automatic retry will not fix it.</p>");
+    expect(second).not.toContain("keeps Recent usable");
   });
 
   test("the About view shows the running build and the project's details", () => {
@@ -1593,7 +1626,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("Keyboard usable");
     expect(html).toContain("Running verification");
     expect(html).toContain("Waiting for checks");
-    expect(html).toContain('<section class="blocked-summary" aria-label="Blocking reason"><h3>Blocking reason</h3><p>Waiting for checks</p>');
+    expect(html).toContain('<section class="blocked-summary" aria-label="Blocking reason"><h3>Blocking reason</h3><p class="blocked-summary-text">Waiting for checks</p>');
     expect(html).toContain('border-left:16px solid var(--repo-color,var(--line))');
     expect(html).toContain('.blocked-summary{margin:.75rem 0 0;');
     expect(html).toContain('color:var(--stop)');
@@ -1720,7 +1753,7 @@ describe("renderDashboard", () => {
     });
 
     expect(html).toContain(`class="issue-status-context" title="${reason}"`);
-    expect(html).toContain(`<section class="blocked-summary" aria-label="Blocking reason"><h3>Blocking reason</h3><p>${reason}</p>`);
+    expect(html).toContain(`<section class="blocked-summary" aria-label="Blocking reason"><h3>Blocking reason</h3><p class="blocked-summary-text">${reason}</p>`);
     expect(html).toContain(".stage{width:min(20rem,86vw);min-width:min(20rem,86vw);max-width:min(20rem,86vw);flex:0 0 min(20rem,86vw)}");
     expect(html).toContain(".issue-status-context{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}");
   });

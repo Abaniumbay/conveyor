@@ -282,7 +282,13 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         {issue.blocked && (
           <section class="blocked-summary" aria-label="Blocking reason">
             <h3>Blocking reason</h3>
-            <p>{issue.reason ?? "Conveyor received a stopped state, but no reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item."}</p>
+            {issue.reason
+              ? <Fragment>
+                <p class="blocked-summary-text">{issue.stopSummary ?? issue.stopHeadline ?? reasonSummary(issue.reason)}</p>
+                {issue.stopSummary && <p class="blocked-summary-by">Summary by the Operator</p>}
+                <button type="button" class="action-button action-button--secondary" data-full-result-open={`${id}-full-result`} aria-haspopup="dialog">View full result</button>
+              </Fragment>
+              : <p class="blocked-summary-text">Conveyor received a stopped state, but no reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item.</p>}
             {issue.stoppedRollup && <p>Children can keep running while this parent waits.</p>}
           </section>
         )}
@@ -416,6 +422,15 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
       >
         {live?.activity}
       </section>
+      {issue.blocked && issue.reason && (
+        <dialog class="full-result" id={`${id}-full-result`} aria-labelledby={`${id}-full-result-title`}>
+          <header>
+            <h3 id={`${id}-full-result-title`}>Full result · #{issue.number}</h3>
+            <form method="dialog"><button class="dialog-close" aria-label="Close full result">×</button></form>
+          </header>
+          <pre class="full-result-text">{issue.reason}</pre>
+        </dialog>
+      )}
     </dialog>
   );
 }
@@ -1160,7 +1175,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
             <span class="andon andon--stop" aria-hidden="true" />
             <div>
               <h3><RepositoryBadge repository={issue.repository} /> · #{issue.number} {issue.title}</h3>
-              <p>{issue.reason ? reasonSummary(issue.reason) : issue.activity ?? `${issue.state.replaceAll("-", " ")} needs intervention`}</p>
+              <p>{issue.stopSummary ?? issue.stopHeadline ?? (issue.reason ? reasonSummary(issue.reason) : null) ?? issue.activity ?? `${issue.state.replaceAll("-", " ")} needs intervention`}</p>
             </div>
             <a class="needs-you-action action-button action-button--secondary" href={issueHref(issue.repository, issue.number)}>Open</a>
           </li>

@@ -135,6 +135,10 @@ export interface IssueCardViewModel {
   resumableRollup: boolean;
   /** A stopped roll-up parent explains that its children continue independently. */
   stoppedRollup: boolean;
+  /** The Operator's summary of the item's current stop; null when none was recorded for this stop. */
+  stopSummary?: string | null;
+  /** The first line of the recorded stop reason, cut to the summary limit; shown when there is no summary. */
+  stopHeadline?: string | null;
 }
 
 export interface ActiveRunViewModel {

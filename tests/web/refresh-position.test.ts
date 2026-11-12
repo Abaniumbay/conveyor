@@ -2079,3 +2079,74 @@ describe("dashboard live refresh position", () => {
     }
   }, 40_000);
 });
+
+describe("dashboard stop summary and full result", () => {
+  const FULL = `Required check failed: ${"averyveryverylongunbrokenlogtoken".repeat(8)}\nsecond line\n\nFirst failure: https://example.com/pull/1 at abc1234\n(fail) keeps Recent usable`;
+  const stopped = (summary: string | null): IssueCardViewModel => ({
+    ...issue("stopped", 30, "Stopped item with a deliberately long title that must stay inside the phone viewport"),
+    state: "blocked", blocked: true, needsAttention: true, tone: "danger", reason: FULL, stopSummary: summary,
+    stopHeadline: FULL.split("\n")[0]!.slice(0, 300),
+  });
+  const withNeedsYou = (item: IssueCardViewModel) => ({ ...dashboard("stop-summary", [item]), needsYou: [item] });
+
+  test("View full result opens a separate view with the full reason, and closing it leaves the box unchanged", async () => {
+    const item = stopped("CI failed; fix the check.");
+    const server = startDashboard({ dashboard: () => withNeedsYou(item), revision: () => "stop-summary" });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 900, height: 800 }, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      await page.locator('article.issue[data-issue-id="stopped"] .card-open').click();
+      await page.waitForURL("**/issues/sample/30");
+      const box = page.locator(".blocked-summary");
+      await box.waitFor();
+      const before = await box.innerText();
+      expect(before).toContain("CI failed; fix the check.");
+      expect(before).not.toContain("First failure");
+
+      await page.getByRole("button", { name: "View full result" }).click();
+      const full = page.locator("dialog.full-result[open]");
+      await full.waitFor();
+      expect(await full.evaluate((element) => element.closest(".blocked-summary") === null)).toBe(true);
+      expect(await full.locator(".full-result-text").textContent()).toBe(FULL);
+      expect(await box.innerText()).toBe(before);
+
+      await full.getByRole("button", { name: "Close full result" }).click();
+      expect(await page.locator("dialog.full-result[open]").count()).toBe(0);
+      expect(page.url()).toContain("/issues/sample/30");
+      expect(await page.locator("dialog.issue-details[open]").count()).toBe(1);
+      expect(await box.innerText()).toBe(before);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  for (const theme of ["light", "dark"] as const) {
+    test(`the box and the Needs you list cause no horizontal scrolling at 360 px in the ${theme} theme`, async () => {
+      const item = stopped(null);
+      const server = startDashboard({ dashboard: () => withNeedsYou(item), revision: () => "stop-summary" });
+      try {
+        browser = await chromium.launch({ headless: true });
+        const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: theme });
+        await signIn(page, server.port);
+        const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+        await page.locator("[data-needs-you] .needs-you-item").waitFor();
+        expect(await fits()).toBe(true);
+        expect(await page.locator("[data-needs-you]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+
+        await page.locator('article.issue[data-issue-id="stopped"] .card-open').click();
+        const box = page.locator(".blocked-summary");
+        await box.waitFor();
+        expect(await fits()).toBe(true);
+        expect(await box.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+        await page.getByRole("button", { name: "View full result" }).click();
+        const full = page.locator("dialog.full-result[open]");
+        await full.waitFor();
+        expect(await full.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+        expect(await fits()).toBe(true);
+      } finally {
+        server.stop(true);
+      }
+    }, 30_000);
+  }
+});

@@ -895,6 +895,12 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
       if (control instanceof HTMLDetailsElement) control.open = false;
       return;
     }
+    const fullResult = target.closest("[data-full-result-open]")?.getAttribute("data-full-result-open");
+    if (fullResult) {
+      const fullDialog = document.getElementById(fullResult);
+      if (fullDialog instanceof HTMLDialogElement && !fullDialog.open) fullDialog.showModal();
+      return;
+    }
     const dialog = target.closest("dialog");
     if (dialog instanceof HTMLDialogElement) {
       const tab = target.closest("[data-detail-tab]");
