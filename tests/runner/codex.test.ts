@@ -356,4 +356,26 @@ describeSandbox("runCodex", () => {
 
     await expect(runCodex(runInput(files))).rejects.toMatchObject({ kind: "protocol" });
   });
+  const commandEvents = (output: string, exitCode: number) => `
+      const args = process.argv.slice(2);
+      await new Response(Bun.stdin.stream()).text();
+      await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({
+        version: 1, outcome: "success", status: "done", summary: "ok", reason: null, metrics: {}, artifacts: []
+      }));
+      console.log(JSON.stringify({ type: "thread.started", thread_id: "t" }));
+      console.log(JSON.stringify({ type: "item.completed", item: { id: "i", type: "command_execution", command: "ls", aggregated_output: ${JSON.stringify(output)}, exit_code: ${exitCode}, status: "failed" } }));
+  `;
+
+  test("a command that cannot start in the sandbox is a sandbox error naming it, and the result is not returned", async () => {
+    const files = await fixture(commandEvents("bwrap: No permissions to create a new namespace\n", 1));
+    await expect(runCodex(runInput(files))).rejects.toMatchObject({
+      kind: "sandbox",
+      message: expect.stringContaining("bwrap: No permissions to create a new namespace"),
+    });
+  });
+
+  test("an ordinary failing command still returns the agent's result", async () => {
+    const files = await fixture(commandEvents("ls: cannot access 'x': No such file or directory\n", 2));
+    await expect(runCodex(runInput(files))).resolves.toMatchObject({ stageResult: { status: "done" } });
+  });
 });

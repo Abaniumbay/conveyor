@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { InfrastructureError } from "../../src/tasks/contract";
 import { IssueExecutor } from "../../src/app/issue-executor";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
@@ -90,6 +91,26 @@ describe("infrastructure failures", () => {
       const notes = store.listConversationMessages("issue").map((message) => message.message);
       expect(notes).toEqual([expect.stringContaining("stopped after 3 failed attempts")]);
       expect(notes[0]).toContain("conversation message must not exceed 4000 characters");
+    } finally {
+      spy.mockRestore();
+      await service.close();
+    }
+  });
+
+  test("a sandbox setup failure is retried with the same backoff and the stop reason names the sandbox error", async () => {
+    const { service, store, labels, execute, internals } = await setup();
+    const delays: number[] = [];
+    internals.retryLater = (_issueId: string, delayMs: number) => { delays.push(delayMs); };
+    const error = new InfrastructureError("Codex sandbox could not start commands: bwrap: No permissions to create a new namespace");
+    const spy = spyOn(IssueExecutor.prototype, "execute").mockRejectedValue(error);
+    try {
+      await execute(store.getIssue("issue")!);
+      await execute(store.getIssue("issue")!);
+      expect(delays).toEqual([1_000, 2_000]);
+      await execute(store.getIssue("issue")!);
+      expect(labels).toEqual([["conveyor", "conveyor:error", "conveyor:implementation"]]);
+      const notes = store.listConversationMessages("issue").map((message) => message.message);
+      expect(notes[0]).toContain("bwrap: No permissions to create a new namespace");
     } finally {
       spy.mockRestore();
       await service.close();

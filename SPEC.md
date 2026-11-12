@@ -955,6 +955,7 @@ Every run has a durable ID, attempt number, lease, heartbeat, process metadata, 
 
 - Stage advancement occurs only after the exit gate opens, its checkpoints and the context are durably recorded, and the source-label transition is confirmed (*legacy*: after exit-verifier success and configured lifecycle actions). Section 8 specifies the journal, idempotency keys, epochs and restart behaviour.
 - A process crash or lost heartbeat marks the attempt interrupted and schedules a fresh attempt at the same stage with exponential backoff. Consecutive infrastructure failures use their own configurable limit, default five, then block with diagnostics.
+- A sandbox setup failure inside a run is an infrastructure failure: when a Codex command event or a Claude Code Bash tool result shows a failed command with a bubblewrap setup error (`bwrap: No permissions to create a new namespace`, `bwrap: Can't mount …`, `error building bubblewrap command`), the runner ends the run with an infrastructure error naming it and the agent's result, written without a working shell, is never recorded. The executor retries it with the bounded infrastructure backoff and, once exhausted, stops the item with that reason. An ordinary failing command is unaffected.
 - An intentional Conveyor/VPS shutdown interrupts and later resumes the attempt without consuming an infrastructure retry.
 - Existing worktree changes are preserved.
 - A harness session may be resumed after a question when it advertises `sessionResume`, but correctness never depends on conversational session recovery.

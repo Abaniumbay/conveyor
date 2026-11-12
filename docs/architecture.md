@@ -137,6 +137,7 @@ Every call goes through one dispatcher in the service that re-checks the grant, 
 - The context history is append-only per task and the latest context is bounded by `settings.history.contextSummaryBytes`; large logs stay artifacts.
 - Interrupted runs are recovered into schedulable state.
 - Infrastructure and usage-limit retries are separate and use configurable bounded backoff.
+- A sandbox setup failure inside a run (a failed Codex command or Claude Code Bash tool result showing a bubblewrap setup error such as `bwrap: No permissions to create a new namespace`) is an infrastructure failure: the run ends naming the error, its result is not recorded, and the executor retries it with the same bounded backoff before stopping the item with that reason. Ordinary failing commands are unaffected.
 - Source mutations carry idempotency keys.
 - Reconciliation repairs stale projections from GitHub and refuses ambiguous configuration drift.
 - A parked task's wait subscriptions are written with its pending result and belong to one stage epoch; they go when the task passes, fails, times out or the stage changes. A missed webhook delays a wait by at most its fallback; recent failed deliveries are asked to be redelivered at start and when deliveries resume. Webhook health comes from deliveries and a ping after a quiet hour; an unhealthy repository is an alert, not a change of behaviour.
