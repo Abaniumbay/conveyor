@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { ReviewFindings } from "../../src/engine/review-findings";
-import { ItemTodos } from "../../src/engine/todos";
+import { ReviewFindings } from "../../src/db/review-findings";
+import { ItemTodos } from "../../src/db/todos";
 import type { TaskDeps } from "../../src/tasks/deps";
 import { buildHandover, HANDOVER_LIMITS } from "../../src/tasks/handover";
 

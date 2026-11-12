@@ -15,7 +15,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Locator, type Page } from "playwright";
 import { ConveyorStore, type IssueProjection } from "../src/db/store";
-import { ReviewFindings } from "../src/engine/review-findings";
 
 const DEMO_USERNAME = "demo";
 const DEMO_PASSWORD = "demo-password-12chars";
@@ -367,7 +366,7 @@ async function seedDemo(home: string): Promise<void> {
       checkedAt: DEMO_TIME,
       warning: PHONE_TRUST_WARNING,
     });
-    new ReviewFindings(store.sqlite()).importNative(phoneOverflowIssue.id, [{
+    store.findings().importNative(phoneOverflowIssue.id, [{
       providerKey: "screenshot-ignored-review",
       author: "untrusted-phone-reviewer",
       trusted: false,

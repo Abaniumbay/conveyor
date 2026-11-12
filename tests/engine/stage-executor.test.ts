@@ -6,7 +6,7 @@ import path from "node:path";
 import type { RunEnvelope } from "../../src/runner/result";
 import { ConveyorStore } from "../../src/db/store";
 import { WaitDispatcher } from "../../src/app/wait-dispatcher";
-import { ExecutionStore } from "../../src/engine/journal";
+import { ExecutionStore } from "../../src/db/journal";
 import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID, StageExecutor, type StageOutcome } from "../../src/engine/stage-executor";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
 import type { StoredEvent } from "../../src/events/catalogue";

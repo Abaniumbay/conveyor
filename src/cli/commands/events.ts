@@ -1,5 +1,5 @@
 import { EVENT_CLASSES, type EventClass, type StoredEvent } from "../../events/catalogue";
-import type { EventQuery } from "../../events/log";
+import type { EventQuery } from "../../db/event-log";
 import { ConveyorStore } from "../../db/store";
 import { CliError, EXIT, parseDuration } from "../args";
 import { loadCommandConfig, stringOption, type Command } from "../command";

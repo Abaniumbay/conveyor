@@ -110,7 +110,7 @@ describe("state backups and schema", () => {
     const store = await ConveyorStore.open(database);
     store.seedDashboardSuperuser("admin", "hash-before");
     await writeFile(path.join(home, "state/session-secret"), "secret-before\n");
-    const backup = await backupState({ home, database, label: "a-to-b", open: store.sqlite() });
+    const backup = await backupState({ home, database, label: "a-to-b", open: store });
     store.changeDashboardPassword(store.dashboardAccounts()[0]!.id, "hash-after");
     store.close();
     await writeFile(path.join(home, "state/session-secret"), "secret-after\n");
@@ -158,7 +158,7 @@ describe("state backups and schema", () => {
     const database = path.join(home, "state/conveyor.sqlite");
     const store = await ConveyorStore.open(database);
     await writeFile(path.join(home, "state/session-secret"), "secret-at-backup\n");
-    const backup = await backupState({ home, database, label: "x", open: store.sqlite() });
+    const backup = await backupState({ home, database, label: "x", open: store });
     store.seedDashboardSuperuser("after-backup", "h");
     store.close();
     await writeFile(path.join(home, "state/session-secret"), "secret-now\n");
@@ -344,7 +344,7 @@ describe("switching the running service", () => {
   test("a rollback after a migration needs the backup, restores it once the database is closed, then switches", async () => {
     const world = await coordinator({ versions: ["1.0.0", BUILD.version] });
     await switchCurrent(world.prefix, BUILD.version);
-    const backup = await backupState({ home: world.home, database: world.store.sqlite().filename, label: "1.0.0-to-now", open: world.store.sqlite() });
+    const backup = await backupState({ home: world.home, database: world.store.sqlite().filename, label: "1.0.0-to-now", open: world.store });
     await writeReleaseState(world.home, { pending: null, history: [{ id: "u", kind: "upgrade", from: "1.0.0", to: BUILD.version, fromSchema: LATEST_SCHEMA_VERSION - 1, toSchema: LATEST_SCHEMA_VERSION, backup, status: "completed", reason: null, requestedAt: "t", finishedAt: "t" }] });
     await expect(world.releases.schedule({ kind: "rollback", prefix: world.prefix, drainTimeoutMs: 60_000 })).rejects.toThrow("--restore-backup");
     const pending = await world.releases.schedule({ kind: "rollback", prefix: world.prefix, restoreBackup: true, drainTimeoutMs: 60_000 });
@@ -579,7 +579,7 @@ describe("conveyor upgrade and rollback with the service stopped", () => {
     const home = path.join(root, "home");
     const database = path.join(home, "state/conveyor.sqlite");
     const store = await ConveyorStore.open(database);
-    const backup = await backupState({ home, database, label: "x", open: store.sqlite() });
+    const backup = await backupState({ home, database, label: "x", open: store });
     store.seedDashboardSuperuser("later", "h");
     store.close();
     await writeReleaseState(home, { pending: null, history: [{ id: "u", kind: "upgrade", from: "1.0.0", to: "1.1.0", fromSchema: LATEST_SCHEMA_VERSION - 1, toSchema: LATEST_SCHEMA_VERSION, backup, status: "completed", reason: null, requestedAt: "t", finishedAt: "t" }] });

@@ -101,7 +101,7 @@ export const init: Command = {
 
     const admin = await withStore(context, async (store) => {
       // The session secret lives beside the database; create it now so the first start finds it.
-      await resolveSessionSecret(undefined, store.sqlite().filename, {});
+      await resolveSessionSecret(undefined, store.filename(), {});
       const existing = store.dashboardAccounts();
       if (existing.length > 0) return { created: false, username: existing.find((account) => account.role === "superuser")?.username ?? existing[0]!.username };
       const usernameOption = stringOption(context, "admin-username");

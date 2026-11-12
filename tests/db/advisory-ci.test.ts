@@ -5,7 +5,7 @@ import path from "node:path";
 
 import type { CiChange, CiProvider, CiRun } from "../../src/app/ci-provider";
 import { ConveyorStore } from "../../src/db/store";
-import { AdvisoryCiWatches } from "../../src/engine/advisory-ci";
+import { AdvisoryCiWatches } from "../../src/db/advisory-ci";
 
 const directories: string[] = [];
 afterEach(async () => {

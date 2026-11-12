@@ -7,8 +7,8 @@ import { lstat, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { restoreDirectoryAccess } from "../core/directory-access";
-import type { ConveyorStore } from "../db/store";
-import { TRACE_RETENTION_MS } from "../events/log";
+import type { DeliveryLogStore, EventStore, RunLogStore } from "../db/ports";
+import { TRACE_RETENTION_MS } from "../db/event-log";
 
 export interface RetentionPolicy {
   /** Run events older than this are deleted; null keeps them. */
@@ -68,7 +68,7 @@ function runHome(artifacts: string, runId: string): { directory: string; home: s
 }
 
 export async function applyRetention(input: {
-  store: ConveyorStore;
+  store: RunLogStore & DeliveryLogStore & EventStore;
   artifacts: string;
   policy: RetentionPolicy;
   /** How long the event log keeps events; null keeps them all. */

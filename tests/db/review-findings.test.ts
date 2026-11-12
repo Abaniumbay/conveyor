@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { FINDING_TYPES, ReviewFindings, type NativeArtifact } from "../../src/engine/review-findings";
+import { FINDING_TYPES, ReviewFindings, type NativeArtifact } from "../../src/db/review-findings";
 
 const directories: string[] = [];
 afterEach(async () => {

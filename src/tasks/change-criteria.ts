@@ -6,7 +6,7 @@ import { z } from "zod";
 
 import type { CiTestReport } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
-import { CriterionApprovals, criterionTextHash, isCriterionApprovedAt } from "../engine/review-records";
+import { criterionTextHash, isCriterionApprovedAt, type CriterionApprovals } from "../db/review-records";
 import { formatAcceptanceCriteria, ManagedSectionError, parseManagedSections } from "../plugins/github/shared/managed-sections";
 import type { ChangeContext } from "./context";
 import { fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
@@ -94,7 +94,7 @@ function sourceLineForTest(source: string, name: string): { line: number } | { m
 
 /** The item's criteria with their approval at `headSha` (an approval for another head or other text is none). */
 export function criteriaView(deps: Deps, body: string, headSha: string): ChangeContext["criteria"] {
-  const approvals = new Map(new CriterionApprovals(deps.store.sqlite()).list(deps.issueId).map((a) => [a.criterionId, a]));
+  const approvals = new Map(deps.store.criterionApprovals().list(deps.issueId).map((a) => [a.criterionId, a]));
   const evidence = new Map(deps.store.criterionTestEvidence(deps.issueId).map((entry) => [entry.criterionId, entry]));
   const projected = projectedChecklist(body).checked;
   return criteriaOf(deps.store.getIssue(deps.issueId)?.body ?? "").map(({ id, text, manual: criterionManual }) => {
@@ -136,7 +136,7 @@ export type SyncResult = { ok: true } | { ok: false; malformed: boolean; message
 
 /** The checklist markdown for the item's criteria, or the reason it cannot be rendered (invalid or duplicate ids). */
 function render(deps: Deps, headSha: string | null, host?: CodeHost): { markdown: string } | { error: string } {
-  const approvals = new Map(new CriterionApprovals(deps.store.sqlite()).list(deps.issueId).map((a) => [a.criterionId, a]));
+  const approvals = new Map(deps.store.criterionApprovals().list(deps.issueId).map((a) => [a.criterionId, a]));
   const evidence = new Map(deps.store.criterionTestEvidence(deps.issueId).map((entry) => [entry.criterionId, entry]));
   const criteria = criteriaOf(deps.store.getIssue(deps.issueId)?.body ?? "");
   try {
@@ -210,7 +210,7 @@ function criterionTool(
       const criterion = criteriaOf(deps.store.getIssue(deps.issueId)?.body ?? "").find((c) => c.id === criterionId)!;
       const problem = render(deps, headSha);
       if ("error" in problem) return fail(problem.error);
-      record(new CriterionApprovals(deps.store.sqlite()), input!, reviewer, deps.issueId, criterionTextHash(criterion.text));
+      record(deps.store.criterionApprovals(), input!, reviewer, deps.issueId, criterionTextHash(criterion.text));
       const synced = await syncChecklist(host, deps, stored.id);
       return pass(synced.ok
         ? { criterionId, headSha }

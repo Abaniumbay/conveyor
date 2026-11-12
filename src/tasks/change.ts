@@ -11,7 +11,6 @@ import { parseManagedSections } from "../plugins/github/shared/managed-sections"
 import type { ChangeContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import { checkCriterion, criterionTestsPassed, criterionTestsVerified, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, recordCriterionTests, syncChecklist, uncheckCriterion } from "./change-criteria";
-import { ReviewThreads } from "../engine/review-threads";
 import { findingsResolved, findingsView, reviewThreadsResolved, findingTools, importNativeReview } from "./change-findings";
 import type { TaskDeps } from "./deps";
 
@@ -55,7 +54,7 @@ function toContext(delivery: ChangeDelivery, deps: Deps): ChangeContext {
     projectedCriterionIds: [...projectedChecklist(change.body ?? "").checked.keys()],
     projectionError: projectedChecklist(change.body ?? "").error,
     findings: findingsView(deps),
-    reviewThreads: new ReviewThreads(deps.store.sqlite()).get(deps.issueId),
+    reviewThreads: deps.store.reviewThreads().get(deps.issueId),
   };
 }
 

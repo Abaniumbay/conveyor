@@ -5,8 +5,8 @@
 // over all rounds. A finding belongs to the round of its run; an imported finding has no run, so it
 // belongs to the review run of its issue that was active when it was first imported.
 
-import type { Database } from "bun:sqlite";
-
+import type { ReportStore } from "../db/ports";
+import type { ReportRoundRow } from "../db/reports";
 import { FINDING_TYPES, type FindingType } from "../engine/finding-types";
 
 export interface FindingReportOptions {
@@ -31,9 +31,6 @@ export interface FindingReport {
   typeShares: FindingTypeShare[];
 }
 
-interface FindingRow { id: string; issue_id: string; run_id: string | null; provider_key: string | null; author: string; type: string; created_at: string; repository_id: string }
-interface RoundRow { id: string; issue_id: string; started_at: string; finished_at: string | null }
-
 /** The UTC ISO week (`YYYY-Www`) of an ISO timestamp. */
 export function isoWeek(iso: string): string {
   const date = new Date(iso);
@@ -48,18 +45,10 @@ const increment = (counts: Record<string, number>, key: string) => {
   counts[key] = (counts[key] ?? 0) + 1;
 };
 
-export function buildFindingReport(db: Database, options: FindingReportOptions = {}): FindingReport {
+export function buildFindingReport(store: ReportStore, options: FindingReportOptions = {}): FindingReport {
   const { repositoryId, since, reviewStage = "review" } = options;
-  const findings = db.query(
-    `SELECT f.id, f.issue_id, f.run_id, f.provider_key, f.author, f.type, f.created_at, i.repository_id
-       FROM findings f JOIN issues i ON i.id = f.issue_id
-      WHERE (?1 IS NULL OR i.repository_id = ?1) AND (?2 IS NULL OR f.created_at >= ?2)`,
-  ).all(repositoryId ?? null, since ?? null) as FindingRow[];
-  const rounds = db.query(
-    `SELECT r.id, r.issue_id, r.started_at, r.finished_at
-       FROM runs r JOIN issues i ON i.id = r.issue_id
-      WHERE r.stage_id = ?1 AND (?2 IS NULL OR i.repository_id = ?2) AND (?3 IS NULL OR r.started_at >= ?3)`,
-  ).all(reviewStage, repositoryId ?? null, since ?? null) as RoundRow[];
+  const findings = store.reports().findings(repositoryId ?? null, since ?? null);
+  const rounds = store.reports().stageRuns(reviewStage, repositoryId ?? null, since ?? null);
 
   const report: FindingReport = {
     total: findings.length,
@@ -67,7 +56,7 @@ export function buildFindingReport(db: Database, options: FindingReportOptions =
     byRepository: {}, byAuthor: {}, byWeek: {}, reviewRounds: rounds.length, typeShares: [],
   };
   const typesByRound = new Map<string, Set<string>>();
-  const roundsByIssue = new Map<string, RoundRow[]>();
+  const roundsByIssue = new Map<string, ReportRoundRow[]>();
   for (const round of rounds) roundsByIssue.set(round.issue_id, [...(roundsByIssue.get(round.issue_id) ?? []), round]);
 
   for (const finding of findings) {

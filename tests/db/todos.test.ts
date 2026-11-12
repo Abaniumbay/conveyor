@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { ItemTodos, TODO_CLOSEOUT_NOTE } from "../../src/engine/todos";
+import { ItemTodos, TODO_CLOSEOUT_NOTE } from "../../src/db/todos";
 import { migrations } from "../../src/db/migrations";
 
 describe("todo closeout", () => {

@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { CommandBus, CommandForbiddenError, CommandInputError, CommandUnavailableError, type CommandActor } from "../../src/commands/bus";
 import { COMMANDS } from "../../src/commands/registry";
 import { migrations } from "../../src/db/migrations";
-import { eventLog } from "../../src/events/log";
+import { eventLog } from "../../src/db/event-log";
 import { currentGitHubCallSource } from "../../src/plugins/github/shared/call-meter";
 
 const superuser: CommandActor = { kind: "user", id: "admin-1", name: "admin", role: "superuser" };

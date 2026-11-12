@@ -1,8 +1,8 @@
-import type { StoredIssue, ConveyorStore } from "../db/store";
+import type { DatabaseStore, EvidenceStore, ItemStore, JournalStore } from "../db/ports";
+import type { StoredIssue } from "../db/store";
 import type { StageExecutionResult } from "./pipeline";
 import type { LabelConfiguration } from "./issue-state";
 import { RepositoryPausedError } from "./repository-pause";
-import { ItemTodos } from "../engine/todos";
 
 export interface TransitionSource {
   replaceConveyorLabels(
@@ -13,8 +13,11 @@ export interface TransitionSource {
   ): Promise<void>;
 }
 
+/** The store domains a transition writes: the journal, todos, a purge, and one transaction around them. */
+export type TransitionStore = JournalStore & EvidenceStore & ItemStore & DatabaseStore;
+
 export interface ApplyStageTransitionInput {
-  store: ConveyorStore;
+  store: TransitionStore;
   source: TransitionSource;
   sourceName: string;
   address: string;
@@ -30,7 +33,7 @@ export interface ApplyStageTransitionInput {
 }
 
 export interface ApplyRollupTransitionInput {
-  store: ConveyorStore;
+  store: TransitionStore;
   source: TransitionSource;
   sourceName: string;
   address: string;
@@ -43,7 +46,7 @@ export interface ApplyRollupTransitionInput {
 }
 
 export interface ApplyClosedItemOffboardingInput {
-  store: ConveyorStore;
+  store: TransitionStore;
   source: TransitionSource;
   sourceName: string;
   address: string;
@@ -224,10 +227,10 @@ export async function applyStageTransition(
     }
   }
   // The source transition succeeded: close the todo list out together with the local advance.
-  input.store.sqlite().transaction(() => {
+  input.store.transaction(() => {
     input.store.completeStageTransition(input.transitionId);
     // Moving on closes out unfinished todos; a return to an earlier stage keeps them open.
-    if (input.result.kind === "advance") new ItemTodos(input.store.sqlite()).closeOut(input.issue.id);
+    if (input.result.kind === "advance") input.store.todos().closeOut(input.issue.id);
     input.store.setStageState({
       issueId: input.issue.id,
       stageId: target.stageId,
@@ -236,7 +239,7 @@ export async function applyStageTransition(
         input.result.kind === "correction" ? 0 : input.result.feedbackCycles,
       configHash: input.configHash,
     });
-  })();
+  });
   return { labels };
 }
 
@@ -276,11 +279,11 @@ export async function applyClosedItemOffboarding(
       throw error;
     }
   }
-  input.store.sqlite().transaction(() => {
+  input.store.transaction(() => {
     input.store.completeStageTransition(input.transitionId);
     // The labels are gone, so the item no longer exists for Conveyor: its purge begins here.
     input.store.beginPurge(input.issue.id);
-  })();
+  });
 }
 
 /** Move a non-runnable roll-up parent with the earliest unfinished child frontier. */

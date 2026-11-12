@@ -7,7 +7,7 @@ import { parseManagedSections, upsertManagedSection } from "../../src/plugins/gi
 import { dispatchTool } from "../../src/tasks/dispatch";
 import type { ChangeDelivery, ChangeRequest, CodeHost, MergeChangeResult, ReviewArtifact, ReviewThreadState } from "../../src/codehost/types";
 import { ConveyorStore } from "../../src/db/store";
-import { ReviewFindings } from "../../src/engine/review-findings";
+import { ReviewFindings } from "../../src/db/review-findings";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { ChangeContext, TaskContext } from "../../src/tasks/context";
 import { InfrastructureError, runTask, TaskInputError, type TaskResult } from "../../src/tasks/contract";

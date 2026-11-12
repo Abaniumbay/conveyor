@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { ExecutionStore } from "../../src/engine/journal";
+import { ExecutionStore } from "../../src/db/journal";
 import { StageExecutor } from "../../src/engine/stage-executor";
 import type { ConveyorConfig } from "../../src/config/load";
 import { configSchema } from "../../src/config/schema";

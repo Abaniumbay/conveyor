@@ -6,7 +6,7 @@ import path from "node:path";
 import type { ScopedMcpFactory } from "../../src/app/runtime";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
-import { ReviewFindings } from "../../src/engine/review-findings";
+import { ReviewFindings } from "../../src/db/review-findings";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { ConsoleSink, log } from "../../src/log/logger";

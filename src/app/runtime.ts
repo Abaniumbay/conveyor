@@ -10,7 +10,8 @@ import type {
   PipelineStage,
   ProducerContext,
 } from "../core/pipeline";
-import type { ConveyorStore, StoredIssue } from "../db/store";
+import type { ConversationStore, RunLogStore } from "../db/ports";
+import type { StoredIssue } from "../db/store";
 import { verifierToolGrant } from "../mcp/tools";
 import type { EgressInput } from "../isolation/run-network";
 import { agentEgressFor } from "../isolation/agent-egress";
@@ -135,7 +136,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
 
   constructor(
     private readonly config: ConveyorConfig,
-    private readonly store: ConveyorStore,
+    private readonly store: RunLogStore & ConversationStore,
     private readonly context: RuntimeIssueContext,
     private readonly mcp: ScopedMcpFactory,
     private readonly actions: SourceActionHandler,

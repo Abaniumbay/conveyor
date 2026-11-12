@@ -83,6 +83,22 @@ test("excludes the browser application and the scripts that CI runs on their own
   });
 });
 
+test("does not count a new module of types alone, which compiles to nothing", async () => {
+  const root = await fixture({}, "");
+  await writeFiles(root, { "src/ports.ts": "import type { Store } from \"./store\";\n\nexport type Reader = Pick<Store,\n  | \"read\"\n>;\nexport interface Writer {\n  write(): void;\n}\n" });
+  await commitChanges(root);
+
+  await expect(checkChangedCoverage({ cwd: root, base: "main", lcov: "lcov.info" })).resolves.toMatchObject({ passed: true, covered: 0, total: 0 });
+});
+
+test("still counts a module that mixes types with code it never ran", async () => {
+  const root = await fixture({}, "");
+  await writeFiles(root, { "src/mixed.ts": "export type Reader = { read(): void };\nexport const reader: Reader = { read() {} };\n" });
+  await commitChanges(root);
+
+  await expect(checkChangedCoverage({ cwd: root, base: "main", lcov: "lcov.info" })).resolves.toMatchObject({ passed: false, total: 2 });
+});
+
 test("counts executable added lines in a new production file without LCOV as uncovered", async () => {
   const root = await fixture({}, "");
   await writeFiles(root, { "src/new.ts": "export const newCode = () => 1;\n" });

@@ -4,7 +4,7 @@
 import { log, RotatingFile } from "../log/logger";
 import type { EventBus } from "./bus";
 import { EVENT_CATALOGUE, type EventClass, type StoredEvent } from "./catalogue";
-import type { EventLog } from "./log";
+import type { EventLog } from "../db/event-log";
 
 /** Which events a sink receives: these classes, and events that may carry user-written text only when `content`. */
 export interface SinkSelection {

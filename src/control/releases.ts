@@ -173,14 +173,14 @@ export class ReleaseCoordinator {
     this.#performing = true;
     this.stopWatching();
     const store = this.service.store;
-    const database = store.sqlite().filename;
+    const database = store.filename();
     // Order matters for recovery: record the switch first, then move the link as the last step, so
     // a failure anywhere leaves the link where the record says it is.
     let recorded = false;
     try {
       const fromSchema = store.schemaVersion();
       const backup = pending.kind === "upgrade"
-        ? await backupState({ home: this.home, database, label: `${pending.from}-to-${pending.version}`, open: store.sqlite() })
+        ? await backupState({ home: this.home, database, label: `${pending.from}-to-${pending.version}`, open: store })
         : pending.restoreBackup;
       const state = await readReleaseState(this.home);
       state.pending = null;

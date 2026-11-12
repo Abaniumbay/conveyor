@@ -6,7 +6,7 @@ import { Database } from "bun:sqlite";
 import { CommandBus, type CommandActor, type CommandResults } from "../../src/commands/bus";
 import type { CommandInput, CommandName } from "../../src/commands/registry";
 import { migrations } from "../../src/db/migrations";
-import { eventLog, type EventLog } from "../../src/events/log";
+import { eventLog, type EventLog } from "../../src/db/event-log";
 
 /** A command bus whose handlers call the fake service functions present in `service`, and its event log. */
 export function fakeCommandBus(service: Record<string, unknown>): { commands: CommandBus; events: EventLog } {
