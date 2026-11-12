@@ -133,6 +133,16 @@ function isProductionFile(file: string): boolean {
   return true;
 }
 
+const typeScript = new Bun.Transpiler({ loader: "tsx" });
+
+/** Whether a module compiles to nothing: only types and interfaces, which no test can execute. */
+async function isTypeOnlyModule(cwd: string, file: string): Promise<boolean> {
+  if (!/\.(?:ts|tsx|mts|cts)$/.test(file)) return false;
+  const source = await readFile(path.resolve(cwd, file), "utf8").catch(() => null);
+  if (source === null) return false;
+  return typeScript.transformSync(source).replace(/\bexport\s*\{\s*\};?/g, "").trim() === "";
+}
+
 function isExecutableSourceLine(source: string): boolean {
   const trimmed = source.trim();
   return trimmed.length > 0 && !trimmed.startsWith("//") && !trimmed.startsWith("/*") && !trimmed.startsWith("*") && !["{", "}", "};", ");", "];"].includes(trimmed);
@@ -160,6 +170,7 @@ export async function checkChangedCoverage(options: ChangedLineCoverageOptions):
   let covered = 0;
   let total = 0;
 
+  const typeOnly = new Map<string, boolean>();
   for (const changed of changedLines(options.cwd, options.base)) {
     if (!isProductionFile(changed.file)) continue;
     const fileCoverage = coverage.get(changed.file);
@@ -172,6 +183,9 @@ export async function checkChangedCoverage(options: ChangedLineCoverageOptions):
       continue;
     }
     if (!isExecutableSourceLine(changed.source)) continue;
+    // A module of types alone never runs, so it never appears in a coverage report.
+    if (!typeOnly.has(changed.file)) typeOnly.set(changed.file, await isTypeOnlyModule(options.cwd, changed.file));
+    if (typeOnly.get(changed.file)) continue;
     total += 1;
     uncovered.push(changed);
   }
