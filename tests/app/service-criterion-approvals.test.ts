@@ -7,7 +7,7 @@ import path from "node:path";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
-import { CriterionApprovals, criterionTextHash } from "../../src/engine/review-records";
+import { CriterionApprovals, criterionTextHash } from "../../src/db/review-records";
 import { githubPlugins } from "../support/plugins";
 import type { TaskContext } from "../../src/tasks/context";
 

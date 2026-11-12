@@ -2,7 +2,7 @@
 // record whether it succeeded. The dashboard and the control socket only translate requests into
 // commands and results into responses.
 
-import type { EventLog } from "../events/log";
+import type { EventLog } from "../db/event-log";
 import { newCorrelationId, withEventContext } from "../events/context";
 import { log } from "../log/logger";
 import { withGitHubCallSource } from "../plugins/github/shared/call-meter";

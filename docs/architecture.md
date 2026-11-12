@@ -51,7 +51,7 @@ flowchart LR
 | Configuration loader | Composes the `conveyor.yaml` entrypoint and the files its `!include` / `!secret` tags name, resolves paths relative to the file that declares them, validates cross-references with file-and-key-path errors, and computes a stable configuration hash. |
 | GitHub source adapter | Reads issues and relationships, manages only configured labels/body sections, observes pull requests and checks, verifies webhooks, and performs idempotent source actions. |
 | Reconciler | Rebuilds the local projection from GitHub and detects enrollment and label drift. Polling reads every issue; an issue or relationship delivery is acknowledged at once and reconciled in the background, reading only the issues it names, with deliveries that arrive meanwhile joining one pass. CI and pull request deliveries do not reconcile. Deliveries for Conveyor's own status comments are ignored. A deleted or transferred issue counts as one with no Conveyor labels: an `issues.deleted` or `issues.transferred` delivery purges its item at once, aborting its run before any further GitHub request, and a read by number answered 404 or 410 does the same; a listing that omits a stored issue only triggers that read by number, and any other failure (5xx, network) leaves the item unchanged. Nothing is ever marked missing. For a repository with a managed webhook there is no periodic pass. All GitHub reads go through a copy kept in the database (`src/plugins/github/shared/read-cache.ts`), answered from it within each kind's lifetime and kept current by deliveries and Conveyor's own writes; startup reads only the issues changed since the newest stored change. The dashboard, control socket, and live health endpoint start before the initial reconciliation, while readiness stays false until every repository has completed it. A polling repository is read in full periodically. A superuser can read one repository afresh with Sync now. |
-| Event log and bus | Records every change as an event in its transaction (`src/events`), publishes committed events in order to in-process subscribers and delivers them to sinks from durable cursors. Events are facts (Conveyor's changes), ingest events (what a plugin observed) or traces (the service's own activity, kept for a day); an event recorded by a subscriber names the event it reacted to as its cause. |
+| Event log and bus | Records every change as an event in its transaction (the log in `src/db/event-log.ts`, the catalogue and bus in `src/events`), publishes committed events in order to in-process subscribers and delivers them to sinks from durable cursors. Events are facts (Conveyor's changes), ingest events (what a plugin observed) or traces (the service's own activity, kept for a day); an event recorded by a subscriber names the event it reacted to as its cause. |
 | Command bus | The one way in for dashboard and CLI actions (`src/commands`): validation, server-side role checks, correlation, accepted/rejected events. |
 | Wait dispatcher | Wakes parked tasks whose wait subscriptions match an event (a commit's CI finishing, a pull request changing, a tracked blocker changing); a fallback deadline covers a lost delivery. |
 | Scheduler | Selects eligible issues while enforcing global, repository, and stage concurrency plus parent/dependency constraints. |
@@ -87,7 +87,7 @@ the rule new code follows; the current state is tracked by the boundary test.
 | Code host | `CodeHost` (`src/codehost/types.ts`) | GitHub pull requests |
 | CI | `CiProvider` (`src/app/ci-provider.ts`) | GitHub Actions |
 | Agent harness | `Harness` (`src/harness/types.ts`) | Codex, Claude Code |
-| Storage | `ConveyorStore` today; per-domain store ports to come (items, journal, evidence, events, run logs, conversations, provider cache, webhook deliveries, accounts) | SQLite |
+| Storage | Per-domain store ports (`src/db/ports.ts`): items, journal, evidence, events, run logs, conversations, provider cache, webhook deliveries, accounts, reports; `ConveyorStore` implements them all | SQLite |
 
 - **Plugins** live in their own folders (`src/plugins/<provider>/<role>/`) and are selected by
   configuration `type` per role, so a repository can combine, for example, items from one provider
@@ -229,8 +229,8 @@ src/
 ├── config/       entrypoint composition (include/secret tags), packaged defaults, migration, validation
 ├── control/      the local control socket and in-service upgrades and rollbacks
 ├── core/         issue projection, scheduling, transitions, and the plugin contract and registry
-├── db/           SQLite migrations and durable store
-├── engine/       stage executor, execution journal, review records, advisory CI watches
+├── db/           all SQLite: migrations, the store and its domain ports, the execution journal, the event log, review and gate records, advisory CI watches, report queries
+├── engine/       stage executor, stage context and routing, finding types, remaining-work summary
 ├── harness/      neutral agent-harness contract
 ├── isolation/    agent environment, network sandbox, egress proxies
 ├── log/          service logging (redaction, rotation) and the log reader

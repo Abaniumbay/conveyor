@@ -8,7 +8,7 @@ import type { Database } from "bun:sqlite";
 import { ciAnnouncement, classifyRuns, describeCiFailure, readRunLog, type FailedRun } from "../app/ci-gate";
 import type { CiChange, CiProvider, CiRun } from "../app/ci-provider";
 import type { AdvisoryCiWatch } from "../tasks/context";
-import { eventLog } from "../events/log";
+import { eventLog } from "./event-log";
 import type { ExecutionStore } from "./journal";
 
 export const DEFAULT_SETTLE_MS = 120_000;

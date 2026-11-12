@@ -5,7 +5,8 @@ import { isNativeStage } from "../config/schema";
 import type { PipelineDependencies } from "../core/pipeline";
 import { RepositoryPausedError } from "../core/repository-pause";
 import { applyStageTransition, type TransitionSource } from "../core/transition";
-import type { ConveyorStore, StoredIssue } from "../db/store";
+import type { ConversationStore, DatabaseStore, EvidenceStore, ItemStore, JournalStore } from "../db/ports";
+import type { StoredIssue } from "../db/store";
 import { StageExecutor, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier, type StageOutcome } from "../engine/stage-executor";
 import { CONTEXT_SCHEMA_VERSION, type TaskContext } from "../tasks/context";
 import { createTaskRegistry } from "../tasks/catalogue";
@@ -20,7 +21,7 @@ import type { WaitKind } from "../events/topics";
 
 export interface IssueExecutorDependencies {
   config: ConveyorConfig;
-  store: ConveyorStore;
+  store: ItemStore & JournalStore & EvidenceStore & ConversationStore & DatabaseStore;
   sourceName: string;
   source: TransitionSource;
   workspaceManager: Pick<WorkspaceManager, "create">;

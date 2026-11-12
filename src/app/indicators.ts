@@ -4,7 +4,7 @@
 // model is internal. CI is the first source; PR state, deploy results or todo progress can
 // produce the same record. The CI derivation shares its counted-run rules with `ci.passed`.
 
-import type { ConveyorStore } from "../db/store";
+import type { EvidenceStore, JournalStore } from "../db/ports";
 import type { CiRun } from "./ci-provider";
 
 export type IndicatorState = "passing" | "running" | "failed" | "unknown";
@@ -121,7 +121,7 @@ export interface CiObservationInput {
 }
 
 /** Derives and stores the item's CI indicator; false when it is older than the stored head. */
-export function observeCi(store: ConveyorStore, input: CiObservationInput): boolean {
+export function observeCi(store: JournalStore & EvidenceStore, input: CiObservationInput): boolean {
   const marks = store.executions();
   const observedAt = input.now.toISOString();
   const firstSeen = marks.markCi(input.issueId, input.headSha, "first-seen", "", observedAt).at;
@@ -139,7 +139,7 @@ export function observeCi(store: ConveyorStore, input: CiObservationInput): bool
 }
 
 /** A new head replaces the indicator at once: its old runs are gone and CI is starting. */
-export function startCiForHead(store: ConveyorStore, input: { issueId: string; headSha: string; changeUrl: string; now: Date }): boolean {
+export function startCiForHead(store: JournalStore & EvidenceStore, input: { issueId: string; headSha: string; changeUrl: string; now: Date }): boolean {
   return observeCi(store, { ...input, runs: [], ignoreChecks: [], authoritative: true });
 }
 
@@ -148,7 +148,7 @@ export function errorMessage(error: unknown): string {
 }
 
 /** Records an unreadable provider for the head without leaving a stale state. */
-export function observeCiError(store: ConveyorStore, input: Omit<CiObservationInput, "runs" | "error"> & { error: unknown }): boolean {
+export function observeCiError(store: JournalStore & EvidenceStore, input: Omit<CiObservationInput, "runs" | "error"> & { error: unknown }): boolean {
   const { error, ...rest } = input;
   return observeCi(store, { ...rest, runs: null, error: errorMessage(error) });
 }

@@ -6,7 +6,8 @@ import { existsSync } from "node:fs";
 
 import { resolveFilesystemPath } from "../core/paths";
 
-import type { ConveyorStore, StoredIssue, StoredWorkspace } from "../db/store";
+import type { ItemStore } from "../db/ports";
+import type { StoredIssue, StoredWorkspace } from "../db/store";
 import type { WorkspaceManager } from "./manager";
 
 export type WorkspaceLifecycleManager = Pick<WorkspaceManager, "create" | "ensureScratch" | "remove" | "restore">;
@@ -29,7 +30,7 @@ function slug(title: string): string {
 
 /** Creates the workspace for the issue's active enrollment and records it. */
 export async function createWorkspace(input: {
-  store: ConveyorStore;
+  store: ItemStore;
   manager: Pick<WorkspaceManager, "create">;
   issue: Pick<StoredIssue, "id" | "sourceNumber" | "title">;
   repository: WorkspaceRepository;
@@ -58,7 +59,7 @@ export async function createWorkspace(input: {
 
 /** The item's active workspace: created when none is recorded, re-attached to its branch when the directory went missing. */
 export async function ensureWorkspace(input: {
-  store: ConveyorStore;
+  store: ItemStore;
   manager: Pick<WorkspaceManager, "create" | "ensureScratch" | "restore">;
   issueId: string;
   repository: WorkspaceRepository;
@@ -85,7 +86,7 @@ export async function ensureWorkspace(input: {
 
 /** Removes the worktree and its local branch and marks the record removed. Missing workspace is done. */
 export async function removeWorkspace(input: {
-  store: ConveyorStore;
+  store: ItemStore;
   manager: Pick<WorkspaceManager, "remove">;
   issueId: string;
   repositoryFolder: string;

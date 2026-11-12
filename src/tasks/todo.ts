@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { defineGroup, fail, pass, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
-import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
+import { summarizeTodos, type TodoItem } from "../db/todos";
 
 const MAX_UNFINISHED_ITEMS = 40;
 
@@ -26,7 +26,7 @@ export const todoUpdateInput = z.object({
 
 type Deps = TaskDeps;
 
-const todosOf = (deps: Deps) => new ItemTodos(deps.store.sqlite());
+const todosOf = (deps: Deps) => deps.store.todos();
 const now = (deps: Deps) => (deps.clock?.() ?? new Date()).toISOString();
 
 function view(items: readonly TodoItem[]) {

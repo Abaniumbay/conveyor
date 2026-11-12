@@ -10,7 +10,7 @@ import {
   ExecutionStore,
   StaleEpochError,
   type StageCursor,
-} from "../../src/engine/journal";
+} from "../../src/db/journal";
 import type { TaskContext } from "../../src/tasks/context";
 
 const temporaryDirectories: string[] = [];

@@ -15,7 +15,6 @@ import path from "node:path";
 import { z } from "zod";
 
 import type { ConveyorStore, StoredQuestion } from "../db/store";
-import { ReviewFindings } from "../engine/review-findings";
 import type { Harness } from "../harness/types";
 import { agentEgressFor } from "../isolation/agent-egress";
 import { probeAgentMcpServers, type AgentMcpProbeOptions, type McpServerSpec } from "../isolation/mcp-probe";
@@ -96,7 +95,7 @@ function outcomeOf(deps: Deps, runIds: string[], agentId: string, result: RunEnv
   if (status === "changes-requested") {
     // Use the same item-scoped open findings as the review gate. Imported findings and
     // unresolved findings from earlier runs still block; the reviewer need not duplicate them.
-    if (!new ReviewFindings(deps.store.sqlite()).listVisible(deps.issueId).some((finding) => finding.state === "open")) {
+    if (!deps.store.findings().listVisible(deps.issueId).some((finding) => finding.state === "open")) {
       return fail("Reviewer requested changes without an open finding for this item", { route: { stop: "error" } });
     }
     return pass(captured);

@@ -1,5 +1,5 @@
 import type { ZodType } from "zod";
-import type { ExecutionStore } from "../engine/journal";
+import type { ExecutionStore } from "../db/journal";
 import type { WaitFor } from "../events/topics";
 import { ToolRequestError } from "./errors";
 import {

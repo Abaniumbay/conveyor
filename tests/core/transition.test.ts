@@ -7,8 +7,8 @@ import { inFlightAdmission } from "../../src/core/in-flight";
 import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../../src/core/transition";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
 import { ConveyorStore } from "../../src/db/store";
-import { ExecutionStore } from "../../src/engine/journal";
-import { ItemTodos, TODO_CLOSEOUT_NOTE } from "../../src/engine/todos";
+import { ExecutionStore } from "../../src/db/journal";
+import { ItemTodos, TODO_CLOSEOUT_NOTE } from "../../src/db/todos";
 
 const directories: string[] = [];
 

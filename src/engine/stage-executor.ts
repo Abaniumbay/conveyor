@@ -13,7 +13,7 @@ import type { StageExecutionResult } from "../core/pipeline";
 import type { CompiledPipeline, CompiledStage, CompiledTask } from "../tasks/plan";
 import type { Feedback, TaskContext } from "../tasks/context";
 import { pending, runTask, type Route, type TaskRegistry, type TaskResult } from "../tasks/contract";
-import { StaleEpochError, type ExecutionStore, type StageCursor } from "./journal";
+import { StaleEpochError, type ExecutionStore, type StageCursor } from "../db/journal";
 import { RepositoryPausedError } from "../core/repository-pause";
 import {
   captureOutput, detailLists, engineState, formatDuration, keysToLoad, markLoaded, markStale, recordCheckpoint,

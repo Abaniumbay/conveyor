@@ -3,10 +3,11 @@
 //   <home>/state/releases.json      { pending, history }
 //   <home>/backups/<time>-<from>-to-<to>/conveyor.sqlite (+ session-secret)
 
-import { Database } from "bun:sqlite";
 import { chown, copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { copyDatabaseFile } from "../db/backup";
+import type { ConveyorStore } from "../db/store";
 import { SESSION_SECRET_FILE } from "../web/session-secret";
 
 export interface PendingSwitch {
@@ -88,25 +89,17 @@ export function latestUpgradeTo(state: ReleaseState, version: string): SwitchRec
     record.kind === "upgrade" && record.to === version && (record.status === "completed" || record.status === "switched")) ?? null;
 }
 
-function sqlString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
 /**
  * Writes a consistent copy of the database (VACUUM INTO, safe while the service has it open) and
  * the session secret into a new backup directory, keeping the newest BACKUPS_KEPT backups.
  */
-export async function backupState(options: { home: string; database: string; label: string; open?: Database }): Promise<string> {
+export async function backupState(options: { home: string; database: string; label: string; open?: Pick<ConveyorStore, "backupTo"> }): Promise<string> {
   const backups = path.join(options.home, "backups");
   const directory = path.join(backups, `${new Date().toISOString().replace(/[:.]/g, "-")}-${options.label}`);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const target = path.join(directory, "conveyor.sqlite");
-  const database = options.open ?? new Database(options.database, { readonly: true });
-  try {
-    database.exec(`VACUUM INTO ${sqlString(target)}`);
-  } finally {
-    if (!options.open) database.close();
-  }
+  if (options.open) options.open.backupTo(target);
+  else copyDatabaseFile(options.database, target);
   const secret = path.join(path.dirname(options.database), SESSION_SECRET_FILE);
   if (await stat(secret).catch(() => null)) await copyFile(secret, path.join(directory, SESSION_SECRET_FILE));
   for (const file of [backups, directory, ...(await readdir(directory)).map((name) => path.join(directory, name))]) await ownLike(file, options.home);

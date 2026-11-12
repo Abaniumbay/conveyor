@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { ManualGateApprovals } from "../../src/engine/manual-gates";
-import { ReviewFindings } from "../../src/engine/review-findings";
-import { CriterionApprovals } from "../../src/engine/review-records";
-import { ItemTodos } from "../../src/engine/todos";
+import { ManualGateApprovals } from "../../src/db/manual-gates";
+import { ReviewFindings } from "../../src/db/review-findings";
+import { CriterionApprovals } from "../../src/db/review-records";
+import { ItemTodos } from "../../src/db/todos";
 import { UNDO_EVENT_CLASSES } from "../support/schema-rollback";
 
 const temporaryDirectories: string[] = [];
@@ -52,6 +52,36 @@ describe("ConveyorStore", () => {
     expect(store.schemaVersion()).toBe(50);
 
     store.close();
+  });
+
+  test("commits a transaction's writes together and rolls all of them back when it throws", async () => {
+    const store = await openStore();
+    const repository = (id: string) => ({ id, configName: id, source: "github", address: `owner/${id}`, folder: `/work/${id}`, configHash: "h" });
+
+    expect(store.transaction(() => {
+      store.upsertRepository(repository("kept"));
+      return "done";
+    })).toBe("done");
+    expect(() => store.transaction(() => {
+      store.upsertRepository(repository("dropped"));
+      throw new Error("abandoned");
+    })).toThrow("abandoned");
+
+    expect(store.listRepositories().map((record) => record.id)).toEqual(["kept"]);
+    store.close();
+  });
+
+  test("backs its open database up to a copy that opens with the same data", async () => {
+    const store = await openStore();
+    store.upsertRepository({ id: "app", configName: "app", source: "github", address: "owner/my-app", folder: "/work/app", configHash: "h" });
+    const target = path.join(path.dirname(store.filename()), "backup.sqlite");
+
+    store.backupTo(target);
+    store.close();
+
+    const copy = await ConveyorStore.open(target);
+    expect(copy.listRepositories().map((record) => record.address)).toEqual(["owner/my-app"]);
+    copy.close();
   });
 
   test("migrates existing findings to the general type", async () => {

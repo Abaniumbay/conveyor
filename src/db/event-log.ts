@@ -4,9 +4,9 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 
 import { log } from "../log/logger";
-import type { EventBus } from "./bus";
-import { EVENT_CATALOGUE, type EventClass, type EventPayload, type EventType, type StoredEvent } from "./catalogue";
-import { currentCausation, eventContextForIssue } from "./context";
+import type { EventBus } from "../events/bus";
+import { EVENT_CATALOGUE, type EventClass, type EventPayload, type EventType, type StoredEvent } from "../events/catalogue";
+import { currentCausation, eventContextForIssue } from "../events/context";
 
 export interface EventScope {
   repositoryId?: string | null;

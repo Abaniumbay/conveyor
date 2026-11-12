@@ -3,8 +3,7 @@
 // Every part is bounded; a shortened part says what was left out and which tool returns it all.
 
 import type { CiChange, CiRun } from "../app/ci-provider";
-import { ReviewFindings } from "../engine/review-findings";
-import { ItemTodos, summarizeTodos } from "../engine/todos";
+import { summarizeTodos } from "../db/todos";
 import { inspectWorktree } from "../workspace/git";
 import { importNativeReview } from "./change-findings";
 import { agentActor, concise } from "./agent-support";
@@ -42,7 +41,7 @@ function finishedProgress(items: Parameters<typeof summarizeTodos>[0]): string |
 }
 
 function todosPart(deps: TaskDeps) {
-  const items = new ItemTodos(deps.store.sqlite()).get(deps.issueId)?.items ?? [];
+  const items = deps.store.todos().get(deps.issueId)?.items ?? [];
   if (items.length === 0) return { present: false, note: "This item has no todo list yet.", items: [], progress: null, truncated: null };
   const { shown, truncated } = bounded(items, HANDOVER_LIMITS.todos, "todos", "todo.get");
   return {
@@ -94,7 +93,7 @@ async function findingsPart(deps: TaskDeps) {
     const { change } = await deps.codeHost.getChangeDelivery({ address: deps.repository.address, id: stored.id });
     await importNativeReview(deps, stored.id, change.headSha);
   }
-  const open = new ReviewFindings(deps.store.sqlite()).listVisible(deps.issueId).filter((finding) => finding.state === "open");
+  const open = deps.store.findings().listVisible(deps.issueId).filter((finding) => finding.state === "open");
   if (open.length === 0) return { count: 0, note: "There are no open review findings.", items: [], truncated: null };
   const { shown, truncated } = bounded(open, HANDOVER_LIMITS.findings, "open findings", "change.listFindings");
   const cut: string[] = [];

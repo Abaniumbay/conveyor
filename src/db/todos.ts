@@ -4,7 +4,7 @@
 
 import type { Database } from "bun:sqlite";
 
-import { eventLog } from "../events/log";
+import { eventLog } from "./event-log";
 
 export type TodoStatus = "pending" | "in_progress" | "done" | "skipped";
 

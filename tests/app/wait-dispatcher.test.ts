@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { WaitDispatcher } from "../../src/app/wait-dispatcher";
 import type { StoredEvent } from "../../src/events/catalogue";
-import type { StageCursor } from "../../src/engine/journal";
+import type { StageCursor } from "../../src/db/journal";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 

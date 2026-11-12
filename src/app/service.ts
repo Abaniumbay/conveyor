@@ -54,12 +54,12 @@ import { createTaskRegistry } from "../tasks/catalogue";
 import { runTask, TransientScriptError } from "../tasks/contract";
 import type { TaskDeps } from "../tasks/deps";
 import { criteriaOf, ISSUE_LEFT_OPEN_MARKER } from "../tasks/item";
-import { CriterionApprovals, isCriterionApprovedAt } from "../engine/review-records";
+import { isCriterionApprovedAt } from "../db/review-records";
 import { compilePipeline } from "../tasks/plan";
 import { cliGit } from "../workspace/git";
 import { removeWorkspace } from "../workspace/lifecycle";
-import { AdvisoryCiWatches, DEFAULT_POLL_MS as ADVISORY_POLL_MS } from "../engine/advisory-ci";
-import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
+import { DEFAULT_POLL_MS as ADVISORY_POLL_MS, type AdvisoryCiWatches } from "../db/advisory-ci";
+import { summarizeTodos, type TodoItem } from "../db/todos";
 import { buildReport } from "./reports";
 import { buildRepositorySummaries, type RepositorySummaries } from "./repository-summary";
 import { isLightweightRepositoryStage } from "./stage-capacity";
@@ -73,7 +73,7 @@ import {
   scheduledQuestionAnswerEvidence,
   validatedQuestionAnswer,
 } from "../questions";
-import { ManualGateApprovals } from "../engine/manual-gates";
+import type { ManualGateApprovals } from "../db/manual-gates";
 import { CommandBus, CommandForbiddenError, CommandInputError, type CommandActor } from "../commands/bus";
 import { EventBus } from "../events/bus";
 import { JsonlEventSink, SinkRunner, type EventSink } from "../events/sinks";
@@ -84,7 +84,7 @@ import { WaitDispatcher } from "./wait-dispatcher";
 import { changesDashboard, DashboardFeed } from "./dashboard-feed";
 import { normalizeDashboard } from "../web/model";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../plugins/github/shared/call-meter";
-import { ReviewFindings, type FindingType } from "../engine/review-findings";
+import type { FindingType } from "../db/review-findings";
 import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
 
 const FOLLOW_UP_GATE_TASK = "item.followUps";
@@ -624,8 +624,8 @@ export class ConveyorService {
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
     this.#harnesses = implementations.harnesses ?? this.#plugins.harnesses();
-    this.#manualGateApprovals = new ManualGateApprovals(store.sqlite());
-    this.#advisoryWatches = new AdvisoryCiWatches(store.sqlite(), store.executions(), {
+    this.#manualGateApprovals = store.manualGates();
+    this.#advisoryWatches = store.advisoryWatches({
       resolve: (repositoryId) => ({
         provider: this.ciProvider(repositoryId),
         address: this.config.repositories[repositoryId]?.address ?? "",
@@ -4837,7 +4837,7 @@ export class ConveyorService {
   /** Source-authoritative criteria annotated from durable review approvals. */
   private criterionApprovalStates(issue: StoredIssue) {
     const approvals = new Map(
-      new CriterionApprovals(this.store.sqlite()).list(issue.id).map((approval) => [approval.criterionId, approval]),
+      this.store.criterionApprovals().list(issue.id).map((approval) => [approval.criterionId, approval]),
     );
     const headSha = this.criterionApprovalHead(issue);
     const evidence = new Map(this.store.criterionTestEvidence(issue.id).map((entry) => [entry.criterionId, entry]));
@@ -5075,7 +5075,7 @@ export class ConveyorService {
       if (state === "closed") return "muted";
       return "active";
     };
-    const todos = new ItemTodos(this.store.sqlite());
+    const todos = this.store.todos();
     const renderedAt = Date.now();
     const indicators = new Map<string, IndicatorViewModel[]>();
     for (const stored of this.store.listIndicators()) {
@@ -5974,7 +5974,7 @@ export class ConveyorService {
       return [...new Map(actors.map((actor) => [`${actor.type}:${actor.name}:${actor.title ?? ""}`, actor])).values()];
     };
     const cursor = this.store.executions().getCursor(issue.id);
-    const todos = new ItemTodos(this.store.sqlite());
+    const todos = this.store.todos();
     const tone = (itemState: string): IssueTone => {
       if (itemState === "done" || itemState === "completed") return "success";
       if (["blocked", "error", "rejected", "needs-intervention", "inconsistent"].includes(itemState)) return "danger";
@@ -6131,7 +6131,7 @@ export class ConveyorService {
         createdAt: transition.createdAt,
         completedAt: transition.completedAt,
       })),
-      findings: new ReviewFindings(this.store.sqlite()).listVisible(issueId).map((finding) => ({
+      findings: this.store.findings().listVisible(issueId).map((finding) => ({
         id: finding.id,
         type: finding.type,
         state: finding.state,
@@ -6141,7 +6141,7 @@ export class ConveyorService {
         summary: finding.body.length > 240 ? `${finding.body.slice(0, 240)}…` : finding.body,
         ...(finding.dismissal ? { dismissal: { actor: finding.dismissal.actor, reason: finding.dismissal.reason } } : {}),
       })),
-      skippedReviews: new ReviewFindings(this.store.sqlite()).skippedNative(issueId).map((review) => ({
+      skippedReviews: this.store.findings().skippedNative(issueId).map((review) => ({
         author: review.author,
         url: review.url,
         skippedAt: review.skippedAt,
@@ -6933,7 +6933,7 @@ export class ConveyorService {
 
   /** An operator's change of a finding's type; the write, its history row and its event share one transaction. */
   reclassifyFinding(issueId: string, findingId: string, type: FindingType, username: string): { changed: boolean } {
-    return { changed: new ReviewFindings(this.store.sqlite()).reclassify(issueId, findingId, type, username) };
+    return { changed: this.store.findings().reclassify(issueId, findingId, type, username) };
   }
 
   webDependencies(auth: WebAuthApi, username: string, push: PushConfiguration | null = null): WebHandlerDependencies {

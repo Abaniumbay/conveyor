@@ -218,7 +218,7 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
         const sinceText = url.searchParams.get("since");
         const since = sinceText === null ? null : parseSince(sinceText);
         if (sinceText !== null && since === null) throw new ControlError(`since must be an ISO 8601 date or timestamp, not ${sinceText}`, 400);
-        return json(buildFindingReport(service.store.sqlite(), {
+        return json(buildFindingReport(service.store, {
           ...(repository !== null ? { repositoryId: repository } : {}),
           ...(since !== null ? { since } : {}),
         }));

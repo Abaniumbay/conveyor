@@ -3,10 +3,9 @@
 // records that as an advance from the last stage to itself); items imported as done without that
 // record have no history and are left out of every figure.
 
-import type { Database } from "bun:sqlite";
-
 import type { ConveyorConfig } from "../config/load";
-import type { ConveyorStore } from "../db/store";
+import type { ReportStore } from "../db/ports";
+import type { ReportIssueRow, ReportRunRow } from "../db/reports";
 import { buildFindingReport } from "./finding-report";
 import { displayName } from "../tasks/agent-support";
 import type {
@@ -25,17 +24,12 @@ const DAY = 86_400_000;
 const PERIOD_MS: Record<Exclude<ReportPeriod, "all">, number> = { "7d": 7 * DAY, "30d": 30 * DAY, "90d": 90 * DAY, "12m": 365 * DAY };
 const NOT_IN_PROGRESS = new Set(["done", "unlisted", "closed"]);
 
-interface IssueRow { id: string; repository_id: string; source_number: number; title: string; source_state: string; projected_state: string | null }
-interface RunRow { issue_id: string; stage_id: string; status: string; started_at: string; finished_at: string | null; input_tokens: number | null; output_tokens: number | null; cached_tokens: number | null }
-interface TransitionRow { issue_id: string; kind: string; from_stage: string | null; to_stage: string | null; status: string; created_at: string }
-interface WaitRow { issue_id: string; pending_since: string; updated_at: string }
-
 /** Everything about one item the report needs, over its whole life. */
 interface ItemFacts {
-  issue: IssueRow;
+  issue: ReportIssueRow;
   enrolledAt: string | null;
   finishedAt: string | null;
-  runs: RunRow[];
+  runs: ReportRunRow[];
   agentMs: number;
   tokens: number;
   checksWaitMs: number;
@@ -45,8 +39,8 @@ interface ItemFacts {
 }
 
 const ms = (iso: string) => Date.parse(iso);
-const tokensOf = (run: RunRow) => (run.input_tokens ?? 0) + (run.output_tokens ?? 0);
-const runMs = (run: RunRow, now: number) => Math.max(0, (run.finished_at ? ms(run.finished_at) : now) - ms(run.started_at));
+const tokensOf = (run: ReportRunRow) => (run.input_tokens ?? 0) + (run.output_tokens ?? 0);
+const runMs = (run: ReportRunRow, now: number) => Math.max(0, (run.finished_at ? ms(run.finished_at) : now) - ms(run.started_at));
 const average = (values: readonly number[]) => (values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length);
 const month = (iso: string) => iso.slice(0, 7);
 
@@ -54,27 +48,19 @@ export function reportSince(period: ReportPeriod, now: Date): string | null {
   return period === "all" ? null : new Date(now.getTime() - PERIOD_MS[period]).toISOString();
 }
 
-function loadFacts(db: Database, now: number): ItemFacts[] {
-  const issues = db.query("SELECT id, repository_id, source_number, title, source_state, projected_state FROM issues").all() as IssueRow[];
+function loadFacts(store: ReportStore, now: number): ItemFacts[] {
+  const queries = store.reports();
+  const issues = queries.issues();
   const byIssue = <T extends { issue_id: string }>(rows: T[]) => {
     const grouped = new Map<string, T[]>();
     for (const row of rows) grouped.set(row.issue_id, [...(grouped.get(row.issue_id) ?? []), row]);
     return grouped;
   };
-  const runs = byIssue(db.query(`
-    SELECT r.issue_id, r.stage_id, r.status, r.started_at, r.finished_at,
-           SUM(u.input_tokens) AS input_tokens, SUM(u.output_tokens) AS output_tokens, SUM(u.cached_tokens) AS cached_tokens
-    FROM runs r LEFT JOIN usage_cost_entries u ON u.run_id = r.id
-    GROUP BY r.id ORDER BY r.started_at`).all() as RunRow[]);
-  const transitions = byIssue(db.query(
-    "SELECT issue_id, kind, from_stage, to_stage, status, created_at FROM stage_transitions ORDER BY created_at, id",
-  ).all() as TransitionRow[]);
+  const runs = byIssue(queries.runs());
+  const transitions = byIssue(queries.transitions());
   // A parked task waited on something outside the agent: CI, a deploy, a dependency.
-  const waits = byIssue(db.query(
-    "SELECT issue_id, pending_since, updated_at FROM task_executions WHERE pending_since IS NOT NULL",
-  ).all() as WaitRow[]);
-  const enrolled = new Map((db.query("SELECT issue_id, MIN(started_at) AS started_at FROM enrollments GROUP BY issue_id").all() as Array<{ issue_id: string; started_at: string }>)
-    .map((row) => [row.issue_id, row.started_at]));
+  const waits = byIssue(queries.waits());
+  const enrolled = new Map(queries.firstEnrollments().map((row) => [row.issue_id, row.started_at]));
 
   return issues.map((issue) => {
     const itemRuns = runs.get(issue.id) ?? [];
@@ -141,11 +127,11 @@ function totals(items: readonly ItemFacts[], since: string | null, now: number):
 }
 
 function months(items: readonly ItemFacts[], since: string | null, now: number): ReportMonthRow[] {
-  const rows = new Map<string, { delivered: ItemFacts[]; runs: RunRow[] }>();
+  const rows = new Map<string, { delivered: ItemFacts[]; runs: ReportRunRow[] }>();
   const row = (key: string) => {
     const existing = rows.get(key);
     if (existing) return existing;
-    const created = { delivered: [] as ItemFacts[], runs: [] as RunRow[] };
+    const created = { delivered: [] as ItemFacts[], runs: [] as ReportRunRow[] };
     rows.set(key, created);
     return created;
   };
@@ -173,7 +159,7 @@ function stages(items: readonly ItemFacts[], since: string | null, now: number, 
       if (!names.has(stage.id)) { order.push(stage.id); names.set(stage.id, stage.name ?? displayName(stage.id)); }
     }
   }
-  const grouped = new Map<string, RunRow[]>();
+  const grouped = new Map<string, ReportRunRow[]>();
   for (const item of items) for (const run of item.runs) {
     if (since !== null && run.started_at < since) continue;
     grouped.set(run.stage_id, [...(grouped.get(run.stage_id) ?? []), run]);
@@ -223,8 +209,8 @@ const byCount = (counts: Record<string, number>, order: (a: string, b: string) =
   Object.entries(counts).map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count || order(a.key, b.key));
 
 /** The shared finding report as view rows: types in taxonomy order, others by count, weeks newest first. */
-function findings(db: Database, repository: string | null, since: string | null): ReportFindings {
-  const report = buildFindingReport(db, { ...(repository ? { repositoryId: repository } : {}), ...(since ? { since } : {}) });
+function findings(store: ReportStore, repository: string | null, since: string | null): ReportFindings {
+  const report = buildFindingReport(store, { ...(repository ? { repositoryId: repository } : {}), ...(since ? { since } : {}) });
   const byKey = (a: string, b: string) => a.localeCompare(b);
   return {
     total: report.total,
@@ -237,7 +223,7 @@ function findings(db: Database, repository: string | null, since: string | null)
 }
 
 export function buildReport(input: {
-  store: ConveyorStore;
+  store: ReportStore;
   config: ConveyorConfig;
   period: ReportPeriod;
   repository: string | null;
@@ -247,7 +233,7 @@ export function buildReport(input: {
   const now = nowDate.getTime();
   const since = reportSince(input.period, nowDate);
   const repositories = Object.keys(input.config.repositories);
-  const facts = loadFacts(input.store.sqlite(), now).filter((item) => repositories.includes(item.issue.repository_id));
+  const facts = loadFacts(input.store, now).filter((item) => repositories.includes(item.issue.repository_id));
   const imported = (item: ItemFacts) => item.issue.projected_state === "done" && item.finishedAt === null;
   const counted = facts.filter((item) => !imported(item));
   const scope = input.repository ? counted.filter((item) => item.issue.repository_id === input.repository) : counted;
@@ -262,7 +248,7 @@ export function buildReport(input: {
     byMonth: months(scope, since, now),
     byStage: stages(scope, since, now, input.config, scopeRepositories),
     items: input.repository ? itemRows(scope, since) : [],
-    findings: findings(input.store.sqlite(), input.repository, since),
+    findings: findings(input.store, input.repository, since),
     importedWithoutHistory: facts.filter((item) => imported(item) && (!input.repository || item.issue.repository_id === input.repository)).length,
     generatedAt: nowDate.toISOString(),
   };

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { ManualGateApprovals } from "../../src/engine/manual-gates";
+import { ManualGateApprovals } from "../../src/db/manual-gates";
 
 const directories: string[] = [];
 afterEach(async () => {

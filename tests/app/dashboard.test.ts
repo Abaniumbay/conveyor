@@ -11,8 +11,8 @@ import { createWebHandler } from "../../src/web/server";
 import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
-import { ReviewFindings } from "../../src/engine/review-findings";
-import { ItemTodos } from "../../src/engine/todos";
+import { ReviewFindings } from "../../src/db/review-findings";
+import { ItemTodos } from "../../src/db/todos";
 import { ConsoleSink, type LogRecord, log } from "../../src/log/logger";
 import { parseManagedSections } from "../../src/plugins/github/shared/managed-sections";
 
