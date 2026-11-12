@@ -4,7 +4,7 @@ import net from "node:net";
 import path from "node:path";
 
 import { runClaudeCode } from "../../src/runner/claude-code";
-import { CLAUDE_CONTROL_PLANE_HOSTS, claudeShellPrefix } from "../../src/isolation/run-network";
+import { CLAUDE_CONTROL_PLANE_HOSTS, writeClaudeShellPrefix } from "../../src/isolation/run-network";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
@@ -46,7 +46,7 @@ const loopback = (port) => new Promise((resolve) => {
 const proxy = process.env.HTTPS_PROXY;
 (async () => {
   const result = {
-    proxy, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, apiKey: process.env.ANTHROPIC_API_KEY ?? null,
+    proxy, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null, apiKey: process.env.ANTHROPIC_API_KEY ?? null,
     allowed: await connect(proxy, "registry.fake.test"),
     model: await connect(proxy, "model.fake.test"),
     unlisted: await connect(proxy, "other.fake.test"),
@@ -79,7 +79,13 @@ if (proxy) {
   capture.controlModel = await connect("model.fake.test");
   capture.controlRegistry = await connect("registry.fake.test");
   capture.controlGithub = await connect("api.github.com");
-  const command = Bun.spawnSync(["sh", "-c", process.env.CLAUDE_CODE_SHELL_PREFIX + ' "$0" -e "$1"', process.execPath, process.env.COMMAND_PROBE], { env: process.env });
+  const viaPrefix = (...argv) => Bun.spawnSync(["sh", "-c", '"$CLAUDE_CODE_SHELL_PREFIX" "$@"', "sh", ...argv], { env: process.env });
+  const echo = viaPrefix("sh", "-c", "echo ok");
+  capture.echo = new TextDecoder().decode(echo.stdout).trim();
+  capture.prefixMode = (await import("node:fs")).statSync(process.env.CLAUDE_CODE_SHELL_PREFIX).mode & 0o111;
+  const rewrite = viaPrefix("sh", "-c", 'echo hacked >> "$0"', process.env.CLAUDE_CODE_SHELL_PREFIX);
+  capture.prefixWriteExit = rewrite.exitCode;
+  const command = viaPrefix(process.execPath, "-e", process.env.COMMAND_PROBE);
   capture.command = command.exitCode === 0 ? JSON.parse(new TextDecoder().decode(command.stdout)) : new TextDecoder().decode(command.stderr);
 }
 let writable = true;
@@ -124,7 +130,7 @@ async function run(options: { egress: boolean; sandbox?: "read-only" | "workspac
     mcp: { command: "bun", args: ["x"] },
     ...(options.network ? { network: true } : {}),
     ...(options.resume ? { resumeSessionId: "sess-1" } : {}),
-    env: { CAPTURE: capture, COMMAND_PROBE, HOST_PORT: String(port(hostService)), ...(options.mcp ? { MCP_PORT: "4310" } : {}) },
+    env: { CAPTURE: capture, COMMAND_PROBE, CLAUDE_CODE_OAUTH_TOKEN: "oauth-secret", ANTHROPIC_API_KEY: "key-secret", HOST_PORT: String(port(hostService)), ...(options.mcp ? { MCP_PORT: "4310" } : {}) },
     ...(options.egress
       ? {
           egress: {
@@ -145,9 +151,19 @@ describe("Claude Code control-plane defaults", () => {
     expect(CLAUDE_CONTROL_PLANE_HOSTS).toEqual(["api.anthropic.com", "console.anthropic.com", "platform.claude.com", "claude.ai"]);
   });
 
-  test("the command prefix carries data-plane proxy variables and drops harness credentials, never a token", () => {
-    const prefix = claudeShellPrefix({ HTTPS_PROXY: "http://127.0.0.1:3128", NO_PROXY: "" });
-    expect(prefix).toBe("/usr/bin/env -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY HTTPS_PROXY=http://127.0.0.1:3128 NO_PROXY=");
+  test("the command prefix is one executable script with the data-plane proxy variables and without harness credentials", async () => {
+    const directory = await shortTemporaryDirectory("conveyor-pf-");
+    directories.push(directory);
+    const file = await writeClaudeShellPrefix(path.join(directory, "shell-prefix"), { HTTPS_PROXY: "http://127.0.0.1:3128", NO_PROXY: "it's" });
+    const script = await readFile(file, "utf8");
+    expect(script).toContain("unset CLAUDE_CONFIG_DIR CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY");
+    expect(script).toContain("export HTTPS_PROXY='http://127.0.0.1:3128'");
+    expect(script).toContain(`export NO_PROXY='it'\\''s'`);
+    expect(script).not.toContain("conveyor:");
+  });
+
+  test("refuses a prefix path containing whitespace", async () => {
+    await expect(writeClaudeShellPrefix("/tmp/a b/shell-prefix", {})).rejects.toThrow(/whitespace/);
   });
 });
 
@@ -160,7 +176,12 @@ describeSandbox("runClaudeCode with agent egress", () => {
     expect(capture.controlRegistry).toBe("403");
     expect(capture.controlGithub).toBe("403");
     // Its commands run under the data-plane proxy, without the credential.
-    expect(capture.prefix).not.toContain("conveyor:");
+    expect(capture.prefix).toBe(path.join(artifacts, "net", "shell-prefix"));
+    expect(capture.prefix).not.toMatch(/\s/);
+    expect(capture.prefixMode).not.toBe(0);
+    expect(capture.echo).toBe("ok");
+    expect(capture.prefixWriteExit).not.toBe(0);
+    expect(capture.command.oauth).toBeNull();
     expect(capture.command.proxy).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(capture.command.configDir).toBeNull();
     expect(capture.command.apiKey).toBeNull();
@@ -169,6 +190,7 @@ describeSandbox("runClaudeCode with agent egress", () => {
     expect(["ENETUNREACH", "EHOSTUNREACH", "ECONNREFUSED", "timeout"]).toContain(capture.command.directIp);
     // Per-run network state is removed after the run.
     expect(await readdir(path.join(artifacts, "net"))).toEqual([]);
+    expect(await Bun.file(capture.prefix).exists()).toBe(false);
   });
 
   test("a resumed run is isolated the same way", async () => {

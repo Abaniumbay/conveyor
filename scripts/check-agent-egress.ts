@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Operator verification for agent egress enforcement (needs the real network; not part of `bun test`).
-// Usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--runner <claude-code-runner-id>]
+// Usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--home <conveyor-home>] [--runner <claude-code-runner-id>]
 //
 // Clones the repository locally, runs its dependency restore inside the network sandbox with an empty
 // task-scoped cache and only the repository's `agentEgress.httpsHosts` reachable, then proves that
@@ -16,7 +16,7 @@ import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { loadConfig } from "../src/config/load";
+import { loadConfig, type ConveyorConfig } from "../src/config/load";
 import { parseLoopbackTcp } from "../src/isolation/egress-policy";
 import { startEgressProxy } from "../src/isolation/egress-proxy";
 import { agentEgressFor } from "../src/isolation/agent-egress";
@@ -81,13 +81,13 @@ const CURL = "curl -sS --max-time 15 -o /dev/null";
 
 /**
  * Probes for a Claude Code run, executed by `sh -c` as the Claude Code process would be: plain `curl`
- * is the process (control-plane proxy), `$CLAUDE_CODE_SHELL_PREFIX curl` is one of its `Bash` commands.
+ * is the process (control-plane proxy), `"$CLAUDE_CODE_SHELL_PREFIX" curl` (quoted: one executable path, as Claude Code runs it) is one of its `Bash` commands.
  */
 export function claudeCodeChecks(options: { httpsHosts: readonly string[]; controlPlaneHosts: readonly string[] }): SandboxCheck[] {
   const [control] = options.controlPlaneHosts;
   const allowed = options.httpsHosts.find((host) => !options.controlPlaneHosts.includes(host));
   const command = (name: string, script: string, expectFailure: boolean): SandboxCheck => ({ name, argv: ["sh", "-c", script], expectFailure });
-  const prefixed = (curl: string): string => `$CLAUDE_CODE_SHELL_PREFIX ${curl}`;
+  const prefixed = (curl: string): string => `"$CLAUDE_CODE_SHELL_PREFIX" ${curl}`;
   const checks: SandboxCheck[] = [];
   if (control) {
     checks.push(command(`claude-code process reaches its control-plane host ${control}`, `${CURL} ${quote(`https://${control}`)}`, false));
@@ -202,16 +202,24 @@ async function runClaudeCodeCheck(options: {
   }
 }
 
+/** Loads the configuration for the check; with the Conveyor home, `!include builtin:` entrypoints resolve. */
+export function loadCheckConfig(target: string, home?: string): Promise<ConveyorConfig> {
+  return loadConfig(target, null, home ? { home } : {});
+}
+
 async function main(): Promise<number> {
   const args = Bun.argv.slice(2);
   const repositoryId = args[0];
   const configDirectory = args[args.indexOf("--config") + 1];
   if (!repositoryId || args.indexOf("--config") < 0 || !configDirectory) {
-    console.error("usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--runner <claude-code-runner-id>]");
+    console.error("usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--home <conveyor-home>] [--runner <claude-code-runner-id>]");
     return 2;
   }
   const runnerId = args.includes("--runner") ? args[args.indexOf("--runner") + 1] : undefined;
-  const config = await loadConfig(configDirectory, null);
+  const homeIndex = args.indexOf("--home");
+  const home = homeIndex >= 0 ? args[homeIndex + 1] : undefined;
+  if (homeIndex >= 0 && !home) throw new Error("--home needs the Conveyor home directory");
+  const config = await loadCheckConfig(configDirectory, home);
   const runner = runnerId ? config.runners[runnerId] : undefined;
   if (runnerId && runner?.type !== "claude-code") throw new Error(`--runner ${runnerId} must name a configured claude-code runner`);
   const repository = config.repositories[repositoryId];
@@ -232,9 +240,9 @@ async function main(): Promise<number> {
     const work = path.join(scratch, "work");
     const clone = Bun.spawnSync(["git", "clone", "--quiet", "--local", repository.folder, work]);
     if (clone.exitCode !== 0) throw new Error(`git clone failed: ${clone.stderr.toString()}`);
-    const home = path.join(scratch, "home");
-    await mkdir(home, { recursive: true });
-    const base = sanitizedAgentEnvironment(process.env, { home, controlPlane: [] });
+    const privateHome = path.join(scratch, "home");
+    await mkdir(privateHome, { recursive: true });
+    const base = sanitizedAgentEnvironment(process.env, { home: privateHome, controlPlane: [] });
 
     const localServices = (repository.agentEgress.localServices ?? []).map((service): LocalServiceEntry & { name: string } =>
       service.socket !== undefined ? { name: service.name, endpoint: service.endpoint, socket: service.socket } : { name: service.name, endpoint: service.endpoint, tcp: service.tcp ?? "" },

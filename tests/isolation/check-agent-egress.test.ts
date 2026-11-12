@@ -2,9 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import net from "node:net";
 import path from "node:path";
-import { rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
-import { claudeCodeChecks, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
+import { claudeCodeChecks, loadCheckConfig, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
@@ -31,6 +32,37 @@ describe("local service and Docker checks", () => {
   });
 });
 
+describe("loadCheckConfig", () => {
+  test("resolves builtin includes when the Conveyor home is given", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "egress-home-"));
+    try {
+      await mkdir(path.join(root, "config"), { recursive: true });
+      const entrypoint = path.join(root, "config", "conveyor.yaml");
+      await writeFile(entrypoint, `providers: !include builtin:providers.yaml
+harnesses: !include builtin:harnesses.yaml
+agents: !include builtin:agents.yaml
+pipelines:
+  delivery:
+    stages: !include builtin:stages.yaml
+repositories:
+  app:
+    items: github
+    code: github
+    ci: { mode: disabled }
+    address: owner/app
+    folder: ../repos/app
+    pipeline: delivery
+    agentEgress: { httpsHosts: [registry.npmjs.org] }
+`);
+      await expect(loadCheckConfig(entrypoint)).rejects.toThrow(/not available here/);
+      const config = await loadCheckConfig(entrypoint, root);
+      expect(config.repositories.app!.agentEgress?.httpsHosts).toEqual(["registry.npmjs.org"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("claudeCodeChecks", () => {
   const checks = claudeCodeChecks({ httpsHosts: ["registry.npmjs.org"], controlPlaneHosts: ["api.anthropic.com"] });
   const find = (text: string) => checks.find((check) => check.name.includes(text))!;
@@ -39,7 +71,7 @@ describe("claudeCodeChecks", () => {
     expect(find("process reaches its control-plane host api.anthropic.com")).toMatchObject({ expectFailure: false });
     expect(find("process reaches its control-plane host").argv[2]).not.toContain("CLAUDE_CODE_SHELL_PREFIX");
     expect(find("process is refused non-control host registry.npmjs.org")).toMatchObject({ expectFailure: true });
-    expect(find("command reaches allowed host registry.npmjs.org").argv[2]).toStartWith("$CLAUDE_CODE_SHELL_PREFIX curl");
+    expect(find("command reaches allowed host registry.npmjs.org").argv[2]).toStartWith('"$CLAUDE_CODE_SHELL_PREFIX" curl');
     expect(find("command is refused the control-plane host")).toMatchObject({ expectFailure: true });
   });
 
