@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
 import { GitHubCodeHost } from "../../src/plugins/github/code/codehost";
+import { GitHubReadCache } from "../../src/plugins/github/shared/read-cache";
 
 class FakeTransport implements GitHubTransport {
   readonly requests: GitHubTransportRequest[] = [];
@@ -164,6 +165,17 @@ describe("CodeHost contract: GitHub", () => {
     const computing = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, "gh: Pull Request is not mergeable (HTTP 405)"), { ...pull(8), mergeable_state: "unknown" }]), "conveyor"));
     await expect(computing.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
       .rejects.toMatchObject({ name: "InfrastructureError" });
+
+    // A copy read while GitHub was still computing must not hide a conflict it has since found.
+    const cachedTransport = new FakeTransport([
+      { ...pull(8), mergeable_state: "unknown" },
+      new GitHubTransportError("gh failed", 1, "gh: Pull Request is not mergeable (HTTP 405)"),
+      { ...pull(8), mergeable_state: "dirty" },
+    ]);
+    const cached = new GitHubCodeHost(new GitHubAdapter(new GitHubReadCache(cachedTransport), "conveyor"));
+    await expect(cached.getChange({ address: "owner/repo", id: "github:owner/repo#pr-8" })).resolves.toMatchObject({ mergeable: null });
+    await expect(cached.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
+      .resolves.toMatchObject({ merged: false, refusal: "conflict" });
 
     const unavailable = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, "HTTP 502")]), "conveyor"));
     await expect(unavailable.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
