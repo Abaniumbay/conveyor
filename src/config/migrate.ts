@@ -10,6 +10,7 @@ import type { TaskRegistry } from "../tasks/contract";
 import { ConfigError } from "./errors";
 import { placeholderKey } from "./compose";
 import { loadConfig, readConfiguration, type ConveyorConfig } from "./load";
+import type { Plugin } from "../core/plugins";
 
 type Document = Record<string, unknown>;
 
@@ -101,14 +102,14 @@ function restoreSecretReferences(document: Document): Set<string> {
 export async function migrateConfiguration(
   from: string,
   to: string,
-  options: { home?: string; registry?: TaskRegistry | null } = {},
+  options: { home?: string; registry?: TaskRegistry | null; plugins?: readonly Plugin[] } = {},
 ): Promise<MigrationResult> {
   const target = path.resolve(to);
   const existing = await stat(target).catch(() => undefined);
   if (existing && (!existing.isDirectory() || (await readdir(target)).length > 0)) {
     throw new ConfigError(`${target} must not exist or must be an empty directory`);
   }
-  const loadOptions = options.home ? { home: options.home } : {};
+  const loadOptions = { ...(options.home ? { home: options.home } : {}), ...(options.plugins ? { plugins: options.plugins } : {}) };
   const old = await loadConfig(from, options.registry, loadOptions);
   // Placeholders mark exactly where each !secret was, so the references are restored by place.
   const source = await readConfiguration(from, { ...loadOptions, secretPlaceholders: true });

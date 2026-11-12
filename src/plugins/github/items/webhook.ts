@@ -1,16 +1,25 @@
 // GitHub's webhook deliveries, read into neutral observations. Verifying the signature, reading the
 // headers and recognising Conveyor's own writes coming back are GitHub's business, so they live here.
 
-import type { PluginContext, WebhookReceipt, WebhookReceiver } from "../../../core/plugins";
+import type { PluginContext, WebhookReceipt, WebhookReceiver, WebhookSettings } from "../../../core/plugins";
 import { isStatusComment, verifyGitHubSignature } from "../shared/adapter";
 import { githubClient } from "../shared/client";
 import { normalizeGitHubEvent } from "../shared/events";
+import { githubSourceSchema } from "./config";
 
 const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-export function githubWebhookReceiver(context: PluginContext): WebhookReceiver {
+export function githubWebhookReceiver(context: PluginContext): WebhookReceiver & { settings(sourceName: string): WebhookSettings } {
   return {
+    settings(sourceName: string): WebhookSettings {
+      const source = githubSourceSchema.parse(context.config.sources[sourceName] ?? { type: "github" });
+      return {
+        path: source.webhookPath,
+        secret: source.webhookSecret ?? process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET ?? "",
+        managed: source.autoConfigureWebhook,
+      };
+    },
     receive(body: Uint8Array, headers: Headers, secrets: readonly string[]): WebhookReceipt {
       const signature = headers.get("x-hub-signature-256");
       const secret = secrets.find((candidate) => verifyGitHubSignature(body, signature, candidate));

@@ -37,7 +37,10 @@ function configurationSecrets(config: ConveyorConfig): string[] {
   const values = [...(config.secrets ?? [])];
   if (config.web.sessionSecret) values.push(config.web.sessionSecret);
   if (config.web.push) values.push(config.web.push.privateKey);
-  for (const source of Object.values(config.sources)) if (source.type === "github" && source.webhookSecret) values.push(source.webhookSecret);
+  // A provider's own secret settings (a webhook secret, say) may be written inline rather than with !secret.
+  for (const entry of [...Object.values(config.sources), ...Object.values(config.codeHosts), ...Object.values(config.ci)]) {
+    for (const [key, value] of Object.entries(entry)) if (/secret|token|password/i.test(key) && typeof value === "string" && value) values.push(value);
+  }
   return values;
 }
 

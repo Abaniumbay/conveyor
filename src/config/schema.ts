@@ -42,7 +42,7 @@ const homePathSchema = z
   .transform((value) => (value === "~" || value.startsWith("~/") ? path.join(homedir(), value.slice(1)) : value))
   .refine((value) => value.startsWith("/"), "must be an absolute path or start with ~/");
 
-const identifierSchema = z.string().trim().min(1).max(100);
+export const identifierSchema = z.string().trim().min(1).max(100);
 
 const retrySchema = z
   .object({
@@ -223,20 +223,12 @@ const webSchema = z
   .strict()
   .prefault({});
 
-const githubSourceSchema = z
-  .object({
-    type: z.literal("github"),
-    webhookPath: z.string().startsWith("/").default("/hooks/github"),
-    autoConfigureWebhook: z.boolean().default(false),
-    /** Verifies webhook deliveries; CONVEYOR_GITHUB_WEBHOOK_SECRET is the fallback. */
-    webhookSecret: z.string().min(1).optional(),
-  })
-  .strict();
-
-const sourceSchema = z.discriminatedUnion("type", [githubSourceSchema]);
-
-const githubCodeHostSchema = z.object({ type: z.literal("github") }).strict();
-const codeHostSchema = z.discriminatedUnion("type", [githubCodeHostSchema]);
+/**
+ * An item source, code host or CI provider as the core sees it: its `type` picks the plugin, and the
+ * plugin's own schema validates and completes the rest when the configuration is loaded (#670).
+ */
+export const providerEntrySchema = z.object({ type: z.string().trim().min(1) }).catchall(z.unknown());
+export type ProviderEntry = z.output<typeof providerEntrySchema>;
 
 const controlPlaneHostsSchema = z
   .array(z.string())
@@ -574,18 +566,6 @@ const pipelineSchema = z
     }
   });
 
-const ciTriggerSchema = z.object({
-  label: identifierSchema,
-  workflow: z.string().regex(/^[\w.-]+\.ya?ml$/, "must be a workflow file name"),
-  check: identifierSchema,
-  replaces: z.array(identifierSchema).default([]),
-}).strict();
-
-const ciProviderSchema = z.object({
-  type: z.literal("github-actions"),
-  triggers: z.array(ciTriggerSchema).default([]),
-}).strict();
-
 const ciModeSchema = z.enum(["required", "advisory", "disabled"]);
 
 const junitReportSchema = z.object({
@@ -733,9 +713,9 @@ const baseConfigSchema = z
     settings: settingsSchema,
     github: githubSchema,
     web: webSchema,
-    sources: z.record(identifierSchema, sourceSchema).default({}),
-    ci: z.record(identifierSchema, ciProviderSchema).default({}),
-    codeHosts: z.record(identifierSchema, codeHostSchema).default({}),
+    sources: z.record(identifierSchema, providerEntrySchema).default({}),
+    ci: z.record(identifierSchema, providerEntrySchema).default({}),
+    codeHosts: z.record(identifierSchema, providerEntrySchema).default({}),
     runners: z.record(identifierSchema, runnerSchema).default({}),
     agents: z.record(identifierSchema, agentSchema).default({}),
     checks: z.record(identifierSchema, checkSchema).default({}),

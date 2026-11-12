@@ -3,6 +3,8 @@
 // resources (an API client, its cache and call meter) through the context, never by importing each
 // other. The composition root registers the plugins (src/plugins/index.ts) and builds them here.
 
+import type { z } from "zod";
+
 import type { CiProvider } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
 import { CodeHostRegistry } from "../codehost/registry";
@@ -45,15 +47,30 @@ export interface WebhookReceiver {
   receive(body: Uint8Array, headers: Headers, secrets: readonly string[]): WebhookReceipt;
 }
 
+/** How one configured item source receives webhooks. */
+export interface WebhookSettings {
+  /** The route its deliveries arrive on. */
+  path: string;
+  /** The secret that signs its deliveries; empty when none is configured. */
+  secret: string;
+  /** Whether Conveyor registers the webhook at the provider itself. */
+  managed: boolean;
+}
+
 /** What an item source plugin provides. Tracker ports (#673) join the webhook receiver here. */
 export interface ItemSourceModule {
-  webhook?: WebhookReceiver;
+  webhook?: WebhookReceiver & {
+    /** The webhook settings of the configured item source `sourceName`. */
+    settings(sourceName: string): WebhookSettings;
+  };
 }
 
 /** An item source for repositories whose `items` provider has this type. */
 export interface ItemsPlugin {
   readonly role: "items";
   readonly type: string;
+  /** Validates and completes a configured item source of this type (`providers.items.<name>`). */
+  readonly configSchema: z.ZodType;
   create(context: PluginContext): ItemSourceModule;
 }
 
@@ -61,6 +78,8 @@ export interface ItemsPlugin {
 export interface CodePlugin {
   readonly role: "code";
   readonly type: string;
+  /** Validates and completes a configured code host of this type (`providers.code.<name>`). */
+  readonly configSchema: z.ZodType;
   create(context: PluginContext, name: string): CodeHost;
 }
 
@@ -78,6 +97,8 @@ export interface CiPluginOptions {
 export interface CiPlugin {
   readonly role: "ci";
   readonly type: string;
+  /** Validates and completes a configured CI provider of this type (`providers.ci.<name>`). */
+  readonly configSchema: z.ZodType;
   create(context: PluginContext, options: CiPluginOptions): CiProvider;
 }
 

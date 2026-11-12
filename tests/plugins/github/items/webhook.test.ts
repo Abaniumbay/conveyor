@@ -11,6 +11,10 @@ import { githubWebhookReceiver } from "../../../../src/plugins/github/items/webh
 const config = {
   repositories: { app: { address: "Owner/My-App" } },
   labels: { enrollment: "conveyor" },
+  sources: {
+    github: { type: "github", webhookPath: "/hooks/github", autoConfigureWebhook: true, webhookSecret: "s3cret" },
+    quiet: { type: "github" },
+  },
 } as unknown as ConveyorConfig;
 
 function receiver(applied: Array<[string, unknown]> = []) {
@@ -65,5 +69,20 @@ describe("githubWebhookReceiver", () => {
     expect(applied).toEqual([]);
     if (receipt.kind === "delivery") receipt.delivery.recorded?.();
     expect(applied.map(([eventType]) => eventType)).toEqual(["ping"]);
+  });
+
+  test("reads each item source's webhook settings from its own configuration", () => {
+    expect(receiver().settings("github")).toEqual({ path: "/hooks/github", secret: "s3cret", managed: true });
+  });
+
+  test("falls back to the defaults and CONVEYOR_GITHUB_WEBHOOK_SECRET for a source that sets neither", () => {
+    const previous = process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET;
+    process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET = "from-the-environment";
+    try {
+      expect(receiver().settings("quiet")).toEqual({ path: "/hooks/github", secret: "from-the-environment", managed: false });
+    } finally {
+      if (previous === undefined) delete process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET;
+      else process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET = previous;
+    }
   });
 });

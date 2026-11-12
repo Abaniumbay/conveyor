@@ -28,6 +28,10 @@ import { renderBreakdownPlan } from "../../src/tasks/breakdown";
 import { dispatchTool } from "../../src/tasks/dispatch";
 import { criteriaOf } from "../../src/tasks/item";
 import { githubPlugins } from "./plugins";
+import { z } from "zod";
+
+/** A provider schema that accepts any entry: these tests are not about provider configuration. */
+const anyProvider = z.object({ type: z.string() }).passthrough();
 
 const EXAMPLES = path.resolve(import.meta.dir, "../../examples");
 export const REQUIRED_DESCRIPTION = "The implementation explains how the feature satisfies its pull-request criterion.";
@@ -393,7 +397,7 @@ export async function deliveryWorld(options: {
   // The public lifecycle reads CI from the simulated GitHub; otherwise the fake CI provider answers.
   const plugins = options.publicLifecycle
     ? githubPlugins(config, observed as never)
-    : githubPlugins(config, observed as never, undefined, [{ role: "ci", type: DEFAULT_CI_TYPE, create: () => provider }]);
+    : githubPlugins(config, observed as never, undefined, [{ role: "ci", configSchema: anyProvider, type: DEFAULT_CI_TYPE, create: () => provider }]);
   const service = new ConveyorService(config, store, observed as never, {
     plugins,
     harnesses: { codex: harness, "claude-code": harness },

@@ -12,7 +12,9 @@ import { GLOBAL_OPTIONS, type Command } from "../src/cli/command";
 import { COMMANDS } from "../src/cli/main";
 import { BUILTIN_FILES } from "../src/config/builtin";
 import { configSchema, nativeStageSchema } from "../src/config/schema";
+import type { Plugin } from "../src/core/plugins";
 import { EVENT_CATALOGUE } from "../src/events/catalogue";
+import { PLUGINS } from "../src/plugins";
 import { createTaskRegistry } from "../src/tasks/catalogue";
 
 const HEADER = [
@@ -64,6 +66,8 @@ export interface SurfaceSources {
   events: Record<string, { payload: z.ZodType }>;
   tasks: ReadonlyArray<{ name: string; config?: z.ZodType; input?: z.ZodType }>;
   config: z.ZodType;
+  /** The shipped plugins: their provider schemas add the keys of `sources`, `codeHosts` and `ci` entries. */
+  plugins: readonly Plugin[];
   /** A stage of the installation stage list; the config schema accepts stages as opaque values. */
   stage: z.ZodType;
   builtinFiles: readonly string[];
@@ -77,6 +81,7 @@ function defaultSources(): SurfaceSources {
     events: EVENT_CATALOGUE,
     tasks: createTaskRegistry().list(),
     config: configSchema,
+    plugins: PLUGINS,
     stage: nativeStageSchema,
     builtinFiles: Object.keys(BUILTIN_FILES),
     labels: labelNames(BUILTIN_FILES["providers.yaml"] ?? ""),
@@ -101,6 +106,11 @@ export function publicSurface(sources: SurfaceSources = defaultSources()): strin
     if (task.input) for (const key of inputKeys(task.input)) lines.add(`task-input ${task.name} ${key}`);
   }
   for (const key of inputKeys(sources.config)) lines.add(`config ${key}`);
+  const section = { items: "sources", code: "codeHosts", ci: "ci" } as const;
+  for (const plugin of sources.plugins) {
+    if (plugin.role === "harness") continue;
+    for (const key of inputKeys(plugin.configSchema)) lines.add(`config ${section[plugin.role]}.<name>.${key}`);
+  }
   for (const key of inputKeys(sources.stage)) lines.add(`config stages[].${key}`);
   for (const file of sources.builtinFiles) lines.add(`builtin ${file}`);
   for (const label of sources.labels) lines.add(`label ${label}`);

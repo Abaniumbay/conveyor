@@ -1,11 +1,13 @@
 import type { ItemsPlugin, PluginContext } from "../../../core/plugins";
 import { githubClient, type GitHubClient } from "../shared/client";
+import { githubSourceSchema } from "./config";
 import { githubWebhookReceiver } from "./webhook";
 
 /** GitHub Issues as the item source: today its webhook deliveries; the tracker ports join with #673. */
 export const githubItemsPlugin: ItemsPlugin = {
   role: "items",
   type: "github",
+  configSchema: githubSourceSchema,
   create: (context) => ({ webhook: githubWebhookReceiver(context) }),
 };
 

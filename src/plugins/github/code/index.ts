@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type { CodePlugin } from "../../../core/plugins";
 import { githubClient } from "../shared/client";
 import { GitHubCodeHost } from "./codehost";
@@ -6,5 +8,6 @@ import { GitHubCodeHost } from "./codehost";
 export const githubCode: CodePlugin = {
   role: "code",
   type: "github",
+  configSchema: z.object({ type: z.literal("github") }).strict(),
   create: (context) => new GitHubCodeHost(githubClient(context).adapter),
 };

@@ -21,6 +21,7 @@ import { printJson, type Command } from "../command";
 import { control, serviceRunning } from "../control-client";
 import { autoUpgradeSummary } from "./service";
 import { filesystemPressure, filesystemPressureDetail, type FilesystemMeasure, type FilesystemPressure } from "../filesystem-pressure";
+import { PLUGINS } from "../plugins";
 
 export interface DoctorCheck {
   name: string;
@@ -200,7 +201,7 @@ export async function doctorReport(
 
   let config: ConveyorConfig | null = null;
   try {
-    config = await loadConfig(configPath, undefined, { home });
+    config = await loadConfig(configPath, undefined, { home, plugins: PLUGINS });
     checks.push({ name: "configuration", status: "ok", detail: `${configPath} (${config.hash.slice(0, 12)})` });
     for (const warning of config.warnings ?? []) checks.push({ name: "configuration", status: "warn", detail: warning });
   } catch (error) {

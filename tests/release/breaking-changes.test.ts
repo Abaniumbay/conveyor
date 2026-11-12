@@ -28,6 +28,7 @@ function sources(change: (sources: SurfaceSources) => void = () => {}): SurfaceS
   const base: SurfaceSources = {
     commands: [command("status", ["watch"]), command("item retry")],
     globalOptions: { home: {} },
+    plugins: [],
     events: { "item.offboarded": { payload: z.object({ status: z.string() }).strict() } },
     tasks: [{ name: "change.setMetadata", input: z.object({ headSha: z.string(), title: z.string() }).strict() }],
     config: z.object({ settings: z.object({ retention: z.object({ runHistory: z.string() }).strict() }).strict() }).strict(),

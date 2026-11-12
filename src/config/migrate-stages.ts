@@ -11,6 +11,7 @@ import type { TaskRegistry } from "../tasks/contract";
 import { comparePlans } from "../tasks/compare-plans";
 import { ConfigError } from "./errors";
 import { loadConfig } from "./load";
+import type { Plugin } from "../core/plugins";
 
 type Json = Record<string, unknown>;
 
@@ -131,7 +132,7 @@ function setMissing(node: YAMLMap, at: string[], value: unknown, depth: number):
 
 export async function migrateStages(
   from: string,
-  options: { home?: string; registry?: TaskRegistry | null } = {},
+  options: { home?: string; registry?: TaskRegistry | null; plugins?: readonly Plugin[] } = {},
 ): Promise<StagesMigrationResult> {
   const source = path.resolve(from);
   const text = await readFile(source, "utf8").catch(() => {
@@ -217,7 +218,7 @@ export async function migrateStages(
 
   const parsed = path.parse(source);
   const output = path.join(parsed.dir, `${parsed.name}.migrated${parsed.ext || ".yaml"}`);
-  const loadOptions = options.home ? { home: options.home } : {};
+  const loadOptions = { ...(options.home ? { home: options.home } : {}), ...(options.plugins ? { plugins: options.plugins } : {}) };
   const old = await loadConfig(source, options.registry, loadOptions);
   await writeFile(output, document.toString({ lineWidth: 0 }));
   const migrated = await loadConfig(output, options.registry, loadOptions);
