@@ -54,8 +54,8 @@ handler receives `{ input, facade }`: read service state through `facade` and ma
 
 A stop-summary Operator run records a short summary of one item's current stop with the task
 `operator.recordStopSummary` (`itemId`, `stopId`, `summary`). The tool is granted only to a run started for
-exactly that item and stop: a call naming another item or another stop is refused. A summary is 1 to 600
-characters; a longer one is refused. The record is advice only. It never changes the item's stage, state,
+exactly that item and stop: a call naming another item or another stop is refused. A summary is 1 to 300
+characters; a longer one is refused. It must be one or two plain sentences: a line break, a code block (a fenced block or backticks spanning lines) or a URL is refused; inline code for a test, command or file name is allowed. The record is advice only. It never changes the item's stage, state,
 labels or recorded stop reason, and gates and routing never read it. It is kept one per item, and
 `currentStopSummary(itemId)` returns it only while its stop is the item's current one: after the item
 resumes and stops again the read returns nothing until a new summary is recorded. Recording appends the

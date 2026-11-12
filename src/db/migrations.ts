@@ -1155,7 +1155,6 @@ export const migrations: readonly Migration[] = [
   {
     version: 49,
     sql: `
-<<<<<<< HEAD
       -- Every event says what kind it is (a fact Conveyor recorded, an observation a plugin reported,
       -- or a trace of the service's own activity), who produced it (the core or a plugin), and which
       -- event it was a reaction to, so a chain of events can be followed back to its cause.
@@ -1164,7 +1163,11 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE events ADD COLUMN causation_seq INTEGER;
       CREATE INDEX events_causation ON events(causation_seq) WHERE causation_seq IS NOT NULL;
       CREATE INDEX events_class_occurred_at ON events(class, occurred_at);
-=======
+    `,
+  },
+  {
+    version: 50,
+    sql: `
       -- The Operator's short advice about an item's current stop. One row per item: the summary of the
       -- stop named by stop_id (a completed "stopped" stage transition). It is read only while that
       -- stop is still the item's latest completed transition, so a resumed or re-stopped item shows none.
@@ -1174,7 +1177,6 @@ export const migrations: readonly Migration[] = [
         summary TEXT NOT NULL,
         recorded_at TEXT NOT NULL
       );
->>>>>>> 670e6f9 (Operator can record a short stop summary for an item's current stop)
     `,
   },
 ];

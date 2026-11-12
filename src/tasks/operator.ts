@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 
-import { STOP_SUMMARY_MAX_LENGTH } from "../db/store";
+import { STOP_SUMMARY_MAX_LENGTH, stopSummaryFormatError } from "../db/store";
 import { defineGroup, pass, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 
@@ -41,7 +41,11 @@ const scheduledOutcomeInput = z.object({
 const stopSummaryInput = z.object({
   itemId: z.string().min(1),
   stopId: z.string().min(1),
-  summary: z.string().trim().min(1).max(STOP_SUMMARY_MAX_LENGTH),
+  summary: z.string().trim().min(1).max(STOP_SUMMARY_MAX_LENGTH)
+    .superRefine((value, context) => {
+      const error = stopSummaryFormatError(value);
+      if (error) context.addIssue({ code: "custom", message: error });
+    }),
 }).strict();
 const moveInput = z.object({
   itemId: z.string().min(1),
@@ -195,7 +199,7 @@ const reportStoppedItemOutcome: TaskDefinition<unknown, z.infer<typeof scheduled
 const recordStopSummary: TaskDefinition<unknown, z.infer<typeof stopSummaryInput>, Deps> = {
   name: "operator.recordStopSummary",
   kind: "tool",
-  description: `Record a short advice summary (at most ${STOP_SUMMARY_MAX_LENGTH} characters) of the item's current stop. Only for the item and stop this run was started for. It never changes the item's stage, state, labels or stop reason.`,
+  description: `Record a short advice summary (one or two plain sentences, at most ${STOP_SUMMARY_MAX_LENGTH} characters, no line break, code block or URL) of the item's current stop. Only for the item and stop this run was started for. It never changes the item's stage, state, labels or stop reason.`,
   reads: [], writes: [], invalidates: [], input: stopSummaryInput, mutating: true,
   run({ deps, input }) {
     const scope = operator(deps).stopSummary;

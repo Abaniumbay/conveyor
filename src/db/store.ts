@@ -12,7 +12,19 @@ import type { GitHubMirrorStorage } from "../plugins/github/shared/read-cache";
 import { migrations } from "./migrations";
 
 /** The longest stop summary the Operator may record, in characters. */
-export const STOP_SUMMARY_MAX_LENGTH = 600;
+export const STOP_SUMMARY_MAX_LENGTH = 300;
+
+/**
+ * Why a stop summary is not acceptable, or null. A summary is one or two plain sentences: no line break,
+ * no fenced or multi-line code (backticks spanning lines cannot occur without a line break) and no URL.
+ * Inline code for a test, command or file name is allowed.
+ */
+export function stopSummaryFormatError(summary: string): string | null {
+  if (/[\r\n\u2028\u2029]/.test(summary)) return "A stop summary cannot contain a line break";
+  if (summary.includes("```")) return "A stop summary cannot contain a code block";
+  if (/[a-z][a-z0-9+.-]*:\/\/|\bwww\./i.test(summary)) return "A stop summary cannot contain a URL";
+  return null;
+}
 
 export interface RepositoryRecord {
   id: string;
@@ -2003,6 +2015,8 @@ export class ConveyorStore {
     const summary = input.summary.trim();
     if (summary.length === 0) throw new Error("A stop summary cannot be empty");
     if (summary.length > STOP_SUMMARY_MAX_LENGTH) throw new Error(`A stop summary is at most ${STOP_SUMMARY_MAX_LENGTH} characters`);
+    const formatError = stopSummaryFormatError(summary);
+    if (formatError) throw new Error(formatError);
     this.#database.transaction(() => {
       if (this.currentStopId(input.issueId) !== input.stopId) throw new Error(`Stop ${input.stopId} is not the current stop of ${input.issueId}`);
       this.#database

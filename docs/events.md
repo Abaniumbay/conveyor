@@ -23,7 +23,6 @@ Each event has:
 
 ### Items
 
-<<<<<<< HEAD
 | Event | Class | Meaning | Payload |
 | --- | --- | --- | --- |
 | `item.discovered` | fact | Conveyor saw a source issue for the first time. | `number`: integer |
@@ -35,26 +34,10 @@ Each event has:
 | `item.relationshipsChanged` | fact | An item's stored parent or blockers changed. | `parentId`: string \| null<br>`dependencies`: string[] |
 | `item.requeued` | fact | A person asked for an item's stage to run again: a retry, a message, a resume or an answer. | `reason`: `"retry"` \| `"message"` \| `"resume"` \| `"answer"` |
 | `item.stageChanged` | fact | An item's projected stage or state changed. | `fromStage`: string \| null<br>`fromState`: string \| null<br>`toStage`: string \| null<br>`toState`: string \| null |
+| `item.stopSummaryRecorded` | fact | The Operator recorded a short advice summary for an item's current stop; `stopId` names the stop. The text is not in the event. | `stopId`: string |
 | `item.updated` | fact | A source issue's title, body, state, labels, parent or accepted text changed; `changed` names the fields. | `number`: integer<br>`changed`: (`"title"` \| `"body"` \| `"state"` \| `"labels"` \| `"parent"` \| `"acceptedText"`)[] |
 | `journey.recorded` | fact | A journey entry (a stage transition, resume or restart) completed or failed. | `transitionId`: string<br>`kind`: string<br>`fromStage`: string \| null<br>`toStage`: string \| null<br>`status`: `"completed"` \| `"failed"` |
 | `stage.stateChanged` | fact | An item's stage record (stage, status or feedback cycle) changed. | `stageId`: string<br>`status`: string<br>`feedbackCycle`: integer |
-=======
-| Event | Meaning | Payload |
-| --- | --- | --- |
-| `item.discovered` | Conveyor saw a source issue for the first time. | `number`: integer |
-| `item.enrolled` | An item started a new enrollment generation. | `generation`: integer |
-| `item.metadataChanged` | An item's issue type or issue-field values changed. | - |
-| `item.offboarded` | An item's active enrollment ended; `status` says how. | `status`: string |
-| `item.purged` | An item lost its Conveyor labels (or was closed without a merge) and Conveyor deleted everything it held about it; the event log keeps the item's events. | `number`: integer |
-| `item.queueChanged` | An item's backlog position changed; null rank leaves the queue. | `rank`: number \| null |
-| `item.relationshipsChanged` | An item's stored parent or blockers changed. | `parentId`: string \| null<br>`dependencies`: string[] |
-| `item.requeued` | A person asked for an item's stage to run again: a retry, a message, a resume or an answer. | `reason`: `"retry"` \| `"message"` \| `"resume"` \| `"answer"` |
-| `item.stageChanged` | An item's projected stage or state changed. | `fromStage`: string \| null<br>`fromState`: string \| null<br>`toStage`: string \| null<br>`toState`: string \| null |
-| `item.stopSummaryRecorded` | The Operator recorded a short advice summary for an item's current stop; `stopId` names the stop. The text is not in the event. | `stopId`: string |
-| `item.updated` | A source issue's title, body, state, labels, parent or accepted text changed; `changed` names the fields. | `number`: integer<br>`changed`: (`"title"` \| `"body"` \| `"state"` \| `"labels"` \| `"parent"` \| `"acceptedText"`)[] |
-| `journey.recorded` | A journey entry (a stage transition, resume or restart) completed or failed. | `transitionId`: string<br>`kind`: string<br>`fromStage`: string \| null<br>`toStage`: string \| null<br>`status`: `"completed"` \| `"failed"` |
-| `stage.stateChanged` | An item's stage record (stage, status or feedback cycle) changed. | `stageId`: string<br>`status`: string<br>`feedbackCycle`: integer |
->>>>>>> 670e6f9 (Operator can record a short stop summary for an item's current stop)
 
 ### Execution
 

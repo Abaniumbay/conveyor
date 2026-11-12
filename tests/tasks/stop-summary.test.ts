@@ -48,14 +48,33 @@ async function world() {
 }
 
 describe("operator.recordStopSummary", () => {
-  test("rejects a summary longer than 600 characters and accepts exactly 600", async () => {
+  test("rejects a summary longer than 300 characters and accepts exactly 300", async () => {
     const { store, transition, call } = await world();
     const stopId = transition(ITEM, "stopped");
     const scope = { itemId: ITEM, stopId };
-    await expect(call(scope, { itemId: ITEM, stopId, summary: "x".repeat(601) })).rejects.toThrow();
+    await expect(call(scope, { itemId: ITEM, stopId, summary: "x".repeat(301) })).rejects.toThrow();
     expect(store.currentStopSummary(ITEM)).toBeNull();
-    await call(scope, { itemId: ITEM, stopId, summary: "x".repeat(600) });
-    expect(store.currentStopSummary(ITEM)).toBe("x".repeat(600));
+    await call(scope, { itemId: ITEM, stopId, summary: "x".repeat(300) });
+    expect(store.currentStopSummary(ITEM)).toBe("x".repeat(300));
+  });
+
+  test("rejects a line break, code blocks and URLs, and accepts inline code", async () => {
+    const { store, transition, call } = await world();
+    const stopId = transition(ITEM, "stopped");
+    const scope = { itemId: ITEM, stopId };
+    for (const bad of [
+      "First sentence.\nSecond sentence.",
+      "Fenced ```ts const a = 1; ``` block.",
+      "Spans `lines\nacross` backticks.",
+      "See https://example.com/log for details.",
+      "See www.example.com for details.",
+    ]) {
+      await expect(call(scope, { itemId: ITEM, stopId, summary: bad })).rejects.toThrow();
+      expect(store.currentStopSummary(ITEM)).toBeNull();
+    }
+    const ok = "The test `tests/foo.test.ts` fails; run `bun test` to see it.";
+    await call(scope, { itemId: ITEM, stopId, summary: ok });
+    expect(store.currentStopSummary(ITEM)).toBe(ok);
   });
 
   test("rejects a summary for an item other than the one the run was started for", async () => {
