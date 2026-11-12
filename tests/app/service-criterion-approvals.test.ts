@@ -10,6 +10,7 @@ import { ConveyorStore } from "../../src/db/store";
 import { CriterionApprovals, criterionTextHash } from "../../src/db/review-records";
 import { githubPlugins } from "../support/plugins";
 import type { TaskContext } from "../../src/tasks/context";
+import { dashboardViews } from "../support/dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -94,7 +95,7 @@ repositories:
     };
     store.executions().saveContext("issue", context, { stage: "implementation", taskInstanceId: "review", expectedEpoch: store.executions().stageEpoch("issue") });
   };
-  const card = () => service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue!;
+  const card = () => dashboardViews(service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue!;
   let delivery = 0;
   const deliver = async (event: string, payload: Record<string, unknown>) => {
     const body = new TextEncoder().encode(JSON.stringify({ repository: { full_name: "owner/repo" }, ...payload }));
@@ -265,7 +266,7 @@ test("keeps merged-head approvals after reopening persisted state and leaves no-
   reopened.drain("tests: nothing executes");
   await (reopened as unknown as { updateStatusComment(id: string): Promise<void> }).updateStatusComment("issue");
   expect(comments.at(-1)).toContain("- [x] Current criterion");
-  expect(reopened.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.acceptanceCriteria[0]).toMatchObject({ approved: true });
+  expect(dashboardViews(reopened).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.acceptanceCriteria[0]).toMatchObject({ approved: true });
   expect(reopenedStore.getIssue("issue")?.body).toBe(BODY);
   await reopened.close();
 

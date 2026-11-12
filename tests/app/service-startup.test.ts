@@ -13,6 +13,7 @@ import { ConsoleSink, type LogRecord, log } from "../../src/log/logger";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
+import { webDependenciesOf } from "../support/dashboard";
 
 const directories: string[] = [];
 
@@ -170,7 +171,7 @@ describe("startup reconciliation", () => {
       sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
       secureCookies: false,
     });
-    const web = Bun.serve({ port: 0, fetch: createWebHandler(service.webDependencies(auth, "operator")) });
+    const web = Bun.serve({ port: 0, fetch: createWebHandler(webDependenciesOf(service, auth, "operator")) });
     const socket = path.join(root, "control.sock");
     const control = await serveControlSocket(socket, createControlHandler(service, {
       home: root, config: path.join(root, "conveyor.yaml"), logs: path.join(root, "logs"), database: path.join(root, "conveyor.sqlite"),
@@ -266,7 +267,7 @@ describe("startup reconciliation", () => {
       sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
       secureCookies: false,
     });
-    const web = Bun.serve({ port: 0, fetch: createWebHandler(service.webDependencies(auth, "operator")) });
+    const web = Bun.serve({ port: 0, fetch: createWebHandler(webDependenciesOf(service, auth, "operator")) });
     const socket = path.join(root, "control.sock");
     const control = await serveControlSocket(socket, createControlHandler(service, {
       home: root, config: path.join(root, "conveyor.yaml"), logs: path.join(root, "logs"), database: path.join(root, "conveyor.sqlite"),

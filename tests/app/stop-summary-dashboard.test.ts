@@ -7,6 +7,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore, STOP_SUMMARY_MAX_LENGTH } from "../../src/db/store";
 import { renderDashboard } from "../support/render-dashboard";
+import { dashboardViews } from "../support/dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -55,7 +56,7 @@ describe("stop summary on the dashboard model", () => {
     const { service, store, transition } = await world();
     const stopId = transition("stopped", REASON);
     store.recordStopSummary({ issueId: "item", stopId, summary: "Fix the failing check." });
-    const model = service.dashboard("csrf");
+    const model = dashboardViews(service).dashboard("csrf");
     const card = model.needsYou[0]!;
     expect(card.stopSummary).toBe("Fix the failing check.");
     expect(card.reason).toBe(REASON);
@@ -70,7 +71,7 @@ describe("stop summary on the dashboard model", () => {
   test("without a summary the headline is the first line of the reason cut to the summary limit", async () => {
     const { service, store, transition } = await world();
     transition("stopped", REASON);
-    const card = service.dashboard("csrf").needsYou[0]!;
+    const card = dashboardViews(service).dashboard("csrf").needsYou[0]!;
     expect(card.stopSummary).toBeNull();
     expect(card.stopHeadline).toBe(LONG_FIRST_LINE.slice(0, STOP_SUMMARY_MAX_LENGTH));
     expect(card.stopHeadline).toHaveLength(STOP_SUMMARY_MAX_LENGTH);
@@ -84,10 +85,10 @@ describe("stop summary on the dashboard model", () => {
     store.recordStopSummary({ issueId: "item", stopId: first, summary: "Old advice." });
     transition("resumed", null);
     transition("stopped", "New stop reason.\nmore");
-    const card = service.dashboard("csrf").needsYou[0]!;
+    const card = dashboardViews(service).dashboard("csrf").needsYou[0]!;
     expect(card.stopSummary).toBeNull();
     expect(card.stopHeadline).toBe("New stop reason.");
-    const html = renderDashboard(service.dashboard("csrf"));
+    const html = renderDashboard(dashboardViews(service).dashboard("csrf"));
     expect(html).not.toContain("Old advice.");
     expect(html).toContain("<p>New stop reason.</p>");
     store.close();
@@ -100,7 +101,7 @@ describe("stop summary on the dashboard model", () => {
     store.recordStopSummary({ issueId: "item", stopId, summary: "Fix the failing check." });
     expect(store.listConversationMessages("item")).toHaveLength(before);
     expect(store.getLatestSourceMutationByKeyPrefix("")).toBeNull();
-    expect(service.dashboard("csrf").needsYou[0]!.reason).toBe(REASON);
+    expect(dashboardViews(service).dashboard("csrf").needsYou[0]!.reason).toBe(REASON);
     expect(store.listStageTransitions("item").at(-1)?.reason).toBe(REASON);
     store.close();
   });

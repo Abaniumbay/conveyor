@@ -8,6 +8,7 @@ import type { ConveyorConfig } from "../../src/config/load";
 import { configSchema } from "../../src/config/schema";
 import { ConveyorStore } from "../../src/db/store";
 import type { SourceIssue } from "../../src/source/types";
+import { dashboardViews } from "../support/dashboard";
 
 const temporaryDirectories: string[] = [];
 
@@ -164,7 +165,7 @@ describe("roll-up parent completion", () => {
       labels: ["conveyor", "conveyor:done", "conveyor:implementation"],
     });
     expect(store.getIssue("github:owner/my-app#3")?.sourceState).toBe("open");
-    expect(service.dashboard("csrf").done.issues).toContainEqual(expect.objectContaining({
+    expect(dashboardViews(service).dashboard("csrf").done.issues).toContainEqual(expect.objectContaining({
       id: "github:owner/my-app#1",
       closable: false,
     }));

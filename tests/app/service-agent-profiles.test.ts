@@ -6,6 +6,7 @@ import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { referenceConfigDirectory } from "../config/reference-fixture";
+import { webDependenciesOf } from "../support/dashboard";
 
 const bases: string[] = [];
 afterEach(async () => {
@@ -20,7 +21,7 @@ describe("agent profiles in the service", () => {
     const store = await ConveyorStore.open(path.join(base, "conveyor.sqlite"));
     const service = new ConveyorService(config, store, {} as never);
 
-    const web = service.webDependencies({} as never, "operator");
+    const web = webDependenciesOf(service, {} as never, "operator");
     expect((await web.getAgentProfiles()).map(({ id, name, title }) => ({ id, name, title }))).toEqual([
       { id: "darya", name: "Darya", title: "Product Owner" },
       { id: "jamshid", name: "Jamshid", title: "Developer" },

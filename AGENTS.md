@@ -49,14 +49,14 @@ Run these from the repository root.
 
 | Path | Contents |
 | --- | --- |
-| `src/app/` | The service (`service.ts`), issue execution, CI provider, retention, reports. |
+| `src/app/` | The service (`service.ts`), issue execution, CI provider, retention, reports, and `dashboard-sources.ts` (what the dashboard plugin may read). |
 | `src/engine/` | Stage executor, stage context and routing, finding types. |
 | `src/events/` | Event catalogue (`catalogue.ts`), the in-process bus (`bus.ts`), sinks, actor and correlation context. |
 | `src/tasks/` | Task contract (`contract.ts`), every task group (`item.ts`, `change.ts`, `agent.ts`, …), the registry (`catalogue.ts`), the plan compiler, MCP dispatch. |
 | `src/db/` | All SQLite: `migrations.ts` (schema), `store.ts` (`ConveyorStore`), `ports.ts` (the per-domain store ports), the record classes the store hands out (`journal.ts` with epochs and cursors, `event-log.ts`, `review-findings.ts`, `review-records.ts`, `review-threads.ts`, `manual-gates.ts`, `todos.ts`, `advisory-ci.ts`), the report queries (`reports.ts`) and backups (`backup.ts`). |
 | `src/config/` | `schema.ts` (zod schemas), loader, packaged defaults, migration. |
-| `src/core/plugins.ts` | The plugin contract and registry: code host, CI and harness plugins by configuration `type`. |
-| `src/plugins/` | Plugin implementations, one folder per provider and one per role inside it: `github/{shared,items,code,ci}`, `codex/`, `claude-code/`. `index.ts` is the list the composition root registers. |
+| `src/core/plugins.ts` | The plugin contract and registry: item source, code host, CI, harness and presentation plugins by `type`. |
+| `src/plugins/` | Plugin implementations, one folder per provider and one per role inside it: `github/{shared,items,code,ci}`, `codex/`, `claude-code/`, and `dashboard/` (the dashboard's view models in `views.ts`, its live feed in `feed.ts`). `index.ts` is the list the composition root registers. |
 | `src/source/`, `src/codehost/` | Item source and code host ports (`types.ts`) and provider-neutral change actions. |
 | `src/harness/`, `src/runner/` | The harness port (`harness/types.ts`) and the process runners behind the Codex and Claude Code plugins. |
 | `src/isolation/` | Sanitized agent environment, network sandbox, egress proxies. |
@@ -64,11 +64,11 @@ Run these from the repository root.
 | `src/cli/` | `main.ts` (command table) and `commands/*.ts`. |
 | `src/log/` | Structured logging (`log` from `src/log/logger.ts`). |
 | `tests/` | Mirrors `src/`: the test for `src/x/y.ts` is `tests/x/y.test.ts`. |
-| `tests/support/` | Shared fixtures: `delivery-world.ts` (a full delivery with fakes at the edges), `bwrap.ts`. |
+| `tests/support/` | Shared fixtures: `delivery-world.ts` (a full delivery with fakes at the edges), `bwrap.ts`, `dashboard.ts` (the dashboard plugin over a test's service). |
 | `examples/config/` | Packaged default configuration (`builtin:`), including the default agent instructions. |
 | `docs/` | User and operator documentation. `tasks.md`, `cli.md`, `events.md` and `public-surface.txt` are generated; never edit them by hand. |
 
-Some files are very large: `src/app/service.ts` (~6,000 lines), `src/db/store.ts` (~3,400),
+Some files are very large: `src/app/service.ts` (~5,800 lines), `src/db/store.ts` (~3,400),
 `src/web/render.tsx` (~1,800), `src/web/server.ts` (~1,500) and `src/web/app/behaviour.ts`
 (~1,000). Never read them whole. Find the symbol you need (code index or `rg -n "methodName" src`) and read a
 narrow range around it.
@@ -223,10 +223,14 @@ a service mutation directly.
 
 ### Dashboard
 
-1. Data is built in `src/app/service.ts` into the view models in `src/web/types.ts`, then
-   normalized into the live model (`src/web/model.ts`) that the browser receives as a snapshot and
-   patches. Data a view loads on its own comes from a JSON endpoint. `src/web/render.tsx` only
-   renders; keep logic out of it.
+1. Data is built in the dashboard plugin (`src/plugins/dashboard/views.ts`) into the view models in
+   `src/web/types.ts`, then normalized into the live model (`src/web/model.ts`) that the browser
+   receives as a snapshot and patches. The plugin reads only `DashboardSources`
+   (`src/app/dashboard-sources.ts`); never hand it the service or the whole store. A new read is a
+   store port method added to `DashboardStore`, or live service state exposed by
+   `ConveyorService.dashboardSources()`. Never build view models in `src/app/service.ts`. Data a
+   view loads on its own comes from a JSON endpoint. `src/web/render.tsx` only renders; keep logic
+   out of it.
 2. Routes and JSON endpoints live in `src/web/server.ts`. A route that changes state requires a
    signed-in session and the CSRF token, and sends a command (see above); a superuser-only action
    checks the role on the server, not only by hiding a button.

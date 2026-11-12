@@ -5,7 +5,8 @@ import path from "node:path";
 import { ConveyorService } from "../src/app/service";
 import type { ConveyorConfig } from "../src/config/load";
 import { ConveyorStore } from "../src/db/store";
-import type { DashboardFeedMessage } from "../src/app/dashboard-feed";
+import { createDashboard } from "../src/plugins/dashboard";
+import type { DashboardFeedMessage } from "../src/web/model";
 
 const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-benchmark-"));
 const assertTiming = process.env.CONVEYOR_BENCHMARK_ASSERT_TIMING === "1";
@@ -41,9 +42,10 @@ try {
   }
 
   const service = new ConveyorService(config, store, {} as never);
-  const web = service.webDependencies({} as never, "operator");
+  const dashboard = createDashboard({ events: service.events, sources: service.dashboardSources() });
+  const web = dashboard.reads;
   // Warm the runtime and SQLite statement caches without including that setup in the result.
-  service.dashboard("benchmark");
+  dashboard.views.dashboard("benchmark");
   const started = performance.now();
   const { model } = web.getDashboardSnapshot!();
   const buildMs = performance.now() - started;

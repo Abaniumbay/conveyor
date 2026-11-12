@@ -9,6 +9,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { renderDashboard } from "../support/render-dashboard";
+import { dashboardViews } from "../support/dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -226,9 +227,9 @@ describe("buildRepositorySummaries", () => {
     const service = new ConveyorService(serviceConfig, store, provider);
     store.pauseRepository("alpha", "operator", "CI budget");
 
-    const board = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
-    const list = service.dashboard("csrf", { view: "repositories", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
-    const detail = service.dashboard("csrf", { view: "repository", repositoryId: "alpha", column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+    const board = dashboardViews(service).dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+    const list = dashboardViews(service).dashboard("csrf", { view: "repositories", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+    const detail = dashboardViews(service).dashboard("csrf", { view: "repository", repositoryId: "alpha", column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
 
     const reader = { id: "reader", username: "reader", role: "user" as const, avatar: "🦊" };
     const superuser = { id: "admin", username: "admin", role: "superuser" as const, avatar: "🦊" };
@@ -256,12 +257,12 @@ describe("buildRepositorySummaries", () => {
     }
 
     store.setIssueProjection("running", { state: "needs-input", stage: "implementation", warning: null });
-    const updated = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+    const updated = dashboardViews(service).dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
     expect(updated.revision).not.toBe(board.revision);
 
     const storedRevision = store.dashboardRevision();
     await service.reconcileAll();
-    const degraded = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+    const degraded = dashboardViews(service).dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
     expect(store.dashboardRevision()).toBe(storedRevision);
     expect(degraded.revision).not.toBe(updated.revision);
     // The live dashboard learns of the failing repository from its event, and of every pass.
@@ -280,7 +281,7 @@ describe("buildRepositorySummaries", () => {
     expect(degradedBoard).toContain("provider access is forbidden");
     expect(degradedBoard).toContain('href="/repositories/alpha"');
     expect(boardHtml).not.toContain('class="repository-warnings"');
-    const degradedHtml = renderDashboard(service.dashboard("csrf", { view: "repositories", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null }));
+    const degradedHtml = renderDashboard(dashboardViews(service).dashboard("csrf", { view: "repositories", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null }));
     expect(degradedHtml).toContain("provider access is forbidden");
     expect(degradedHtml).not.toContain("System attention");
   });

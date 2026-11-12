@@ -10,6 +10,7 @@ import { ConveyorStore } from "../../src/db/store";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 import { renderDashboard } from "../support/render-dashboard";
+import { dashboardViews, webDependenciesOf } from "../support/dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -137,7 +138,7 @@ describe("GitHub outage on status and the dashboard", () => {
       const status = await cli("status", "--home", home);
       expect(lines(status).map((match) => match[1])).toEqual(["3"]);
 
-      const dashboard = service.dashboard("csrf");
+      const dashboard = dashboardViews(service).dashboard("csrf");
       expect(dashboard.systemWarnings.filter((warning) => warning.includes("GitHub unavailable since"))).toHaveLength(1);
       expect(lines(renderDashboard(dashboard)).map((match) => match[1])).toEqual(["3"]);
 
@@ -156,7 +157,7 @@ describe("GitHub outage on status and the dashboard", () => {
     try {
       expect(service.githubOutage()).toBeNull();
       expect(lines(await cli("status", "--home", home))).toHaveLength(0);
-      const dashboard = service.dashboard("csrf");
+      const dashboard = dashboardViews(service).dashboard("csrf");
       expect(dashboard.systemWarnings.filter((warning) => warning.includes("GitHub unavailable"))).toHaveLength(0);
       expect(renderDashboard(dashboard)).not.toContain("GitHub unavailable");
     } finally {
@@ -172,7 +173,7 @@ describe("GitHub outage on status and the dashboard", () => {
       fake.down = false;
       await until(() => service.githubOutage() === null, "the outage to clear");
       expect(lines(await cli("status", "--home", home))).toHaveLength(0);
-      expect(renderDashboard(service.dashboard("csrf"))).not.toContain("GitHub unavailable");
+      expect(renderDashboard(dashboardViews(service).dashboard("csrf"))).not.toContain("GitHub unavailable");
     } finally {
       await close();
     }
@@ -183,7 +184,7 @@ describe("GitHub outage on status and the dashboard", () => {
     try {
       await service.tick();
       await until(() => service.githubOutage()?.waitingItems.length === 1, "one waiting item");
-      const deps = service.webDependencies({} as never, "user");
+      const deps = webDependenciesOf(service, {} as never, "user");
       const has = () => deps.getDashboardSnapshot!().model.system.systemWarnings.some((w) => w.includes("GitHub unavailable since"));
       expect(has()).toBe(true);
       // The item moves on; the next probe releases it from the outage record without emitting an event.

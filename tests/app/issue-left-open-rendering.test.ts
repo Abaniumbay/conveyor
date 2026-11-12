@@ -7,6 +7,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { renderDashboard } from "../support/render-dashboard";
+import { dashboardViews } from "../support/dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -46,7 +47,7 @@ async function stoppedItem() {
 
 test("the Needs you list and the dashboard card show the reason", async () => {
   const { service, store } = await stoppedItem();
-  const model = service.dashboard("csrf");
+  const model = dashboardViews(service).dashboard("csrf");
   expect(model.needsYou.map((card) => [card.number, card.reason])).toEqual([[1, REASON]]);
   const html = renderDashboard(model);
   const start = html.indexOf('<section class="needs-you"');

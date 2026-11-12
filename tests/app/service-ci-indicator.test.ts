@@ -13,6 +13,7 @@ import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID } from "../../src/engine
 import { ConsoleSink, log } from "../../src/log/logger";
 import type { GitHubAdapter } from "../../src/plugins/github/shared/adapter";
 import { githubPlugins } from "../support/plugins";
+import { dashboardViews } from "../support/dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -123,7 +124,7 @@ repositories:
       .then(() => service.webhooksSettled());
   };
   const indicator = () => store.listIndicators("issue").find((entry) => entry.id === "ci");
-  const card = () => service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+  const card = () => dashboardViews(service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
   const reopen = async () => {
     const reopenedStore = await ConveyorStore.open(config.settings.database);
     const reopenedService = new ConveyorService(config, reopenedStore, github as never, { plugins: githubPlugins(config, github as never) });
@@ -189,7 +190,7 @@ test("a configured manual gate records a fresh superuser approval and wakes only
   const firstEpoch = w.store.executions().stageEpoch("issue");
   expect(w.internals.wakeupReached("issue")).toBe(false);
 
-  const dashboard = () => w.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
+  const dashboard = () => dashboardViews(w.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
   expect(dashboard().selectedIssue?.manualGates).toEqual(expect.arrayContaining([
     expect.objectContaining({
       stageId: "implementation", gateId: "ciGate", kind: "configured", required: true, waiting: true,
@@ -232,7 +233,7 @@ test("a configured entry approval is visit-scoped, durable, and wakes only its a
   const w = await setup("", false, false, false, false, false, true);
   parkEntryApproval(w.store);
   const epoch = w.store.executions().stageEpoch("issue");
-  const dashboard = () => w.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
+  const dashboard = () => dashboardViews(w.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
 
   expect(dashboard().selectedIssue?.manualGates).toEqual(expect.arrayContaining([
     expect.objectContaining({ stageId: "implementation", gateId: ENTRY_APPROVAL_TASK_ID, kind: "entry", required: true, waiting: true }),
@@ -251,7 +252,7 @@ test("a configured entry approval is visit-scoped, durable, and wakes only its a
   expect(() => w.service.approveManualGate("issue", "implementation", ENTRY_APPROVAL_TASK_ID, { id: "admin-2", username: "other" })).not.toThrow();
 
   const reopened = await w.reopen();
-  expect(reopened.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.manualGates)
+  expect(dashboardViews(reopened.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.manualGates)
     .toEqual(expect.arrayContaining([expect.objectContaining({ gateId: ENTRY_APPROVAL_TASK_ID, approvedBy: "admin" })]));
   await reopened.service.close();
 
@@ -287,7 +288,7 @@ test("a Follow-ups gate waits durably, notifies once, and records its acknowledg
   });
 
   await w.internals.execute(w.store.getIssue("issue")!, new AbortController().signal);
-  const dashboard = () => w.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
+  const dashboard = () => dashboardViews(w.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
   expect(w.store.executions().getCursor("issue")).toMatchObject({ taskInstanceId: "followUps", state: "pending", wakeAt: null });
   expect(dashboard().selectedIssue?.manualGates).toEqual(expect.arrayContaining([
     expect.objectContaining({ kind: "follow-up", required: true, waiting: true, notes: ["Add <em>production</em> configuration.", "Announce the release."] }),
@@ -298,7 +299,7 @@ test("a Follow-ups gate waits durably, notifies once, and records its acknowledg
   expect(w.store.pendingPushEvents()).toHaveLength(1);
 
   const reopened = await w.reopen();
-  expect(reopened.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.manualGates)
+  expect(dashboardViews(reopened.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.manualGates)
     .toEqual(expect.arrayContaining([expect.objectContaining({ kind: "follow-up", waiting: true })]));
   await reopened.service.close();
 
@@ -415,7 +416,7 @@ test("a board approval has its own receipt and removing it wakes its parked visi
   const w = await setup();
   w.service.setBoardApprovalRequirement("issue", "implementation", true);
   parkBoardApproval(w.store);
-  const dashboard = () => w.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
+  const dashboard = () => dashboardViews(w.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
   expect(dashboard().selectedIssue?.manualGates).toEqual(expect.arrayContaining([
     expect.objectContaining({ kind: "board", stageId: "implementation", waiting: true }),
   ]));
@@ -463,12 +464,12 @@ test("a workflow_run webhook for the current head updates the stored indicator a
   await w.internals.backfillCiIndicators("repo");
   parkCiGate(w.store, new Date(Date.now() + 60_000).toISOString());
   expect(w.card()?.waiting).toMatchObject({ kind: "waiting", reason: "Waiting for CI at head1: build." });
-  const revision = w.service.dashboard("csrf").revision;
+  const revision = dashboardViews(w.service).dashboard("csrf").revision;
   await Bun.sleep(3);
   w.state.runs = [run("build", "passed", { completedAt: "2026-01-01T00:01:00Z" })];
   await w.deliver("workflow_run", workflowRun("head1"));
   expect(w.indicator()).toMatchObject({ state: "passing", progress: "1/1" });
-  expect(w.service.dashboard("csrf").revision).not.toBe(revision);
+  expect(dashboardViews(w.service).dashboard("csrf").revision).not.toBe(revision);
   expect(w.card()?.indicators[0]).toMatchObject({ state: "passing", entries: [{ name: "build", state: "passed", durationMs: 60_000 }] });
   expect(w.card()?.waiting?.reason).toContain("CI passed at head1; settling until");
   expect(w.card()?.waiting?.reason).not.toContain("Waiting for CI");
@@ -491,7 +492,7 @@ test("a CI settle status preserves its head and end time across a restart", asyn
   await w.service.close();
 
   const restarted = await w.reopen();
-  const after = restarted.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting?.reason;
+  const after = dashboardViews(restarted.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting?.reason;
   expect(after).toBe(before);
   await restarted.service.close();
 });
@@ -517,7 +518,7 @@ test("a parked review settlement action shows its current head, unfinished check
   await w.service.close();
 
   const restarted = await w.reopen();
-  const card = restarted.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+  const card = dashboardViews(restarted.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
   expect(card?.waiting).toMatchObject({
     reason: "Waiting for CI at head1: build.", nextCheckAt: wakeAt, deadline: deadlineAt,
   });

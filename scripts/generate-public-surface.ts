@@ -108,7 +108,7 @@ export function publicSurface(sources: SurfaceSources = defaultSources()): strin
   for (const key of inputKeys(sources.config)) lines.add(`config ${key}`);
   const section = { items: "sources", code: "codeHosts", ci: "ci" } as const;
   for (const plugin of sources.plugins) {
-    if (plugin.role === "harness") continue;
+    if (plugin.role === "harness" || plugin.role === "presentation") continue;
     for (const key of inputKeys(plugin.configSchema)) lines.add(`config ${section[plugin.role]}.<name>.${key}`);
   }
   for (const key of inputKeys(sources.stage)) lines.add(`config stages[].${key}`);

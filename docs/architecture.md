@@ -66,7 +66,7 @@ flowchart LR
 | Scoped MCP server | Serves the registry's `tool` tasks to each live run under an exact grant, through one dispatcher that re-checks the grant and preconditions. Grants expire with the run. |
 | Agent isolation | Sanitized agent environment and, per repository, a network namespace with allowlisting proxies (`src/isolation`). |
 | SQLite store | Persists source projections, stage state, events, transitions, runs and their logs, questions and conversations, costs, review findings, criterion approvals, advisory CI watches and idempotency records in WAL mode. |
-| Web control plane | Serves the authenticated dashboard application (a Preact application that runs in the browser), its JSON endpoints for issue conversations, stage history, technical logs, views and steering runs, health endpoints, and the live SSE stream. The live dashboard model (`src/app/dashboard-feed.ts`, `src/web/model.ts`) is rebuilt once per burst of changes and sent as a snapshot plus field-level patches (`/api/v1/snapshot`, `/api/v1/stream`), so the work per change does not grow with the number of open dashboards. |
+| Web control plane | Serves the authenticated dashboard application (a Preact application that runs in the browser), its JSON endpoints for issue conversations, stage history, technical logs, views and steering runs, health endpoints, and the live SSE stream. The dashboard is a presentation plugin (`src/plugins/dashboard`): it builds its view models from `DashboardSources` (`src/app/dashboard-sources.ts`: the store reads it makes, the configuration and the service's live state), never from the service or the whole store, and serves them to the routes. Its live model (`src/plugins/dashboard/feed.ts`, `src/web/model.ts`) follows the event bus, is rebuilt once per burst of changes and is sent as a snapshot plus field-level patches (`/api/v1/snapshot`, `/api/v1/stream`), so the work per change does not grow with the number of open dashboards. |
 | Control interface and releases | Serves the CLI over a private Unix socket with the same operations as the dashboard; drains, backs up, switches the installed release and restarts under systemd for upgrades and rollbacks (`src/control`). |
 | Service logging | Structured, redacted service logs on stdout/stderr and in a rotated JSON-lines file (`src/log`). |
 
@@ -87,12 +87,14 @@ the rule new code follows; the current state is tracked by the boundary test.
 | Code host | `CodeHost` (`src/codehost/types.ts`) | GitHub pull requests |
 | CI | `CiProvider` (`src/app/ci-provider.ts`) | GitHub Actions |
 | Agent harness | `Harness` (`src/harness/types.ts`) | Codex, Claude Code |
+| Presentation | `DashboardSources` (`src/app/dashboard-sources.ts`) in, `DashboardReads` (`src/web/server.ts`) out | The web dashboard |
 | Storage | Per-domain store ports (`src/db/ports.ts`): items, journal, evidence, events, run logs, conversations, provider cache, webhook deliveries, accounts, reports; `ConveyorStore` implements them all | SQLite |
 
 - **Plugins** live in their own folders (`src/plugins/<provider>/<role>/`) and are selected by
   configuration `type` per role, so a repository can combine, for example, items from one provider
   with code and CI from another. The contract and registry are in `src/core/plugins.ts`; the code
-  host, CI and harness roles are plugins today, and the item source becomes one with its ports.
+  host, CI, harness and presentation (the dashboard) roles are plugins today, and the item source
+  becomes one with its ports.
   `src/plugins/index.ts` lists them and the composition root (`src/cli/commands/serve.ts`) is the
   only place that registers them. Plugins of one provider share a client through the plugin
   context, never by importing each other. Each item source, code host and CI plugin owns its
@@ -237,12 +239,12 @@ src/
 ├── isolation/    agent environment, network sandbox, egress proxies
 ├── log/          service logging (redaction, rotation) and the log reader
 ├── mcp/          run-scoped MCP context and stdio server
-├── plugins/      plugin implementations: github/{shared,items,code,ci}, codex, claude-code; index.ts lists them
+├── plugins/      plugin implementations: github/{shared,items,code,ci}, codex, claude-code, dashboard (view models and live feed); index.ts lists them
 ├── release/      installed-release layout, verified staging, backups and switch history
 ├── runner/       Codex, Claude Code, legacy verifier, steering, and strict JSON-process runners
 ├── source/       item source contracts
 ├── tasks/        task contract, registry, groups, plan compiler, legacy compiler
-├── web/          authentication, HTTP/SSE server, the live dashboard model, Preact components, styles, and the browser application (app/)
+├── web/          authentication, HTTP/SSE server, the live dashboard model's shape and patches, Preact components, styles, and the browser application (app/)
 └── workspace/    managed Git worktree lifecycle
 examples/         packaged default configuration (config/, embedded as builtin:) and machine-local samples (local/)
 docs/             operations, configuration, generated CLI and task references, releasing, migration

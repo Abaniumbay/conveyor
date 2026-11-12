@@ -7,6 +7,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { githubPlugins } from "../support/plugins";
+import { dashboardViews } from "../support/dashboard";
 
 const temporaryDirectories: string[] = [];
 
@@ -90,8 +91,8 @@ describe("ConveyorService steering", () => {
     const runId = await service.startSteering("Make the board clearer");
     await service.waitForSteeringRun(runId);
 
-    expect(service.getSteeringRun(runId)).toEqual({ id: runId, status: "succeeded" });
-    expect(service.getSteeringEvents(runId, 0).map((event) => [event.type, event.text])).toEqual([
+    expect(dashboardViews(service).getSteeringRun(runId)).toEqual({ id: runId, status: "succeeded" });
+    expect(dashboardViews(service).getSteeringEvents(runId, 0).map((event) => [event.type, event.text])).toEqual([
       ["user", "Make the board clearer"],
       ["report_progress", "I found the stale labels and am applying the narrow fix."],
       ["report", "Updated the board and verified the tests."],
@@ -756,7 +757,7 @@ describe("ConveyorService steering", () => {
     const runId = await service.startSteering("Inspect the board, then move #87 to the end.");
     await service.waitForSteeringRun(runId);
     expect(store.getRun(runId)?.result).toEqual({ summary: "Done" });
-    expect(service.getSteeringRun(runId)).toEqual({ id: runId, status: "succeeded" });
+    expect(dashboardViews(service).getSteeringRun(runId)).toEqual({ id: runId, status: "succeeded" });
     expect(store.getIssue("retry-item")).toMatchObject({ projectedState: "active", projectedStage: "backlog" });
     expect(store.listRunEvents(runId).filter((event) => event.type === "operator.control")).toHaveLength(5);
     await service.close();

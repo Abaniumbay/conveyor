@@ -13,6 +13,7 @@ import { ConsoleSink, log } from "../../src/log/logger";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import type { HarnessResumeInput } from "../../src/tasks/context";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
+import { dashboardViews } from "../support/dashboard";
 
 const directories: string[] = [];
 afterAll(async () => {
@@ -678,7 +679,7 @@ describe("agent.run through the service", () => {
     });
     await w.execute();
     const question = w.store.listOpenQuestions()[0]!;
-    expect(w.service.dashboard("csrf").questions).toMatchObject([{
+    expect(dashboardViews(w.service).dashboard("csrf").questions).toMatchObject([{
       id: question.id,
       options: [{ id: "current-main", label: "Current main commit", description: "Keep the branch as it is." }],
     }]);

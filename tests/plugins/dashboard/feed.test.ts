@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import { changesDashboard, DashboardFeed, type DashboardFeedMessage } from "../../src/app/dashboard-feed";
-import type { DashboardItem, DashboardModel } from "../../src/web/model";
-import type { SystemStatusViewModel } from "../../src/web/types";
+import { changesDashboard, DashboardFeed } from "../../../src/plugins/dashboard/feed";
+import type { DashboardFeedMessage, DashboardItem, DashboardModel } from "../../../src/web/model";
+import type { SystemStatusViewModel } from "../../../src/web/types";
 
 function item(number: number, title = `Item ${number}`): DashboardItem {
   return {

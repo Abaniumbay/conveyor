@@ -6,7 +6,7 @@ import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler, PROFILE_AVATARS } from "../../src/web/server";
 import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 import { withCommands } from "../support/web-commands";
-import { DashboardFeed } from "../../src/app/dashboard-feed";
+import { DashboardFeed } from "../../src/plugins/dashboard/feed";
 import { dashboardSnapshotSchema, normalizeDashboard } from "../../src/web/model";
 
 const model: DashboardViewModel = {

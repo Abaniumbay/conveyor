@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import type { CiProvider } from "../../src/app/ci-provider";
+import type { DashboardSources } from "../../src/app/dashboard-sources";
 import type { CodeHost } from "../../src/codehost/types";
 import type { ConveyorConfig } from "../../src/config/load";
-import { pluginContext, PluginRegistry, type CiPluginOptions, type Plugin } from "../../src/core/plugins";
+import { EventBus } from "../../src/events/bus";
+import { pluginContext, PluginRegistry, type CiPluginOptions, type Plugin, type PresentationModule, type PresentationPlugin } from "../../src/core/plugins";
 import type { Harness } from "../../src/harness/types";
+import type { DashboardReads } from "../../src/web/server";
 import { z } from "zod";
 
 /** A provider schema that accepts any entry: these tests are not about provider configuration. */
@@ -83,5 +86,16 @@ describe("PluginRegistry", () => {
     expect(registry.itemSource("jira")).toBe(registry.itemSource("jira"));
     expect(built).toBe(1);
     expect(registry.itemSource("github")).toBeNull();
+  });
+
+  test("builds a presentation of its type from the options it is given, and none for an unknown type", () => {
+    const options = { events: new EventBus(), sources: {} as DashboardSources };
+    const received: unknown[] = [];
+    const module: PresentationModule = { reads: {} as DashboardReads };
+    const plugin: PresentationPlugin = { role: "presentation", type: "dashboard", create: (_context, given) => { received.push(given); return module; } };
+    const registry = new PluginRegistry([plugin], pluginContext(config()));
+    expect(registry.presentation("dashboard", options)).toBe(module);
+    expect(received).toEqual([options]);
+    expect(registry.presentation("tui", options)).toBeNull();
   });
 });
