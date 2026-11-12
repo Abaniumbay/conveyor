@@ -20,7 +20,7 @@ How Conveyor is built and why it behaves as it does. For using it, start with th
 ```mermaid
 flowchart LR
   GH[GitHub issues, labels, PRs, checks] <--> SA[Source adapter]
-  WH[Signed webhooks] --> SVC[Conveyor service]
+  WH[Signed webhooks] --> SA
   SA <--> SVC
   SVC --> REC[Reconciler]
   REC --> DB[(SQLite journal)]
@@ -99,6 +99,10 @@ the rule new code follows; the current state is tracked by the boundary test.
 - **Events:** plugins report what they observe as events; the core compares them with what it
   knows, records the change, and emits its own events, which other modules (the dashboard among
   them) consume. Writes stay direct calls through ports, and every write is recorded as an event.
+  Webhooks work this way today: the item source plugin's webhook receiver verifies a delivery and
+  reads it into neutral `ingest` events (`itemSource.itemChanged` carries the issue as delivered,
+  `code.changeUpdated`, `ci.runUpdated`, …); the core records them with the delivery, applies a
+  delivered item if it is newer than its copy, and otherwise reads only the items an event names.
 - **Enforcement:** `tests/scripts/architecture-boundaries.test.ts` fails when code outside an
   implementation or the composition root imports a provider or harness implementation, when a
   plugin imports another plugin, or when code outside `src/db` uses SQLite. Existing violations are

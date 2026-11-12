@@ -1,15 +1,17 @@
-// Turns a verified GitHub webhook delivery into the event Conveyor records for it: only the facts
-// a reaction needs (numbers, commit, action), never the delivery's text. Pure, so it is tested
+// Turns a verified GitHub webhook delivery into the neutral observation Conveyor records for it: the
+// facts a reaction needs (numbers, commit, action) and, for an issue delivery, the issue as the
+// delivery describes it, so the core applies it without reading GitHub again. Pure, so it is tested
 // against recorded payloads.
 
-import type { EventPayload } from "../../../events/catalogue";
+import type { Observation } from "../../../events/catalogue";
+import { deliveredIssueChange } from "../items/delivery-issue";
 
-export type NormalizedGitHubEvent =
-  | { type: "github.issueUpdated"; payload: EventPayload<"github.issueUpdated"> }
-  | { type: "github.relationshipChanged"; payload: EventPayload<"github.relationshipChanged"> }
-  | { type: "github.changeUpdated"; payload: EventPayload<"github.changeUpdated"> }
-  | { type: "github.ciUpdated"; payload: EventPayload<"github.ciUpdated"> }
-  | { type: "github.ping"; payload: EventPayload<"github.ping"> };
+export interface NormalizeOptions {
+  /** The repository address as configured; the delivered issue is identified by it. */
+  address?: string;
+  /** The enrollment label, which decides who enrolled an issue; without it no issue is delivered. */
+  enrollmentLabel?: string;
+}
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -28,8 +30,8 @@ const sameRepository = (value: unknown, address: string): boolean => {
   return typeof name !== "string" || name.toLowerCase() === address.toLowerCase();
 };
 
-/** The event for a delivery, or null when nothing in Conveyor reacts to its type. */
-export function normalizeGitHubEvent(eventType: string, payload: unknown): NormalizedGitHubEvent | null {
+/** The observation for a delivery, or null when nothing in Conveyor reacts to its type. */
+export function normalizeGitHubEvent(eventType: string, payload: unknown, options: NormalizeOptions = {}): Observation | null {
   const body = record(payload);
   const address = text(record(body.repository).full_name, 300);
   if (!address) return null;
@@ -42,7 +44,13 @@ export function normalizeGitHubEvent(eventType: string, payload: unknown): Norma
       if (number === null) return null;
       // A comment on a pull request arrives as an issue_comment whose issue is the pull request.
       const pullRequest = record(body.issue).pull_request !== undefined;
-      return { type: "github.issueUpdated", payload: { repository, number, action, pullRequest } };
+      const delivered = !pullRequest && options.enrollmentLabel !== undefined
+        ? deliveredIssueChange(options.address ?? address, eventType, payload, options.enrollmentLabel)
+        : null;
+      return {
+        type: "itemSource.itemChanged",
+        payload: { repository, number, action, pullRequest, item: delivered?.issue ?? null, actors: delivered?.actors ?? null },
+      };
     }
     case "sub_issues":
     case "issue_dependencies": {
@@ -54,7 +62,7 @@ export function normalizeGitHubEvent(eventType: string, payload: unknown): Norma
         const number = numberOf(issue);
         return number !== null && sameRepository(issueRepository, address) ? [number] : [];
       });
-      return { type: "github.relationshipChanged", payload: { repository, numbers: [...new Set(numbers)] } };
+      return { type: "itemSource.relationsChanged", payload: { repository, numbers: [...new Set(numbers)] } };
     }
     case "pull_request":
     case "pull_request_review":
@@ -66,7 +74,7 @@ export function normalizeGitHubEvent(eventType: string, payload: unknown): Norma
       // A review's action (submitted, resolved) is kept apart from the pull request's own actions.
       const changeAction = eventType === "pull_request" ? action : `${eventType.slice("pull_request_".length)}_${action}`;
       return {
-        type: "github.changeUpdated",
+        type: "code.changeUpdated",
         payload: {
           repository,
           number,
@@ -82,14 +90,14 @@ export function normalizeGitHubEvent(eventType: string, payload: unknown): Norma
       const run = record(body[eventType]);
       const sha = text(run.head_sha);
       if (!sha) return null;
-      const pullRequests = (Array.isArray(run.pull_requests) ? run.pull_requests : []).flatMap((entry) => {
+      const changes = (Array.isArray(run.pull_requests) ? run.pull_requests : []).flatMap((entry) => {
         const number = numberOf(entry);
         return number === null ? [] : [number];
       });
-      return { type: "github.ciUpdated", payload: { repository, sha, pullRequests, completed: action === "completed" } };
+      return { type: "ci.runUpdated", payload: { repository, sha, changes, completed: action === "completed" } };
     }
     case "ping":
-      return { type: "github.ping", payload: { repository } };
+      return { type: "itemSource.pinged", payload: { repository } };
     default:
       return null;
   }

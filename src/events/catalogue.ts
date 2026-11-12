@@ -38,6 +38,19 @@ const stage = z.string().min(1).nullable();
 const sha = z.string().min(1);
 const number = z.number().int().positive();
 
+const actorSchema = z.object({ login: z.string().nullable() }).strict();
+/** An item as an item source reports it (`SourceIssue`). */
+const sourceIssueSchema = z.object({
+  id: z.string(), number, url: z.string(), title: z.string(), body: z.string(), state: z.enum(["open", "closed"]),
+  stateReason: z.string().nullable().optional(), labels: z.array(z.string()), type: z.string().nullable().optional(), updatedAt: z.string(),
+}).strict();
+/** Who made each change a delivery reports (`DeliveredActors`). */
+const deliveredActorsSchema = z.object({
+  enrollment: z.union([actorSchema, z.literal("unchanged")]),
+  title: z.union([actorSchema, z.literal("unchanged")]),
+  body: z.union([actorSchema, z.literal("unchanged")]),
+}).strict();
+
 /** The changes a review finding goes through, as its own history records them. */
 export const FINDING_CHANGES = ["created", "resolved", "dismissed", "withdrawn", "edited", "reopened", "reclassified"] as const;
 
@@ -121,25 +134,26 @@ export const EVENT_CATALOGUE = {
   "advisoryCi.watchStarted": define("Changes and CI", "An advisory CI watch started for a head.", z.object({ watchId: id, headSha: sha }).strict()),
   "advisoryCi.finished": define("Changes and CI", "An advisory CI watch posted its result.", z.object({ watchId: id, state: z.string() }).strict()),
 
-  // GitHub
-  "webhook.received": define("GitHub", "A verified webhook delivery was stored.", z.object({ deliveryId: id, eventType: z.string() }).strict(), ingest),
-  "github.issueUpdated": define("GitHub", "GitHub reported a change to an issue or its comments; `pullRequest` when the issue is a pull request.", z.object({
+  // Item sources and providers: what a plugin observed, and Conveyor's own source changes
+  "webhook.received": define("Providers", "A plugin verified and stored a webhook delivery.", z.object({ deliveryId: id, eventType: z.string() }).strict(), ingest),
+  "itemSource.itemChanged": define("Providers", "An item source reported a change to an item or its comments; `pullRequest` when the item is a change request. `item` is the item as the delivery describes it and `actors` who changed what, when the delivery carries them; otherwise Conveyor reads the item.", z.object({
     repository: z.string(), number, action: z.string(), pullRequest: z.boolean(),
-  }).strict(), ingest),
-  "github.relationshipChanged": define("GitHub", "GitHub reported changed sub-issues or blockers; `numbers` are the issues of this repository involved.", z.object({
+    item: sourceIssueSchema.nullable().default(null), actors: deliveredActorsSchema.nullable().default(null),
+  }).strict(), { class: "ingest", content: true }),
+  "itemSource.relationsChanged": define("Providers", "An item source reported changed children or blockers; `numbers` are the items of this repository involved.", z.object({
     repository: z.string(), numbers: z.array(number),
   }).strict(), ingest),
-  "github.changeUpdated": define("GitHub", "GitHub reported a change to a pull request (opened, synchronize, closed, ...).", z.object({
+  "itemSource.pinged": define("Providers", "An item source confirmed its webhook (a ping).", z.object({ repository: z.string() }).strict(), ingest),
+  "code.changeUpdated": define("Providers", "A code host reported a change to a change request (opened, synchronize, closed, ...).", z.object({
     repository: z.string(), number, action: z.string(), headSha: sha.nullable(), merged: z.boolean().default(false),
   }).strict(), ingest),
-  "github.ciUpdated": define("GitHub", "GitHub reported CI progress for a commit; `completed` when a workflow run or check suite finished.", z.object({
-    repository: z.string(), sha, pullRequests: z.array(number), completed: z.boolean(),
+  "ci.runUpdated": define("Providers", "A CI provider reported progress for a commit; `completed` when a run finished. `changes` are the change requests it belongs to.", z.object({
+    repository: z.string(), sha, changes: z.array(number), completed: z.boolean(),
   }).strict(), ingest),
-  "webhook.healthChanged": define("GitHub", "A repository's webhook started or stopped delivering: unhealthy when a ping went undelivered, healthy again with the next delivery.", z.object({ healthy: z.boolean() }).strict()),
-  "github.ping": define("GitHub", "GitHub confirmed the webhook (a ping).", z.object({ repository: z.string() }).strict(), ingest),
-  "source.mutationStarted": define("GitHub", "Conveyor recorded a change it is about to make at the source.", z.object({ mutationId: id, operation: z.string() }).strict()),
-  "source.mutationCompleted": define("GitHub", "A source change completed.", z.object({ mutationId: id, operation: z.string() }).strict()),
-  "source.mutationFailed": define("GitHub", "A source change failed.", z.object({ mutationId: id, operation: z.string() }).strict()),
+  "webhook.healthChanged": define("Providers", "A repository's webhook started or stopped delivering: unhealthy when a ping went undelivered, healthy again with the next delivery.", z.object({ healthy: z.boolean() }).strict()),
+  "source.mutationStarted": define("Providers", "Conveyor recorded a change it is about to make at the source.", z.object({ mutationId: id, operation: z.string() }).strict()),
+  "source.mutationCompleted": define("Providers", "A source change completed.", z.object({ mutationId: id, operation: z.string() }).strict()),
+  "source.mutationFailed": define("Providers", "A source change failed.", z.object({ mutationId: id, operation: z.string() }).strict()),
 
   // Workspaces
   "workspace.recorded": define("Workspaces", "An item's workspace was created or its status changed.", z.object({ branch: z.string(), status: z.string() }).strict()),
@@ -188,6 +202,12 @@ export const EVENT_CATALOGUE = {
 
 export type EventType = keyof typeof EVENT_CATALOGUE;
 export type EventPayload<T extends EventType> = z.infer<(typeof EVENT_CATALOGUE)[T]["payload"]>;
+
+/** The event types a plugin reports when it observes something at a provider. */
+export const OBSERVATION_TYPES = ["itemSource.itemChanged", "itemSource.relationsChanged", "itemSource.pinged", "code.changeUpdated", "ci.runUpdated"] as const;
+export type ObservationType = (typeof OBSERVATION_TYPES)[number];
+/** What a plugin observed, as the neutral event it is recorded as. */
+export type Observation = { [T in ObservationType]: { type: T; payload: EventPayload<T> } }[ObservationType];
 
 /** An event as the log stores it. */
 export interface StoredEvent<T extends EventType = EventType> {

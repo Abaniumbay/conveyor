@@ -10,6 +10,7 @@ import type { CodeHost } from "../../src/codehost/types";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
+import { githubPlugins } from "../support/plugins";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -132,6 +133,7 @@ async function service(options: { second?: boolean; pipeline?: "merge-action" | 
     async listReviewThreadStates() { throw new Error("not expected"); },
   };
   const conveyor = new ConveyorService(config, store, github as never, {
+    plugins: githubPlugins(config, github as never),
     codeHosts: new CodeHostRegistry().register("github", codeHost),
   });
   conveyor.drain("tests: nothing executes");
@@ -638,10 +640,10 @@ describe("GitHub calls made for webhook deliveries", () => {
     const after = store.events().latestSeq();
     await deliver("issues", { action: "labeled", issue: { number: 1 } });
     await conveyor.webhooksSettled();
-    const recorded = store.events().read({ afterSeq: after }).filter((event) => event.type === "webhook.received" || event.type.startsWith("github."));
+    const recorded = store.events().read({ afterSeq: after }).filter((event) => event.type === "webhook.received" || event.type === "itemSource.itemChanged");
     expect(recorded.map((event) => [event.type, event.actor.kind, event.repositoryId])).toEqual([
       ["webhook.received", "webhook", "repo"],
-      ["github.issueUpdated", "webhook", "repo"],
+      ["itemSource.itemChanged", "webhook", "repo"],
     ]);
     store.close();
   });

@@ -1,4 +1,4 @@
-// The plugin contract (#670). A plugin implements one role (code host, CI, agent harness) for one
+// The plugin contract (#670). A plugin implements one role (item source, code host, CI, agent harness) for one
 // configuration `type` and hands the core only that role's port. Plugins of one provider share
 // resources (an API client, its cache and call meter) through the context, never by importing each
 // other. The composition root registers the plugins (src/plugins/index.ts) and builds them here.
@@ -7,6 +7,7 @@ import type { CiProvider } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ConveyorConfig } from "../config/load";
+import type { Observation } from "../events/catalogue";
 import type { Harness } from "../harness/types";
 
 /** What a plugin receives when it is built. */
@@ -14,6 +15,46 @@ export interface PluginContext {
   readonly config: ConveyorConfig;
   /** One instance per key for the whole service: what plugins of one provider share. */
   shared<T>(key: string, create: () => T): T;
+}
+
+/** A verified webhook delivery, read into what Conveyor understands. */
+export interface WebhookDelivery {
+  /** The provider's id for the delivery; a repeated delivery is recognised by it. */
+  deliveryId: string;
+  /** The provider's name for the kind of delivery. */
+  eventType: string;
+  /** The delivery as received, stored for redelivery checks and diagnostics. */
+  payload: unknown;
+  /** The repository address the delivery is about, or null when it names none. */
+  repositoryAddress: string | null;
+  /** What the delivery reports, as neutral observations; recorded only for a configured repository. */
+  observations: Observation[];
+  /** Runs after the delivery was recorded for a configured repository, before anything reacts to it. */
+  recorded?: () => void;
+}
+
+export type WebhookReceipt =
+  /** A delivery and the secret that verified it. */
+  | { kind: "delivery"; secret: string; delivery: WebhookDelivery }
+  /** A verified delivery that carries nothing to record (Conveyor's own writes coming back). */
+  | { kind: "ignored" };
+
+/** Reads an item source's webhook deliveries. */
+export interface WebhookReceiver {
+  /** Verifies the request with one of `secrets` and reads it; throws when none verifies it or it is malformed. */
+  receive(body: Uint8Array, headers: Headers, secrets: readonly string[]): WebhookReceipt;
+}
+
+/** What an item source plugin provides. Tracker ports (#673) join the webhook receiver here. */
+export interface ItemSourceModule {
+  webhook?: WebhookReceiver;
+}
+
+/** An item source for repositories whose `items` provider has this type. */
+export interface ItemsPlugin {
+  readonly role: "items";
+  readonly type: string;
+  create(context: PluginContext): ItemSourceModule;
 }
 
 /** A code host for repositories whose `code` (or, without one, `items`) provider has this type. */
@@ -47,7 +88,7 @@ export interface HarnessPlugin {
   create(context: PluginContext): Harness;
 }
 
-export type Plugin = CodePlugin | CiPlugin | HarnessPlugin;
+export type Plugin = ItemsPlugin | CodePlugin | CiPlugin | HarnessPlugin;
 
 /** The CI type a repository uses when it names no CI provider. */
 export const DEFAULT_CI_TYPE = "github-actions";
@@ -84,6 +125,12 @@ export class PluginRegistry {
     const plugin = this.#find("ci", type);
     if (!plugin) throw new Error(`unsupported CI provider type "${type}" (${options.providerName}): no plugin is registered for it`);
     return plugin.create(this.context, options);
+  }
+
+  /** The item source module of a provider type, or null when no plugin provides it. */
+  itemSource(type: string): ItemSourceModule | null {
+    const plugin = this.#find("items", type);
+    return plugin ? this.context.shared(`items:${type}`, () => plugin.create(this.context)) : null;
   }
 
   /** Every harness by runner type. */

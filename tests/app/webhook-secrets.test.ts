@@ -8,6 +8,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
+import { githubPlugins } from "../support/plugins";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -50,7 +51,7 @@ async function service() {
     async listIssues(address: string) { listed.push(address); return []; },
     async listSubIssues() { return []; }, async listDependencies() { return []; },
   };
-  const conveyor = new ConveyorService(config, store, github as never);
+  const conveyor = new ConveyorService(config, store, github as never, { plugins: githubPlugins(config, github as never) });
   conveyor.drain("tests: nothing executes");
   let delivery = 0;
   const deliver = (repository: string, secret: string, id = `d${(delivery += 1)}`) => {
@@ -73,7 +74,7 @@ describe("GitHub webhooks with a secret per provider", () => {
 
   test("a secret of another provider, or an unknown one, is refused and nothing is recorded or reconciled", async () => {
     const { listed, deliver, store } = await service();
-    await expect(deliver("owner/two", "first-secret", "retried")).rejects.toThrow("invalid GitHub webhook signature for this repository");
+    await expect(deliver("owner/two", "first-secret", "retried")).rejects.toThrow("invalid webhook signature for this repository");
     await expect(deliver("owner/one", "nobody's-secret")).rejects.toThrow("invalid GitHub webhook signature");
     expect(listed).toEqual([]);
     // The refused delivery id was not recorded, so a correctly signed retry of it is processed.

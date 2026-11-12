@@ -17,6 +17,7 @@ import { OPERATOR_TOOLS } from "../../src/operator-mcp/registry";
 import { createOperatorMcpHandler, OPERATOR_MCP_PATH } from "../../src/operator-mcp/server";
 import { hashOperatorToken, newOperatorToken } from "../../src/operator-mcp/tokens";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { githubPlugins } from "../support/plugins";
 
 const directories: string[] = [];
 const stops: Array<() => void> = [];
@@ -98,7 +99,7 @@ repositories:
     async redeliverHookDelivery() { requests.push("redeliverHookDelivery"); },
     async pingHook() { requests.push("pingHook"); return true; },
   };
-  const service = new ConveyorService(config, store, github as never);
+  const service = new ConveyorService(config, store, github as never, { plugins: githubPlugins(config, github as never) });
   service.drain("tests: nothing executes");
   // Onboarding registers the webhook, so a full sync would list deliveries and ping it.
   await service.onboardRepositories();
