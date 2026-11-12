@@ -52,13 +52,13 @@ import { classifyUpstreamError } from "../tasks/upstream-error";
 import { buildAgentProfiles } from "./agent-profiles";
 import { createTaskRegistry } from "../tasks/catalogue";
 import { runTask, TransientScriptError } from "../tasks/contract";
-import type { TaskDeps } from "../tasks/deps";
+import type { TaskDeps, TaskStore } from "../tasks/deps";
 import { criteriaOf, ISSUE_LEFT_OPEN_MARKER } from "../tasks/item";
 import { isCriterionApprovedAt } from "../db/review-records";
 import { compilePipeline } from "../tasks/plan";
 import { cliGit } from "../workspace/git";
 import { removeWorkspace } from "../workspace/lifecycle";
-import { DEFAULT_POLL_MS as ADVISORY_POLL_MS, type AdvisoryCiWatches } from "../db/advisory-ci";
+import { AdvisoryCiWatches, DEFAULT_POLL_MS as ADVISORY_POLL_MS } from "./advisory-ci";
 import { summarizeTodos, type TodoItem } from "../db/todos";
 import { buildReport } from "./reports";
 import { buildRepositorySummaries, type RepositorySummaries } from "./repository-summary";
@@ -638,7 +638,7 @@ export class ConveyorService {
     this.#harnesses = implementations.harnesses ?? this.#plugins.harnesses();
     this.#stopSummaryTimeoutMs = implementations.stopSummaryTimeoutMs ?? STOP_SUMMARY_TIMEOUT_MS;
     this.#manualGateApprovals = store.manualGates();
-    this.#advisoryWatches = store.advisoryWatches({
+    this.#advisoryWatches = new AdvisoryCiWatches(store.advisoryWatchStore(), store.executions(), {
       resolve: (repositoryId) => ({
         provider: this.ciProvider(repositoryId),
         address: this.config.repositories[repositoryId]?.address ?? "",
@@ -3789,7 +3789,7 @@ export class ConveyorService {
         // A system-scoped (steering) grant has no item: only explicitly allowed steering-safe tools are available.
         ? this.taskDeps(context.issue.id, context.repository)
         : ({
-            store: this.store,
+            store: this.store as TaskStore,
             config: this.config,
             issueId: "",
             operator: {

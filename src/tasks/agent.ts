@@ -14,7 +14,8 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import type { ConveyorStore, StoredQuestion } from "../db/store";
+import type { ConversationStore, RunLogStore } from "../db/ports";
+import type { StoredQuestion } from "../db/store";
 import type { Harness } from "../harness/types";
 import { agentEgressFor } from "../isolation/agent-egress";
 import { probeAgentMcpServers, type AgentMcpProbeOptions, type McpServerSpec } from "../isolation/mcp-probe";
@@ -514,7 +515,7 @@ async function codexExtensions(
 
 /** Starts each configured MCP server once, as the agent's harness will, and reports any that does not answer. */
 async function probeConfiguredMcpServers(
-  store: ConveyorStore,
+  store: RunLogStore & ConversationStore,
   args: {
     issueId: string; stageId: string; runId: string; agentId: string; servers: Record<string, McpServerSpec> | undefined;
     sandbox: AgentMcpProbeOptions;

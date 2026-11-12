@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { AdvisoryCiWatches } from "../../src/db/advisory-ci";
+import { AdvisoryCiWatches } from "../../src/app/advisory-ci";
 import { ManualGateApprovals } from "../../src/db/manual-gates";
 import { CriterionApprovals } from "../../src/db/review-records";
 import { ReviewFindings } from "../../src/db/review-findings";
@@ -223,7 +223,7 @@ describe("change, CI and source events", () => {
   });
   test("an advisory CI watch starts", async () => {
     const { store, types } = await world();
-    const watches = new AdvisoryCiWatches(store.sqlite(), store.executions(), {
+    const watches = new AdvisoryCiWatches(store.advisoryWatchStore(), store.executions(), {
       resolve: () => { throw new Error("not polled"); }, post: () => {},
     });
     expect(types(() => watches.ensureWatch({ repositoryId: "repo", itemId: ISSUE, headSha: "abc", stage: "review", change: { changeId: "pr-5", url: "https://example.com/pull/5" }, now: Date.now() }))).toEqual(["advisoryCi.watchStarted"]);
