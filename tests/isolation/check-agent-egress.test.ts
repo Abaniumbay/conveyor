@@ -219,11 +219,12 @@ if (!prompt.includes("registry.fake.test") || !process.argv.includes("Bash")) pr
       const port = (model.address() as net.AddressInfo).port;
       const workspace = path.join(directory, "workspace");
       await mkdir(workspace);
+      await mkdir(path.join(directory, "claude-config"));
       const egress = { httpsHosts: ["registry.fake.test"], resolve: async () => ["203.0.113.1"], dial: () => net.connect(port, "127.0.0.1") };
-      const result = await runLiveClaudeCheck({ cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "", SHELL: resolveBash()! }, egress, hosts: { allowed: "registry.fake.test", refused: "api.github.com" } });
+      const result = await runLiveClaudeCheck({ cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "", SHELL: resolveBash()! }, egress, hosts: { allowed: "registry.fake.test", refused: "api.github.com" }, configDir: path.join(directory, "claude-config") });
       expect(result.problems).toEqual([]);
       expect(result.passed).toBe(true);
-      const permissive = await runLiveClaudeCheck({ cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "", SHELL: resolveBash()! }, egress: { ...egress, httpsHosts: ["registry.fake.test", "api.github.com"] }, hosts: { allowed: "registry.fake.test", refused: "api.github.com" } });
+      const permissive = await runLiveClaudeCheck({ cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "", SHELL: resolveBash()! }, egress: { ...egress, httpsHosts: ["registry.fake.test", "api.github.com"] }, hosts: { allowed: "registry.fake.test", refused: "api.github.com" }, configDir: path.join(directory, "claude-config") });
       expect(permissive.passed).toBe(false);
     } finally {
       for (const server of servers) server.close();
