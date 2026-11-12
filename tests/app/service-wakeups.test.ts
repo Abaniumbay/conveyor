@@ -451,12 +451,11 @@ describe("persisted wake-ups", () => {
     first.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: MESSAGE });
 
     const internals = first.service as unknown as {
-      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
       updateStatusComment(issueId: string): Promise<void>;
     };
     const queuedCard = dashboardViews(first.service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
     expect(queuedCard).toMatchObject({ waiting: { kind: "queued" }, reason: null });
-    expect(internals.currentIssueStatus(first.store.getIssue("issue")!)).toEqual({
+    expect(first.service.liveIssueStatus("issue")).toEqual({
       kind: "queued",
       reason: "global runner slots 1/1 busy: #2; implementation slots 1/1 busy: #2; repo slots 1/1 busy: #2",
       since: wakeAt,
@@ -491,9 +490,7 @@ describe("persisted wake-ups", () => {
     first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "blocked", feedbackCycle: 0, configHash: config.hash });
     first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
     const requeuedAt = first.store.getStageState("issue")!.updatedAt;
-    const status = (first.service as unknown as {
-      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
-    }).currentIssueStatus(first.store.getIssue("issue")!);
+    const status = first.service.liveIssueStatus("issue");
 
     expect(status).toEqual({
       kind: "queued",
@@ -514,16 +511,12 @@ describe("persisted wake-ups", () => {
     park(first.store, config, wakeAt);
     addRunningHolder(first.store, config);
     first.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: MESSAGE });
-    const status = (first.service as unknown as {
-      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
-    }).currentIssueStatus(first.store.getIssue("issue")!);
+    const status = first.service.liveIssueStatus("issue");
     expect(status).toMatchObject({ kind: "queued", since: wakeAt, reason: expect.stringContaining("#2") });
     await first.service.close();
 
     const second = await open();
-    const restarted = (second.service as unknown as {
-      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
-    }).currentIssueStatus(second.store.getIssue("issue")!);
+    const restarted = second.service.liveIssueStatus("issue");
     expect(restarted).toEqual(status);
     await second.service.close();
   });
@@ -535,7 +528,6 @@ describe("persisted wake-ups", () => {
     const internals = first.service as unknown as {
       handleInfrastructureFailure(issue: StoredIssue, error: unknown): Promise<void>;
       retryLater(issueId: string, delayMs: number): void;
-      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
     };
     const retry = internals.retryLater.bind(first.service);
     internals.retryLater = (issueId, _delayMs) => retry(issueId, 0);
@@ -545,10 +537,10 @@ describe("persisted wake-ups", () => {
       .toMatchObject({ kind: "waiting", reason: "Execution failed: runner unavailable" });
 
     const deadline = Date.now() + 1_000;
-    let status = internals.currentIssueStatus(first.store.getIssue("issue")!);
+    let status = first.service.liveIssueStatus("issue");
     while (status === null && Date.now() < deadline) {
       await Bun.sleep(10);
-      status = internals.currentIssueStatus(first.store.getIssue("issue")!);
+      status = first.service.liveIssueStatus("issue");
     }
     expect(status).not.toBeNull();
     expect(status).toMatchObject({ kind: "queued", reason: expect.stringContaining("global runner slots 1/1 busy: #2") });
@@ -648,9 +640,6 @@ describe("persisted wake-ups", () => {
     first.store.setStageState({ issueId: "issue", stageId: "refinement", status: "waiting-in-flight", feedbackCycle: 0, configHash: config.hash });
     first.store.setIssueProjection("issue", { stage: "refinement", state: "active", warning: "Waiting for an in-progress slot in repo: #2" });
 
-    const internals = first.service as unknown as {
-      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string } | null;
-    };
     schedule(first.service);
     expect(first.executed).toEqual([]);
     expect(first.store.getStageState("issue")?.status).toBe("waiting-in-flight");

@@ -49,7 +49,7 @@ Run these from the repository root.
 
 | Path | Contents |
 | --- | --- |
-| `src/app/` | The service (`service.ts`), which orchestrates; the responsibilities it delegates, each behind a narrow dependency interface: webhook supervision (`webhook-supervisor.ts`: registration, health, pings, redelivery of missed deliveries), status comments (`status-comments.ts`), answers to agents' questions (`question-answers.ts`), relationships and roll-up parents (`rollups.ts`), retries of stopped items (`retry.ts`), drains and repository and item pauses (`admission.ts`) and purges of items that left (`purge.ts`); issue execution, CI provider, retention, reports, and the narrow interfaces the presentations take instead of the service: `dashboard-sources.ts` (what the dashboard plugin may read), `web-sources.ts` (`WebSources`, what the other web routes take, and `webDependencies`, which builds the routes' callbacks from it) and `control-sources.ts` (`ControlSources`, what the control socket, the release coordinator and the operator MCP read and the commands they send). |
+| `src/app/` | The service (`service.ts`), which orchestrates; the responsibilities it delegates, each behind a narrow dependency interface: webhook supervision (`webhook-supervisor.ts`: registration, health, pings, redelivery of missed deliveries), status comments (`status-comments.ts`), answers to agents' questions (`question-answers.ts`), relationships and roll-up parents (`rollups.ts`), retries of stopped items (`retry.ts`), drains and repository and item pauses (`admission.ts`), purges of items that left (`purge.ts`), onboarding, reconciles and syncs of repositories behind their sync lock (`repository-sync.ts`), scheduling passes, wake-ups and live status (`scheduler.ts`), agents' MCP grants and tool calls (`mcp-grants.ts`) and steering, the scheduled Operator and stop summaries (`steering.ts`); issue execution, CI provider, retention, reports, and the narrow interfaces the presentations take instead of the service: `dashboard-sources.ts` (what the dashboard plugin may read), `web-sources.ts` (`WebSources`, what the other web routes take, and `webDependencies`, which builds the routes' callbacks from it) and `control-sources.ts` (`ControlSources`, what the control socket, the release coordinator and the operator MCP read and the commands they send). |
 | `src/engine/` | Stage executor, stage context and routing, finding types. |
 | `src/events/` | Event catalogue (`catalogue.ts`), the in-process bus (`bus.ts`), sinks, actor and correlation context. |
 | `src/tasks/` | Task contract (`contract.ts`), every task group (`item.ts`, `change.ts`, `agent.ts`, …), the registry (`catalogue.ts`), the plan compiler, MCP dispatch. |
@@ -69,7 +69,7 @@ Run these from the repository root.
 | `examples/config/` | Packaged default configuration (`builtin:`), including the default agent instructions. |
 | `docs/` | User and operator documentation. `tasks.md`, `cli.md`, `events.md` and `public-surface.txt` are generated; never edit them by hand. |
 
-Some files are very large: `src/app/service.ts` (~4,400 lines), `src/db/store.ts` (~3,400),
+Some files are very large: `src/app/service.ts` (~2,600 lines), `src/db/store.ts` (~3,400),
 `src/web/render.tsx` (~1,800), `src/web/server.ts` (~1,500) and `src/web/app/behaviour.ts`
 (~1,000). Never read them whole. Find the symbol you need (code index or `rg -n "methodName" src`) and read a
 narrow range around it.

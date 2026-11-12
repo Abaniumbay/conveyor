@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
+import { Steering } from "../../src/app/steering";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness, SteeringRunInput } from "../../src/harness/types";
 import { codexProfile } from "../../src/plugins/codex/profile";
 import { githubPlugins } from "../support/plugins";
 import { dashboardViews } from "../support/dashboard";
+import { itemWorld, type ItemWorld } from "../support/item-world";
 
 const temporaryDirectories: string[] = [];
 
@@ -805,5 +807,179 @@ describe("ConveyorService steering", () => {
     expect(store.getIssue("retry-item")).toMatchObject({ projectedState: "active", projectedStage: "backlog" });
     expect(store.listRunEvents(runId).filter((event) => event.type === "operator.control")).toHaveLength(5);
     await service.close();
+  });
+});
+
+describe("Steering", () => {
+  let opened: ItemWorld | null = null;
+  afterEach(async () => { await opened?.close(); opened = null; });
+
+  const SUMMARY = { summary: "Done", sessionId: "session", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, durationMs: 1, exitCode: 0, stderr: "" };
+
+  async function setup(options: { periodic?: boolean; runSteering?: (input: SteeringRunInput, steering: () => Steering) => Promise<typeof SUMMARY> } = {}) {
+    const world = await itemWorld((root) => ({
+      web: { steering: { agent: "operator", workspace: root, ...(options.periodic ? { periodic: { interval: "1h" } } : {}) } },
+      runners: { codex: { type: "codex" } },
+      agents: {
+        operator: {
+          runner: "codex", instructions: path.join(root, "operator.md"), workspaceAccess: "read-only",
+          tasks: ["operator.getBoard", "operator.findItem", "operator.getItemHistory", "operator.reportStoppedItemOutcome", "operator.retryStoppedItem"],
+        },
+      },
+    }));
+    opened = world;
+    await writeFile(path.join(world.root, "operator.md"), "Inspect first.");
+    const state = { draining: false, reconciledAt: "2026-11-01T00:00:00Z" as string | null, errors: new Map<string, string>() };
+    const calls = { leases: [] as string[][], closed: 0, retries: [] as string[], moves: [] as string[] };
+    const steering: Steering = new Steering({
+      config: world.config,
+      store: world.store,
+      source: world.items.client,
+      harnesses: {},
+      runSteering: (input) => options.runSteering ? options.runSteering(input, () => steering) : Promise.resolve(SUMMARY),
+      stopSummaryTimeoutMs: 1_000,
+      lease: async (_runId, _workspace, allowedTools) => {
+        calls.leases.push([...allowedTools]);
+        return { configuration: { command: "mcp", args: [] }, close: () => { calls.closed += 1; } };
+      },
+      lastReconciledAt: () => state.reconciledAt,
+      reconcileErrors: () => state.errors,
+      onboardingErrors: () => new Map(),
+      shuttingDown: () => false,
+      draining: () => state.draining,
+      manualGateViews: () => [],
+      loadDeliveryState: async () => ({ change: null, pullRequest: null, checks: [] }),
+      retry: async (itemId, _note, username) => { calls.retries.push(`${itemId}:${username}`); return { status: "queued", stageId: "implementation" }; },
+      scheduledRetry: async () => ({ status: "queued", stageId: "implementation" }),
+      answerQuestion: async () => {},
+      reorderBacklog: (issueId, direction) => { calls.moves.push(`${issueId}:${direction}`); },
+      moveBacklogIssue: (issueId, before) => { calls.moves.push(`${issueId}:before:${before}`); },
+      itemFields: (issueId) => ({ item: issueId }),
+    });
+    return { world, steering, state, calls };
+  }
+
+  test("a steering request runs the agent with its granted tools and records the report", async () => {
+    const { world, steering, calls } = await setup();
+    const runId = await steering.start("  Tidy the board  ");
+    expect(steering.running).toBe(1);
+    await steering.waitFor(runId);
+    expect(steering.running).toBe(0);
+    expect(world.store.getRun(runId)).toMatchObject({ status: "succeeded", result: { summary: "Done" } });
+    expect(world.store.listRunEvents(runId).map((event) => event.type)).toEqual(["user", "report"]);
+    expect(calls.leases).toEqual([world.config.agents.operator!.tasks]);
+    expect(calls.closed).toBe(1);
+  });
+
+  test("a steering request is refused when it is empty, while draining, or while another runs", async () => {
+    let finish!: () => void;
+    const { steering, state } = await setup({ runSteering: () => new Promise((resolve) => { finish = () => resolve(SUMMARY); }) });
+    await expect(steering.start("   ")).rejects.toThrow("between 1 and 12000 characters");
+    state.draining = true;
+    await expect(steering.start("Look")).rejects.toThrow("Conveyor is draining");
+    state.draining = false;
+    const runId = await steering.start("Look");
+    await expect(steering.start("Look again")).rejects.toThrow("A steering agent is already running");
+    expect(steering.busy).toBe(true);
+    await Bun.sleep(5);
+    finish();
+    await steering.waitFor(runId);
+    expect(steering.busy).toBe(false);
+  });
+
+  test("an interrupted run is recorded as interrupted with its error", async () => {
+    const { world, steering } = await setup({
+      runSteering: (input) => new Promise((_resolve, reject) => {
+        input.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      }),
+    });
+    const runId = await steering.start("Look");
+    await Bun.sleep(5);
+    steering.interruptAll();
+    await steering.waitFor(runId);
+    expect(world.store.getRun(runId)).toMatchObject({ status: "interrupted", result: { reason: "aborted" } });
+  });
+
+  test("a scheduled check runs only for stopped enrolled items on a reconciled, healthy board", async () => {
+    const { world, steering, state } = await setup({ periodic: true });
+    expect(await steering.runScheduledCheck()).toBeNull();
+    world.items.add(1, ["conveyor", "conveyor:implementation", "conveyor:blocked"]);
+    world.seed(1, { stage: "implementation", state: "blocked" });
+    state.errors.set("repo", "down");
+    expect(await steering.runScheduledCheck()).toBeNull();
+    state.errors.clear();
+    state.reconciledAt = null;
+    expect(await steering.runScheduledCheck()).toBeNull();
+    state.reconciledAt = "2026-11-01T00:00:00Z";
+    const runId = await steering.runScheduledCheck();
+    expect(runId).not.toBeNull();
+    await steering.waitFor(runId!);
+    expect(world.store.listRunEvents(runId!).filter((event) => event.type === "operator.outcome").map((event) => event.payload)).toEqual([
+      expect.objectContaining({ issueId: "issue-1", outcome: "unresolved", reason: "Scheduled check succeeded before inspecting this target." }),
+    ]);
+    expect(steering.scheduledCheck(runId!)).toBeUndefined();
+  });
+
+  test("a scheduled check reads only its targets' history and records the outcome it reports", async () => {
+    const results: unknown[] = [];
+    const { world, steering } = await setup({
+      periodic: true,
+      runSteering: async (input, current) => {
+        const tools = current().operatorTools(path.basename(input.artifactsDirectory), undefined);
+        expect(tools.scheduled).toBe(true);
+        try { await tools.itemHistory({ itemId: "#2", runLimit: 5, eventLimit: 5 }); } catch (error) { results.push((error as Error).message); }
+        expect(() => tools.scheduledOutcome!("issue-1", "No new evidence.")).toThrow("inspect the item's history before reporting its outcome");
+        results.push(await tools.itemHistory({ itemId: "repo#1", runLimit: 5, eventLimit: 5 }));
+        tools.scheduledOutcome!("issue-1", "No new evidence.");
+        expect(() => tools.scheduledOutcome!("issue-1", "Again.")).toThrow("scheduled outcome is already recorded for this target");
+        return SUMMARY;
+      },
+    });
+    world.items.add(1, ["conveyor", "conveyor:implementation", "conveyor:blocked"]);
+    world.seed(1, { stage: "implementation", state: "blocked" });
+    world.items.add(2, ["conveyor", "conveyor:implementation"]);
+    world.seed(2, { stage: "implementation", state: "active" });
+    const runId = await steering.runScheduledCheck();
+    await steering.waitFor(runId!);
+    expect(results[0]).toBe("scheduled checks may inspect history only for their stopped targets");
+    expect(results[1]).toMatchObject({ item: { id: "issue-1", number: 1 }, delivery: { status: "available" } });
+    expect(world.store.listRunEvents(runId!).filter((event) => event.type === "operator.outcome").map((event) => event.payload)).toEqual([
+      expect.objectContaining({ issueId: "issue-1", outcome: "unresolved", reason: "No new evidence." }),
+    ]);
+  });
+
+  test("the Operator's board and references show only configured, listed items", async () => {
+    const { world, steering, calls } = await setup();
+    world.items.add(1, ["conveyor", "conveyor:implementation"]);
+    world.seed(1, { stage: "implementation", state: "active" });
+    world.store.setQueueRank("issue-1", 1);
+    const tools = steering.operatorTools("run", undefined);
+    expect(tools.board()).toMatchObject({
+      reconciledAt: "2026-11-01T00:00:00Z",
+      repositories: [{ id: "repo", address: "owner/my-app", health: "healthy" }],
+      items: [{ id: "issue-1", number: 1, stage: "implementation", activity: "idle", queue: { status: "queued", rank: 1 } }],
+    });
+    for (const reference of ["#1", "1", "issue-1", "repo#1", "owner/my-app#1", "my-app 1", "repo:1", "my-app1"]) {
+      expect(tools.findItem(reference)).toMatchObject({ status: "found", items: [{ id: "issue-1" }] });
+    }
+    expect(tools.findItem("other#1")).toMatchObject({ status: "not-on-board", items: [] });
+    await expect(Promise.resolve().then(() => tools.itemHistory({ itemId: "#9", runLimit: 5, eventLimit: 5 }))).rejects.toThrow("item is not on this configured board");
+    await tools.retry("issue-1", "note");
+    expect(tools.moveBacklog({ itemId: "issue-1", position: "up" })).toEqual({ position: "up", queueRank: 1 });
+    tools.moveBacklog({ itemId: "issue-1", position: "before", beforeItemId: "issue-2" });
+    expect(calls.retries).toEqual(["issue-1:AI Operator"]);
+    expect(calls.moves).toEqual(["issue-1:up", "issue-1:before:issue-2"]);
+  });
+
+  test("each stop gets one summary run, and a run without a harness records why it failed", async () => {
+    const { world, steering } = await setup();
+    world.items.add(1, ["conveyor", "conveyor:implementation", "conveyor:blocked"]);
+    world.seed(1, { stage: "implementation", state: "blocked" });
+    steering.startStopSummary("issue-1", "stop-1");
+    steering.startStopSummary("issue-1", "stop-1");
+    await steering.waitForStopSummaries();
+    const failures = world.store.listRunsByKind("steering").flatMap((run) => world.store.listRunEvents(run.id))
+      .filter((event) => event.type === "operator.stopSummaryFailed").map((event) => event.payload);
+    expect(failures).toEqual([{ issueId: "issue-1", stopId: "stop-1", kind: "failed", reason: "No harness is available for runner type codex" }]);
   });
 });

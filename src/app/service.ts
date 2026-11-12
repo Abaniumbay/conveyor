@@ -1,37 +1,25 @@
-import { AsyncLocalStorage } from "node:async_hooks";
-import { randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import path from "node:path";
-
-import { z } from "zod";
+import { randomUUID } from "node:crypto";
 
 import { redactSecrets } from "../config/compose";
-import { INTERNAL, selfCommand } from "../self";
 import { log, type LogFields } from "../log/logger";
 import { applyRetention, type RetentionPolicy, type RetentionReport } from "./retention";
 import type { StageOutcome } from "../engine/stage-executor";
 import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
-import { reconcileRepository } from "../core/reconciler";
-import { STOPPED_ISSUE_STATES } from "../core/issue-state";
-import { inFlightAdmission, inFlightHolders, inFlightInterval, inFlightWaitReason, type InFlightInterval } from "../core/in-flight";
 import { RepositoryPausedError } from "../core/repository-pause";
-import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
+import type { SchedulerCandidate } from "../core/scheduler";
 import { applyClosedItemOffboarding, applyStageTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue } from "../db/store";
 import type { Harness, SteeringRunInput, SteeringRunResult } from "../harness/types";
 import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt } from "../core/plugins";
 import type { ItemSourceClient } from "../source/client";
 import { followUpsFromBody } from "../source/managed-sections";
-import { RepositoryActorTrust, type ActorTrust } from "../source/trust";
-import { isIssueGone, type SourceIssue } from "../source/types";
-import type { DeliveredActors } from "../core/reconciler";
+import { RepositoryActorTrust } from "../source/trust";
+import type { SourceIssue } from "../source/types";
 import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
 import { changeAction, pushAndEnsureChange, recoverClosedChange } from "../codehost/actions";
-import { canonicalToolName } from "../tasks/aliases";
-import { conveyorToolGuidance } from "../mcp/guidance";
 import { dispatchTool } from "../tasks/dispatch";
 import { WorkspaceManager } from "../workspace/manager";
 import { displayName, formatDuration } from "../web/format";
@@ -41,8 +29,8 @@ import { IssueExecutor } from "./issue-executor";
 import { infrastructureRetry, isUsageLimitError } from "./retry-policy";
 import { classifyUpstreamError } from "../tasks/upstream-error";
 import { createTaskRegistry } from "../tasks/catalogue";
-import { runTask, TransientScriptError } from "../tasks/contract";
-import type { TaskDeps, TaskStore } from "../tasks/deps";
+import { TransientScriptError } from "../tasks/contract";
+import type { TaskDeps } from "../tasks/deps";
 import { criteriaOf, ISSUE_LEFT_OPEN_MARKER } from "../tasks/item";
 import { isCriterionApprovedAt } from "../db/review-records";
 import { compilePipeline } from "../tasks/plan";
@@ -52,12 +40,9 @@ import { AdvisoryCiWatches, DEFAULT_POLL_MS as ADVISORY_POLL_MS } from "./adviso
 import { buildRepositorySummaries, type RepositorySummaries } from "./repository-summary";
 import { isLightweightRepositoryStage } from "./stage-capacity";
 import { remainingWorkStartsProcess } from "../engine/remaining-work";
-import { CI_INDICATOR_ID, observeCi, observeCiError, startCiForHead, type StoredIndicator } from "./indicators";
+import { CI_INDICATOR_ID, observeCi, observeCiError, startCiForHead } from "./indicators";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
-import {
-  conversationQuestionAnswer,
-  scheduledQuestionAnswerEvidence,
-} from "../questions";
+import { conversationQuestionAnswer } from "../questions";
 import type { ManualGateApprovals } from "../db/manual-gates";
 import { CommandBus, CommandForbiddenError, CommandInputError, type CommandActor } from "../commands/bus";
 import { EventBus } from "../events/bus";
@@ -69,12 +54,16 @@ import { metadataLabels, QuestionAnswers } from "./question-answers";
 import { Admission } from "./admission";
 import { latestStopReason } from "./item-history";
 import { ItemPurges } from "./purge";
+import { McpGrants } from "./mcp-grants";
+import { RepositorySync } from "./repository-sync";
 import { ItemRetries } from "./retry";
 import { Rollups } from "./rollups";
+import { Scheduler } from "./scheduler";
+import { Steering, STOP_SUMMARY_TIMEOUT_MS } from "./steering";
 import { StatusCommentWriter } from "./status-comments";
 import { WaitDispatcher } from "./wait-dispatcher";
 import { WebhookSupervisor } from "./webhook-supervisor";
-import type { ActiveWork, ControlSources, GitHubCallReport, StartupRepositoryPhase, StartupStatus } from "./control-sources";
+import type { ActiveWork, ControlSources, GitHubCallReport, StartupStatus } from "./control-sources";
 import type { DashboardSources, LiveIssueStatus } from "./dashboard-sources";
 import type { WebSources } from "./web-sources";
 import { CALL_SOURCES, CallMeter, withCallSource, type CallSource, type ProviderCallMeter } from "../source/calls";
@@ -112,24 +101,6 @@ interface ActiveRun {
   executorDone: boolean;
 }
 
-interface McpGrant {
-  runId: string;
-  stageId: string;
-  context: RuntimeIssueContext | null;
-  allowedTools: Set<string>;
-  actor: { id: string; name: string; title: string } | null;
-  /** Responses, including in-flight ones, keyed by the client's transport-retry token. */
-  calls: Map<string, Promise<unknown>>;
-  /** Set only for a stop-summary Operator run: the one item and stop it may record a summary for. */
-  stopSummary?: { itemId: string; stopId: string };
-}
-
-/** An item as a delivery described it, and who made each change. */
-interface DeliveredIssue {
-  issue: SourceIssue;
-  actors: DeliveredActors;
-}
-
 interface ServiceImplementations {
   /** Runs the Operator instead of the steering agent's harness. */
   steering?: (input: SteeringRunInput) => Promise<SteeringRunResult>;
@@ -147,19 +118,6 @@ interface ServiceImplementations {
 }
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Agents never close source issues; Conveyor itself closes only an active completed roll-up parent after its descendant-completion rule passes. Preserve human-authored body text, use managed sections for acceptance criteria, pull-request descriptions, and dependencies, and report blockers with a concrete reason.`;
-/** The read-only Operator tools plus the recorder; a stop-summary run is granted exactly these. */
-const STOP_SUMMARY_TOOLS = ["operator.getBoard", "operator.findItem", "operator.getItemHistory", "operator.recordStopSummary"] as const;
-const STOP_SUMMARY_TIMEOUT_MS = 10 * 60_000;
-type ScheduledOperatorOutcome = {
-  outcome: "retried" | "answered" | "unresolved";
-  reason: string;
-  evidence?: string;
-};
-type ScheduledOperatorCheck = {
-  targets: Set<string>;
-  inspected: Set<string>;
-  outcomes: Map<string, ScheduledOperatorOutcome>;
-};
 /** Changes that can make an item runnable; the scheduler runs after them. */
 // Reconciles and stage runs schedule as part of the scheduler's own loop; these are the changes a
 // person's action makes that can let an item run.
@@ -168,71 +126,6 @@ const SCHEDULING_EVENTS: readonly EventType[] = [
 ];
 /** How often the GitHub request counts are logged, and the window they cover. */
 const GITHUB_CALL_SUMMARY_MS = 60 * 60_000;
-/** A partial issue list starts this much before the previous read began, so clock skew and in-flight edits are not missed. */
-const ISSUE_LISTING_OVERLAP_MS = 2 * 60_000;
-
-function object(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("expected an object");
-  }
-  return value as Record<string, unknown>;
-}
-
-function string(value: unknown, name: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${name} must be a non-empty string`);
-  }
-  return value;
-}
-
-function number(value: unknown, name: string): number {
-  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return Number(value);
-}
-
-function listenPort(listen: string): number {
-  const separator = listen.lastIndexOf(":");
-  const port = Number(listen.slice(separator + 1));
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error(`invalid web listen address: ${listen}`);
-  }
-  return port;
-}
-
-function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
-  const repository = config.repositories[repositoryId]!;
-  const pipeline = config.pipelines[repository.pipeline]!;
-  const labels = [
-    { name: config.labels.enrollment, color: "2563eb", description: "Enrolled in Conveyor" },
-    ...pipeline.stages.map((stage) => ({
-      name: config.labels.stageTemplate.replace("{stage}", stage.id),
-      color: "0ea5e9",
-      description: `Conveyor stage: ${stage.id}`,
-    })),
-    ...Object.entries(config.labels.states).map(([state, name]) => ({
-      name,
-      color: state === "done" ? "16a34a" : state === "rejected" ? "6b7280" : "d97706",
-      description: `Conveyor state: ${state}`,
-    })),
-    { name: config.labels.metadata.closable, color: "8b5cf6", description: "Conveyor considers this issue closable" },
-    { name: config.labels.metadata.noSplit, color: "0f766e", description: "Conveyor will not split this issue" },
-    { name: config.labels.metadata.paused, color: "9ca3af", description: "Conveyor is paused on this issue" },
-    ...repository.systemLabels.map((name) => ({
-      name,
-      color: "64748b",
-      description: "Project system area",
-    })),
-  ];
-  return [...new Map(labels.map((label) => [label.name, label])).values()];
-}
-
-/** The run-scoped MCP server: this executable's internal `__mcp` subcommand. */
-function mcpServerCommand(contextFile: string): { command: string; args: string[] } {
-  const [command, ...args] = selfCommand(INTERNAL.mcp, "--context", contextFile);
-  return { command: command!, args };
-}
 
 /** True when the error, or anything in its cause chain, is a stage script's temporary failure. */
 function hasTransientScriptCause(error: unknown): boolean {
@@ -261,26 +154,6 @@ export class ConveyorService {
   readonly #liveStateListeners = new Set<() => void>();
   /** Called once when the service starts closing, so what reads it stops first. */
   readonly #closeListeners = new Set<() => void>();
-  /** Per repository: the time the next listing of changed issues may start from. */
-  readonly #issueListings = new Map<string, { since: string }>();
-  /** Webhook reconciles per repository: the one running or queued last, and one not yet started that later deliveries join. */
-  readonly #webhookReconciles = new Map<string, Promise<void>>();
-  /** The tail of each repository's sync lock; a sync waits for it before reading the source. */
-  readonly #repositoryLocks = new Map<string, Promise<void>>();
-  /** The repositories whose lock the running async context already holds. */
-  readonly #heldRepositoryLocks = new AsyncLocalStorage<ReadonlySet<string>>();
-  readonly #queuedWebhookReconciles = new Map<string, { issueNumbers: Set<number> | null; done: Promise<void> }>();
-  /** Webhook deliveries accepted but not yet processed. */
-  readonly #webhookWork = new Set<Promise<void>>();
-  readonly #steeringActive = new Map<string, AbortController>();
-  readonly #steeringCompletions = new Map<string, Promise<void>>();
-  /** Stop-summary runs in flight by run id; they never hold the steering lock, so they overlap neither owner nor scheduled runs' admission. */
-  readonly #stopSummaryActive = new Map<string, { controller: AbortController; completion: Promise<void> }>();
-  /** Stops a summary run was already started for, so a repeated notification starts nothing. */
-  readonly #stopSummaryStarted = new Set<string>();
-  /** A scheduled check may act only on these snapshots; history reads are tracked per run. */
-  readonly #scheduledOperatorChecks = new Map<string, ScheduledOperatorCheck>();
-  readonly #mcpGrants = new Map<string, McpGrant>();
   /** Consecutive infrastructure failures per issue, for the stage they happened in. */
   readonly #infrastructureFailures = new Map<string, {
     stageId: string;
@@ -293,27 +166,16 @@ export class ConveyorService {
   /** Failure records of items waiting on a script's temporary failure: the retry runs the script again, with no probe. */
   #scriptWaitRecords = new WeakSet<object>();
   #githubOutage: { since: string; waitingItems: Set<string> } | null = null;
-  readonly #repositoryErrors = new Map<string, string>();
-  readonly #onboardingErrors = new Map<string, string>();
-  /** Repositories not yet admitted to scheduling during the first startup pass. */
-  readonly #startupRepositories = new Map<string, StartupRepositoryPhase>();
-  #startupStarted = false;
-  #startupRunning = false;
-  #startupCompleted = false;
-  #startupFailed = false;
   /** Delayed infrastructure retries that must not outlive the service store. */
   readonly #retryTimers = new Set<ReturnType<typeof setTimeout>>();
   #timer: ReturnType<typeof setInterval> | null = null;
   #periodicOperatorTimer: ReturnType<typeof setInterval> | null = null;
   readonly #ciMemory = createCiGateMemory();
   readonly #ciProviders = new Map<string, CiProvider>();
-  /** Fires a schedule pass at the earliest persisted wake-up of a parked item. */
-  #wakeTimer: ReturnType<typeof setTimeout> | null = null;
   /** Fires an advisory CI poll at the earliest wake-up of an active watch. */
   #advisoryTimer: ReturnType<typeof setTimeout> | null = null;
   readonly #advisoryWatches: AdvisoryCiWatches;
   #advisoryPolling = false;
-  #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
   /** Drains, repository pauses and item pauses. */
@@ -335,22 +197,18 @@ export class ConveyorService {
   readonly #sinks: SinkRunner[];
   /** The managed webhooks: registration, health and redelivery of missed deliveries. */
   readonly #webhooks: WebhookSupervisor;
-  /** Idempotency-key results, by repository and key. */
-  readonly #createdIssues = new Map<string, Promise<{ issueId: string; number: number; url: string }>>();
-  /** Operator syncs in progress, by repository. */
-  readonly #repositorySyncs = new Map<string, Promise<{ issues: number; failed: boolean }>>();
-  /** When each repository was last read by a pass of the periodic tick, startup or a sync. */
-  readonly #repositoryReconciledAt = new Map<string, number>();
   readonly #waitDispatcher: WaitDispatcher;
-  #scheduleRequested = false;
-  /** Parked items made due by an answer, approval or other event, not by their wake-up time. */
-  readonly #wokenEarly = new Set<string>();
   readonly #harnesses: Record<string, Harness>;
-  readonly #stopSummaryTimeoutMs: number;
   readonly #plugins: PluginRegistry;
-  readonly #runSteering: ((input: SteeringRunInput) => Promise<SteeringRunResult>) | undefined;
   readonly #manualGateApprovals: ManualGateApprovals;
-  readonly #issueTrust: ActorTrust;
+  /** Onboarding, the startup pass, reconciles, syncs, created and delivered items. */
+  readonly #sync: RepositorySync;
+  /** Admission of items to stage runs, their wake-ups and their live status. */
+  readonly #scheduler: Scheduler;
+  /** The agents' run-scoped MCP grants and their tool calls. */
+  readonly #mcp: McpGrants;
+  /** Steering runs, scheduled Operator checks and stop summaries. */
+  readonly #steering: Steering;
 
   constructor(
     readonly config: ConveyorConfig,
@@ -360,7 +218,6 @@ export class ConveyorService {
   ) {
     this.store = store;
     this.itemSource = itemSource;
-    this.#issueTrust = new RepositoryActorTrust(itemSource);
     this.#plugins = implementations.plugins ?? new PluginRegistry([], pluginContext(config));
     this.#webhooks = new WebhookSupervisor({
       config,
@@ -376,7 +233,7 @@ export class ConveyorService {
       source: (repositoryId) => this.executionSource(repositoryId),
       refreshChangeHead: (issue) => this.refreshLiveChangeHead(issue),
       criteria: (issue) => this.criterionApprovalStates(issue),
-      status: (issue) => this.currentIssueStatus(issue),
+      status: (issue) => this.#scheduler.status(issue),
       stopReason: (issueId) => latestStopReason(this.store, issueId),
     });
     this.#answers = new QuestionAnswers({
@@ -424,7 +281,7 @@ export class ConveyorService {
       stageCreatesChildren: (repositoryId, stageId) => this.stageCreatesChildren(repositoryId, stageId),
       reconcile: (repositoryId, sourceNumber) => this.reconcileRepository(repositoryId, { only: [sourceNumber] }),
       eventsSettled: () => this.eventsSettled(),
-      scheduledCheck: (runId) => this.#scheduledOperatorChecks.get(runId),
+      scheduledCheck: (runId) => this.#steering.scheduledCheck(runId),
     });
     this.#rollups = new Rollups({
       config: { labels: config.labels, repositories: config.repositories, pipelines: config.pipelines, hash: config.hash, labelPrefix: config.settings.labelPrefix },
@@ -465,10 +322,85 @@ export class ConveyorService {
     ];
     this.#sinks = sinks.map((sink) => new SinkRunner(store.events(), sink));
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
-    this.#runSteering = implementations.steering;
     this.#harnesses = implementations.harnesses ?? this.#plugins.harnesses();
-    this.#stopSummaryTimeoutMs = implementations.stopSummaryTimeoutMs ?? STOP_SUMMARY_TIMEOUT_MS;
     this.#manualGateApprovals = store.manualGates();
+    this.#sync = new RepositorySync({
+      config,
+      store,
+      source: itemSource,
+      fencedSource: (repositoryId) => this.executionSource(repositoryId),
+      trust: new RepositoryActorTrust(itemSource),
+      webhooks: this.#webhooks,
+      purge: (issueId) => this.purgeItem(issueId),
+      resumePurges: () => this.#purges.resume(),
+      interruptIneligibleRuns: () => this.interruptIneligibleRuns(),
+      runsEnded: (issueIds) => this.runsEnded(issueIds),
+      schedule: () => this.schedule(),
+      refreshStatusComments: (issueIds) => this.refreshStatusComments(issueIds),
+      restoreFeedback: (repositoryId) => this.#retries.restoreFeedback(repositoryId),
+      relabelOldPausedItems: (repositoryId) => this.#admission.relabelOldPausedItems(repositoryId),
+      reconcileRelationships: (repositoryId, address, scope) => this.reconcileRelationships(repositoryId, address, scope),
+      forgetRelationships: (repositoryId, numbers) => this.#rollups.forget(repositoryId, numbers),
+      backfillCiIndicators: (repositoryId, scope) => this.backfillCiIndicators(repositoryId, scope),
+      applyCiEvent: (repositoryId, event) => this.applyCiEvent(repositoryId, event),
+      wakeClearedFollowUps: (repositoryId, before) => this.wakeClearedFollowUps(repositoryId, before),
+      restorePendingStatus: (repositoryId) => this.restorePendingStatus(repositoryId),
+      recoverClosedItem: (repositoryId, issue, delivered) => this.recoverClosedItem(repositoryId, issue, delivered),
+      recoverPendingScheduledAnswers: () => this.#answers.recoverPendingScheduled(),
+      recoverWorkspaceScratch: () => this.recoverWorkspaceScratch(),
+      eventsSettled: () => this.eventsSettled(),
+      shuttingDown: () => this.#shuttingDown,
+      itemFields: (issueId) => this.itemFields(issueId),
+    });
+    this.#scheduler = new Scheduler({
+      config,
+      store,
+      running: () => this.#active,
+      shuttingDown: () => this.#shuttingDown,
+      draining: () => this.#admission.current !== null,
+      repositoryReady: (repositoryId) => this.#sync.repositoryReady(repositoryId),
+      isLightweightStage: (repositoryId, stageId) => this.isLightweightStage(repositoryId, stageId),
+      isSkippedStage: (repositoryId, stageId) => this.isSkippedStage(repositoryId, stageId),
+      isGateOnlyExecution: (issueId, repositoryId, stageId) => this.isGateOnlyExecution(issueId, repositoryId, stageId),
+      hasResumableQuestionExecution: (issueId) => this.hasResumableQuestionExecution(issueId),
+      childCreationRetryQueued: (issue, stageId) => this.childCreationRetryQueued(issue, stageId),
+      schedulePass: () => this.schedule(),
+      launch: (issue, candidate) => this.launch(issue, candidate),
+      refreshStatusComments: (issueIds) => this.refreshStatusComments(issueIds),
+      timerFired: () => this.#timerFired("wake"),
+    });
+    this.#steering = new Steering({
+      config,
+      store,
+      source: itemSource,
+      harnesses: this.#harnesses,
+      runSteering: implementations.steering,
+      stopSummaryTimeoutMs: implementations.stopSummaryTimeoutMs ?? STOP_SUMMARY_TIMEOUT_MS,
+      lease: (runId, workspace, allowedTools, stopSummary) => this.steeringMcpLease(runId, workspace, allowedTools, stopSummary),
+      lastReconciledAt: () => this.#sync.lastReconciledAt,
+      reconcileErrors: () => this.#sync.reconcileErrors,
+      onboardingErrors: () => this.#sync.onboardingErrors,
+      shuttingDown: () => this.#shuttingDown,
+      draining: () => this.#admission.current !== null,
+      manualGateViews: (issue) => this.manualGateViews(issue),
+      loadDeliveryState: (issueId, address) => this.loadDeliveryState(issueId, address),
+      retry: (itemId, note, username) => this.retryIssue(itemId, note, username),
+      scheduledRetry: (runId, itemId, note, evidence) => this.#retries.scheduledRetry(runId, itemId, note, evidence),
+      answerQuestion: (questionId, answer, source, evidence) => this.answerQuestion(questionId, answer, source, evidence),
+      reorderBacklog: (issueId, direction) => this.reorderBacklog(issueId, direction),
+      moveBacklogIssue: (issueId, beforeIssueId) => this.moveBacklogIssue(issueId, beforeIssueId),
+      itemFields: (issueId) => this.itemFields(issueId),
+    });
+    this.#mcp = new McpGrants({
+      config,
+      store,
+      issueTaskDeps: (issueId, repository) => this.taskDeps(issueId, repository),
+      operatorTools: (runId, stopSummary) => this.#steering.operatorTools(runId, stopSummary),
+      forgetChange: (issueId, address) => this.forgetChange(issueId, address),
+      loadDeliveryState: (issueId, address) => this.loadDeliveryState(issueId, address),
+      updateStatusComment: (issueId) => this.updateStatusComment(issueId),
+      itemFields: (issueId) => this.itemFields(issueId),
+    });
     this.#advisoryWatches = new AdvisoryCiWatches(store.advisoryWatchStore(), store.executions(), {
       resolve: (repositoryId) => ({
         provider: this.ciProvider(repositoryId),
@@ -524,19 +456,12 @@ export class ConveyorService {
 
   /** The process-local state of the first pass, for the control socket and dashboard. */
   startupStatus(): StartupStatus {
-    if (this.#startupRunning || (this.#startupStarted && !this.#startupCompleted)) {
-      const current = [...this.#startupRepositories.entries()].find(([, phase]) => phase !== "waiting")
-        ?? (!this.#startupRunning ? this.#startupRepositories.entries().next().value ?? null : null);
-      return { state: "starting", repository: current?.[0] ?? null, phase: current?.[1] ?? null };
-    }
-    const failed = [...this.#onboardingErrors.keys(), ...this.#repositoryErrors.keys()][0] ?? null;
-    if (this.#startupFailed && failed === null) return { state: "degraded", repository: null, phase: null };
-    return failed === null ? { state: "ready", repository: null, phase: null } : { state: "degraded", repository: failed, phase: null };
+    return this.#sync.startupStatus();
   }
 
   async onboardRepositories(): Promise<void> {
     for (const [id, repository] of Object.entries(this.config.repositories)) {
-      await this.onboardRepository(id, repository);
+      await this.#sync.onboardRepository(id, repository);
     }
   }
 
@@ -571,274 +496,24 @@ export class ConveyorService {
     return this.config.settings.events?.fallbackMs[kind] ?? null;
   }
 
-  /** Records source visibility for operators without changing any trust decision. */
-  private async recordRepositoryTrustStatus(id: string, address: string): Promise<void> {
-    const checkedAt = new Date().toISOString();
-    try {
-      const visibility = await this.itemSource.repositoryVisibility(address);
-      this.store.setRepositoryTrustStatus({ repositoryId: id, visibility, checkedAt, warning: null });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.store.setRepositoryTrustStatus({
-        repositoryId: id,
-        visibility: "unknown",
-        checkedAt,
-        warning: `Could not determine repository visibility: ${message}`,
-      });
-      log.warn("Repository trust status could not be determined", { repository: id }, error);
-    }
+  /** Reads every repository; see RepositorySync.reconcileAll. */
+  reconcileAll(options: { skipFresh?: boolean } = {}): Promise<void> {
+    return this.#sync.reconcileAll(options);
   }
 
-  /**
-   * Reads every repository. A repository whose webhook Conveyor manages is read only at startup, and
-   * then only the issues changed since Conveyor last saw it: its deliveries keep it current from there.
-   * A repository without one (polling) is read in full at startup and on every periodic tick.
-   */
-  async reconcileAll(options: { skipFresh?: boolean } = {}): Promise<void> {
-    let read = 0;
-    for (const id of Object.keys(this.config.repositories)) {
-      const managed = this.webhookUrl(id) !== null;
-      if (options.skipFresh && managed) continue;
-      await this.reconcileOne(id, managed ? "changed" : "full");
-      read += 1;
-    }
-    this.#purges.resume();
-    // A tick that read nothing changed nothing; startup always completes, even with no repository to read.
-    if (options.skipFresh && read === 0) return;
-    this.#lastReconciledAt = new Date().toISOString();
-    this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size });
-    this.interruptIneligibleRuns();
-    this.#answers.recoverPendingScheduled();
-  }
-
-  /**
-   * Runs one sync of a repository alone: syncs of the same repository run one at a time, different
-   * repositories in parallel. A sync started from inside a locked sync of that repository joins it.
-   */
-  private async withRepositoryLock<T>(repositoryId: string, sync: () => Promise<T>): Promise<T> {
-    const held = this.#heldRepositoryLocks.getStore();
-    if (held?.has(repositoryId)) return sync();
-    const previous = this.#repositoryLocks.get(repositoryId) ?? Promise.resolve();
-    let release!: () => void;
-    const tail = new Promise<void>((resolve) => { release = resolve; });
-    const next = previous.then(() => tail);
-    this.#repositoryLocks.set(repositoryId, next);
-    await previous;
-    try {
-      return await this.#heldRepositoryLocks.run(new Set([...(held ?? []), repositoryId]), sync);
-    } finally {
-      release();
-      if (this.#repositoryLocks.get(repositoryId) === next) this.#repositoryLocks.delete(repositoryId);
-    }
-  }
-
-  /**
-   * Reads one repository. A full pass lists every issue; a `changed` pass lists only the issues
-   * changed since Conveyor last saw the repository and reads relationships for those alone.
-   */
-  private reconcileOne(id: string, kind: "full" | "changed", options: { verifyTrust?: boolean } = {}): Promise<number> {
-    return this.withRepositoryLock(id, () => this.reconcileOneLocked(id, kind, options));
-  }
-
-  private async reconcileOneLocked(id: string, kind: "full" | "changed", options: { verifyTrust?: boolean }): Promise<number> {
-    const repository = this.config.repositories[id];
-    if (!repository) return 0;
-    const pipeline = this.config.pipelines[repository.pipeline]!;
-    const startedAt = Date.now();
-    this.#repositoryReconciledAt.set(id, startedAt);
-    try {
-      await this.#admission.relabelOldPausedItems(id);
-      // What Conveyor held before the read, so a `changed` pass re-reads relationships only for issues
-      // GitHub reports changed (the listing overlaps the last read and returns some unchanged ones).
-      const before = new Map(this.store.listIssues(id).map((issue) => [issue.id, { body: issue.body, sourceUpdatedAt: issue.sourceUpdatedAt }]));
-      const listing = this.issueListing(id, kind);
-      const result = await reconcileRepository({
-        store: this.store,
-        configHash: this.config.hash,
-        repository: {
-          id,
-          configName: id,
-          source: repository.source,
-          address: repository.address,
-          folder: repository.folder,
-        },
-        stages: pipeline.stages.map((stage) => stage.id),
-        labels: this.config.labels,
-        source: this.executionSource(id),
-        trust: this.#issueTrust,
-        extraTrustedLogins: repository.extraTrustedLogins ?? [],
-        expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
-      onLeft: (issueId) => { void this.purgeItem(issueId); },
-        ...(options.verifyTrust ? { verifyTrust: true } : {}),
-        ...(listing.since !== undefined ? { since: listing.since } : {}),
-      });
-      listing.finish();
-      this.#retries.restoreFeedback(id);
-      const since = listing.since;
-      const scope = since === undefined
-        ? null
-        : new Set(this.store.listIssues(id).filter((issue) => issue.sourceUpdatedAt >= since && before.get(issue.id)?.sourceUpdatedAt !== issue.sourceUpdatedAt).map((issue) => issue.sourceNumber));
-      // A paused repository may refresh its projection, but cannot reconcile work that would
-      // mutate source state or discard a worktree.
-      if (this.store.repositoryPause(id)) return result.seen;
-      await this.reconcileRelationships(id, repository.address, scope);
-      if (scope !== null) await this.backfillCiIndicators(id, scope);
-      await this.syncIssueFields(id, repository);
-      this.wakeClearedFollowUps(id, new Map([...before].map(([issueId, previous]) => [issueId, previous.body])));
-      this.restorePendingStatus(id);
-      if (this.#repositoryErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: true }, { repositoryId: id });
-      this.store.events().append("repository.reconciled", { issueNumbers: scope === null ? null : [...scope] }, { repositoryId: id });
-      return result.seen;
-    } catch (error) {
-      if (error instanceof RepositoryPausedError) return 0;
-      const message = error instanceof Error ? error.message : String(error);
-      if (!this.#repositoryErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: false }, { repositoryId: id });
-      this.#repositoryErrors.set(id, message);
-      log.error("Repository reconciliation failed", { repository: id }, error);
-      return 0;
-    } finally {
-      // Visibility only informs operators, so a light pass leaves it to the next full one.
-      if (kind === "full") await this.recordRepositoryTrustStatus(id, repository.address);
-    }
-  }
-
-  /**
-   * Reads one repository afresh, now: every issue, every enrolled item's provenance and author
-   * permissions, relationships, pull request heads and CI, and the webhook's health. For an operator
-   * who changed something GitHub sends no event for, such as a collaborator's permission.
-   */
+  /** Reads one repository afresh, now; see RepositorySync.syncRepository. */
   syncRepository(repositoryId: string): Promise<{ issues: number; failed: boolean }> {
-    this.assertRepositoryActive(repositoryId);
-    // A second click while a sync runs joins it rather than reading everything twice.
-    const running = this.#repositorySyncs.get(repositoryId);
-    if (running) return running;
-    const sync = this.runRepositorySync(repositoryId).finally(() => this.#repositorySyncs.delete(repositoryId));
-    this.#repositorySyncs.set(repositoryId, sync);
-    return sync;
+    return this.#sync.syncRepository(repositoryId);
   }
 
-  /**
-   * Creates an issue in an onboarded repository, enrolls it (the enrollment label puts it in the
-   * backlog at the pipeline's start stage) and records it from the create response, with no
-   * further request, so it shows in the item list. `repository` is a configured repository id or
-   * its source address. A repeated call with the same `idempotencyKey` and repository returns the
-   * first call's result instead of creating another issue.
-   */
+  /** Creates and enrolls an issue in an onboarded repository; see RepositorySync.createIssue. */
   createIssue(input: { repository: string; title: string; body: string; idempotencyKey?: string | undefined }): Promise<{ issueId: string; number: number; url: string }> {
-    const title = input.title.trim();
-    if (title === "") return Promise.reject(new CommandInputError("the issue title must not be empty"));
-    const repositoryId = Object.entries(this.config.repositories).find(([id, repository]) => id === input.repository || repository.address === input.repository)?.[0];
-    if (!repositoryId) return Promise.reject(new CommandInputError(`repository ${input.repository} is not onboarded`));
-    this.assertRepositoryActive(repositoryId);
-    const key = input.idempotencyKey ? `${repositoryId}\u0000${input.idempotencyKey}` : null;
-    if (key !== null) {
-      const earlier = this.#createdIssues.get(key);
-      if (earlier) return earlier;
-    }
-    const creation = this.createIssueNow(repositoryId, title, input.body);
-    if (key !== null) {
-      this.#createdIssues.set(key, creation);
-      // A failed creation made nothing, so a retry with the key may try again.
-      creation.catch(() => { if (this.#createdIssues.get(key) === creation) this.#createdIssues.delete(key); });
-    }
-    return creation;
-  }
-
-  private async createIssueNow(repositoryId: string, title: string, body: string): Promise<{ issueId: string; number: number; url: string }> {
-    const started = performance.now();
-    const repository = this.config.repositories[repositoryId]!;
-    const created = await this.executionSource(repositoryId).createIssue({
-      address: repository.address, title, body, labels: [this.config.labels.enrollment],
-    });
-    const forgeDone = performance.now();
-    // The create call returned the issue's full current state: apply it as an `issues.opened`
-    // delivery would, with no listing, permission, redelivery or ping request. A failure is
-    // caught up by the next reconcile.
-    await this.applyCreatedIssue(repositoryId, created)
-      .catch((error: unknown) => log.error("Recording the created issue failed", { repository: repositoryId, number: created.number }, error));
-    const handedOff = performance.now();
-    log.info("create_issue completed", {
-      repository: repositoryId, number: created.number,
-      forgeCreateMs: Math.round(forgeDone - started), recordMs: Math.round(handedOff - forgeDone), totalMs: Math.round(handedOff - started),
-    });
-    return { issueId: created.id, number: created.number, url: created.url };
-  }
-
-  /**
-   * Records an issue Conveyor has just created from the object the create call returned. Conveyor
-   * made it and enrolled it itself, so no permission lookup decides its trust.
-   */
-  private async applyCreatedIssue(repositoryId: string, created: SourceIssue): Promise<void> {
-    await this.withRepositoryLock(repositoryId, async () => {
-      const repository = this.config.repositories[repositoryId];
-      if (!repository) return;
-      // A newer delivery or reconcile may have recorded the issue while the create call returned or
-      // this waited for the lock: an older state changes nothing.
-      const prior = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === created.number);
-      if (prior && Date.parse(prior.sourceUpdatedAt) > Date.parse(created.updatedAt)) return;
-      const pipeline = this.config.pipelines[repository.pipeline]!;
-      const self = { login: "conveyor" };
-      await reconcileRepository({
-        store: this.store,
-        configHash: this.config.hash,
-        repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
-        stages: pipeline.stages.map((stage) => stage.id),
-        labels: this.config.labels,
-        source: this.executionSource(repositoryId),
-        trust: { isTrusted: async () => true },
-        extraTrustedLogins: repository.extraTrustedLogins ?? [],
-        expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
-      onLeft: (issueId) => { void this.purgeItem(issueId); },
-        issues: [created],
-        delivered: new Map([[created.number, { enrollment: self, title: self, body: self }]]),
-      });
-      this.interruptIneligibleRuns();
-      this.store.events().append("repository.reconciled", { issueNumbers: [created.number] }, { repositoryId });
-      this.schedule();
-    });
-  }
-
-  private async runRepositorySync(repositoryId: string): Promise<{ issues: number; failed: boolean }> {
-    // A sync reads everything again: nothing held about the repository is reused.
-    this.itemSource.forgetRepository?.(this.config.repositories[repositoryId]!.address);
-    this.#rollups.forget(repositoryId, this.store.listIssues(repositoryId).map((issue) => issue.sourceNumber));
-    await this.reconcileOne(repositoryId, "full", { verifyTrust: true });
-    await this.backfillCiIndicators(repositoryId);
-    if (this.webhookUrl(repositoryId)) {
-      await this.redeliverMissed(repositoryId);
-      await this.pingWebhook(repositoryId);
-    }
-    this.interruptIneligibleRuns();
-    this.schedule();
-    const issues = this.store.listIssues(repositoryId);
-    this.refreshStatusComments(issues.map((issue) => issue.id));
-    const failed = this.#repositoryErrors.has(repositoryId);
-    log.info("Repository synced", { repository: repositoryId, issues: issues.length, failed });
-    return { issues: issues.length, failed };
-  }
-
-  /** Read the configured issue-field values of enrolled issues that changed since they were last read. */
-  private async syncIssueFields(repositoryId: string, repository: ConveyorConfig["repositories"][string]): Promise<void> {
-    const refinement = repository.refinement;
-    if (!refinement || refinement.fields.length === 0) return;
-    for (const issue of this.store.listIssues(repositoryId)) {
-      if (issue.sourceState !== "open" || !issue.labels.includes(this.config.labels.enrollment)) continue;
-      if (issue.metadata.fieldsSyncedAt === issue.sourceUpdatedAt) continue;
-      try {
-        const values = await this.itemSource.getIssueFieldValues(repository.address, issue.sourceNumber);
-        const configured = Object.fromEntries(Object.entries(values).filter(([name]) =>
-          refinement.fields.some((field) => field.toLocaleLowerCase() === name.toLocaleLowerCase())));
-        this.store.setIssueMetadata(issue.id, { fields: configured, fieldsSyncedAt: issue.sourceUpdatedAt });
-      } catch (error) {
-        log.warn("Issue field sync failed", this.itemFields(issue.id), error);
-        continue;
-      }
-    }
+    return this.#sync.createIssue(input);
   }
 
   start(): void {
     if (this.#timer) return;
-    this.beginStartupPass();
+    this.#sync.beginStartupPass();
     void this.tick();
     this.#timer = setInterval(() => { this.#timerFired("reconcile"); void this.tick(); }, this.config.settings.reconcileIntervalMs);
     const periodic = this.config.web?.steering?.periodic;
@@ -873,80 +548,9 @@ export class ConveyorService {
     }
   }
 
-  private beginStartupPass(): void {
-    this.#startupStarted = true;
-    this.#startupRunning = true;
-    this.#startupCompleted = false;
-    this.#startupFailed = false;
-    for (const id of Object.keys(this.config.repositories)) this.#startupRepositories.set(id, "waiting");
-    void withCallSource("startup", async () => {
-      await this.recoverWorkspaceScratch();
-      await Promise.all(Object.entries(this.config.repositories).map(async ([id, repository]) => {
-        const startedAt = Date.now();
-        let issues = 0;
-        let failed = false;
-        this.#startupRepositories.set(id, "onboarding");
-        log.info("Startup repository reconciliation started", { repository: id });
-        try {
-          await this.onboardRepository(id, repository);
-          failed = this.#onboardingErrors.has(id);
-          if (!failed) {
-            this.#startupRepositories.set(id, "reconciling");
-            issues = await this.reconcileOne(id, this.webhookUrl(id) ? "changed" : "full");
-            failed = this.#repositoryErrors.has(id);
-          }
-        } catch (error) {
-          failed = true;
-          this.#repositoryErrors.set(id, error instanceof Error ? error.message : String(error));
-          log.error("Startup repository reconciliation failed", { repository: id }, error);
-        } finally {
-          log.info("Startup repository reconciliation completed", {
-            repository: id,
-            issues,
-            durationMs: Date.now() - startedAt,
-            success: !failed,
-          });
-          this.#startupRepositories.delete(id);
-          // A repository can safely resume as soon as its own projection is checked.
-          if (!failed) this.schedule();
-        }
-      }));
-      this.#lastReconciledAt = new Date().toISOString();
-      this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size + this.#onboardingErrors.size });
-      this.interruptIneligibleRuns();
-      this.#answers.recoverPendingScheduled();
-    }).catch((error) => {
-      this.#startupFailed = true;
-      log.error("Startup reconciliation failed", {}, error);
-    }).finally(() => {
-      this.#startupRunning = false;
-      this.#startupCompleted = true;
-      this.schedule();
-    });
-  }
-
   /** Marks creation as pending before listeners are opened; provider work begins from start(). */
   private prepareStartupPass(): void {
-    this.#startupStarted = true;
-    this.#startupCompleted = false;
-    for (const id of Object.keys(this.config.repositories)) this.#startupRepositories.set(id, "waiting");
-  }
-
-  private async onboardRepository(id: string, repository: ConveyorConfig["repositories"][string]): Promise<void> {
-    this.store.upsertRepository({ id, configName: id, source: repository.source, address: repository.address, folder: repository.folder, configHash: this.config.hash });
-    await this.recordRepositoryTrustStatus(id, repository.address);
-    if (this.store.repositoryPause(id)) return;
-    try {
-      await this.executionSource(id).ensureLabels(repository.address, labelDefinitions(this.config, id));
-      await this.#webhooks.register(id);
-      if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
-    } catch (error) {
-      if (error instanceof RepositoryPausedError) return;
-      const message = error instanceof Error ? error.message : String(error);
-      if (!this.#onboardingErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: false }, { repositoryId: id });
-      this.#onboardingErrors.set(id, message);
-      log.error("Repository onboarding failed", { repository: id }, error);
-    }
+    this.#sync.prepareStartupPass();
   }
 
   /** Resolves once every event sink has received every recorded event (or a delivery failed). */
@@ -1028,8 +632,7 @@ export class ConveyorService {
     this.#periodicOperatorTimer = null;
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = null;
-    if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
-    this.#wakeTimer = null;
+    this.#scheduler.close();
     if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
     this.#advisoryTimer = null;
     if (this.#githubCallTimer) clearInterval(this.#githubCallTimer);
@@ -1043,17 +646,16 @@ export class ConveyorService {
       log.warn("Stage interrupted during shutdown", { ...this.itemFields(issueId), stage: active.stageId });
       active.controller.abort();
     }
-    for (const controller of this.#steeringActive.values()) controller.abort();
-    for (const { controller } of this.#stopSummaryActive.values()) controller.abort();
+    this.#steering.interruptAll();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
-    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#stopSummaryActive.size > 0 || this.#purges.busy || this.#statusComments.busy || this.#webhookWork.size > 0 || this.#answers.busy || this.#startupRunning || this.#tickRunning || this.#advisoryPolling || this.#retentionActive > 0) {
+    while (this.#active.size > 0 || this.#steering.busy || this.#purges.busy || this.#statusComments.busy || this.#answers.busy || this.#sync.busy || this.#tickRunning || this.#advisoryPolling || this.#retentionActive > 0) {
       await Bun.sleep(25);
     }
     this.store.close();
   }
 
   async tick(): Promise<void> {
-    if (this.#shuttingDown || this.#startupRunning || this.#tickRunning) return;
+    if (this.#shuttingDown || this.#sync.startupRunning || this.#tickRunning) return;
     this.#tickRunning = true;
     try {
       await withCallSource("tick", async () => {
@@ -1244,393 +846,58 @@ export class ConveyorService {
 
   /** Reconciles one supplied source snapshot without issuing another source read. */
   private reconcileClosedItem(repositoryId: string, issue: SourceIssue): Promise<void> {
-    return this.withRepositoryLock(repositoryId, () => this.reconcileClosedItemLocked(repositoryId, issue));
+    return this.#sync.reconcileSnapshot(repositoryId, issue);
   }
 
-  private async reconcileClosedItemLocked(repositoryId: string, issue: SourceIssue): Promise<void> {
-    const repository = this.config.repositories[repositoryId];
-    if (!repository) return;
-    const pipeline = this.config.pipelines[repository.pipeline]!;
-    await reconcileRepository({
-      store: this.store,
-      configHash: this.config.hash,
-      repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
-      stages: pipeline.stages.map((stage) => stage.id),
-      labels: this.config.labels,
-      source: this.executionSource(repositoryId),
-      trust: this.#issueTrust,
-      extraTrustedLogins: repository.extraTrustedLogins ?? [],
-      expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
-      onLeft: (issueId) => { void this.purgeItem(issueId); },
-      issues: [issue],
-    });
-  }
-
-  private repositoryInFlight(repositoryId: string): {
-    stages: readonly { id: string }[];
-    interval: InFlightInterval;
-  } | null {
-    const repository = this.config.repositories[repositoryId];
-    if (!repository?.inFlight) return null;
-    const pipeline = this.config.pipelines[repository.pipeline];
-    if (!pipeline) return null;
-    const mergeIndex = pipeline.stages.findIndex(
-      (stage) => isNativeStage(stage) && stage.actions.some((action) => action.task === "change.merge"),
-    );
-    const interval = inFlightInterval(pipeline.stages, repository.inFlight, mergeIndex);
-    return interval ? { stages: pipeline.stages, interval } : null;
-  }
-
-  private repositoryInFlightHolders(repositoryId: string): StoredIssue[] {
-    const configured = this.repositoryInFlight(repositoryId);
-    return configured
-      ? inFlightHolders({ store: this.store, repositoryId, ...configured })
-      : [];
-  }
-
-  /** Checks the durable holder set immediately before an item writes its stage checkpoint. */
-  private inFlightAdmission(issue: StoredIssue, targetStageId: string): string | null {
-    const configured = this.repositoryInFlight(issue.repositoryId);
-    if (!configured) return null;
-    return inFlightAdmission({
-      store: this.store,
-      repositoryId: issue.repositoryId,
-      issueId: issue.id,
-      targetStageId,
-      ...configured,
-    });
-  }
-
-  private inFlightWaitingReason(issue: StoredIssue): string | null {
-    if (!this.repositoryInFlight(issue.repositoryId)) return null;
-    const state = this.store.getStageState(issue.id);
-    if (state?.status !== "waiting-in-flight") return null;
-    const holders = this.repositoryInFlightHolders(issue.repositoryId)
-      .filter((holder) => holder.id !== issue.id);
-    return holders.length > 0 ? inFlightWaitReason(issue.repositoryId, holders) : issue.warning;
-  }
-
-  /** Promotes waiting prior-stage completions in queue order when code-pipeline capacity is free. */
-  private promoteInFlightWaiters(): string[] {
-    const promoted: string[] = [];
-    for (const repositoryId of Object.keys(this.config.repositories)) {
-      const configured = this.repositoryInFlight(repositoryId);
-      if (!configured) continue;
-      const available = configured.interval.limit - this.repositoryInFlightHolders(repositoryId).length;
-      if (available <= 0) continue;
-      const waiters = this.store.listIssues(repositoryId).filter((issue) => {
-        const state = this.store.getStageState(issue.id);
-        const stageIndex = state ? configured.stages.findIndex((stage) => stage.id === state.stageId) : -1;
-        return issue.projectedState === "active" &&
-          state?.status === "waiting-in-flight" &&
-          stageIndex + 1 === configured.interval.fromIndex;
-      });
-      for (const issue of waiters.slice(0, available)) {
-        const state = this.store.getStageState(issue.id)!;
-        this.store.setStageState({ ...state, status: "ready", configHash: this.config.hash });
-        this.store.setIssueProjection(issue.id, {
-          stage: issue.projectedStage,
-          state: issue.projectedState ?? "active",
-          warning: null,
-        });
-        promoted.push(issue.id);
-      }
-    }
-    return promoted;
-  }
-
+  /** One scheduling pass; see Scheduler.schedule. */
   private schedule(): void {
-    if (this.#shuttingDown || this.#admission.current) return;
-    const promotedIds = this.promoteInFlightWaiters();
-    const candidates = this.schedulerCandidates();
-    const limits = this.concurrencyLimits();
-    const occupants = this.schedulerOccupants();
-    const stageUsage: Record<string, number> = {};
-    const repositoryUsage: Record<string, number> = {};
-    let processUsage = 0;
-    for (const active of occupants) {
-      stageUsage[active.stageId] = (stageUsage[active.stageId] ?? 0) + 1;
-      if (active.lightweight) continue;
-      processUsage += 1;
-      if (active.gateOnly) continue;
-      repositoryUsage[active.repositoryId] = (repositoryUsage[active.repositoryId] ?? 0) + 1;
-    }
-    const selected = selectRunnableIssues(
-      candidates,
-      limits,
-      {
-        global: processUsage,
-        stages: stageUsage,
-        repositories: repositoryUsage,
-      },
-    );
-    const startedIds = new Set<string>();
-    for (const candidate of selected) {
-      const issue = this.store.getIssue(candidate.id);
-      if (!issue) continue;
-      // A pause can land between candidate collection and admission. Recheck
-      // at the boundary so every wake path observes the durable pause.
-      if (this.store.repositoryPause(issue.repositoryId)) continue;
-      // Relationship reconciliation can add children after this scheduling
-      // pass built its candidates. Recheck at the admission boundary so an
-      // item never starts a new run after becoming a roll-up parent.
-      if (
-        this.store.listChildren(issue.id).length > 0 &&
-        !this.hasResumableQuestionExecution(issue.id) &&
-        !this.childCreationRetryQueued(issue, candidate.stageId)
-      ) continue;
-      // The retry marker is only an admission permit. Restore the executor's
-      // ordinary ready state immediately before it claims the stage.
-      const stage = this.store.getStageState(issue.id);
-      if (stage?.status === "retry-ready" && stage.stageId === candidate.stageId) {
-        this.store.setStageState({ ...stage, status: "ready" });
+    this.#scheduler.schedule();
+  }
+
+  /** Starts the stage run the scheduler selected; it ends by releasing the item's worker. */
+  private launch(issue: StoredIssue, candidate: SchedulerCandidate): void {
+    const active: ActiveRun = {
+      repositoryId: issue.repositoryId,
+      stageId: candidate.stageId,
+      controller: new AbortController(),
+      lightweight: candidate.lightweight === true,
+      gateOnly: candidate.gateOnly === true,
+      interrupted: false,
+      executorDone: false,
+    };
+    this.#active.set(issue.id, active);
+    log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
+    // A stage run outlives the sync that scheduled it, so it must not inherit that sync's held lock.
+    void this.#sync.outsideLocks(() => withCallSource(this.#scheduler.callSource(issue.id), () => this.execute(issue, active.controller.signal, candidate.gateOnly === true))).finally(() => {
+      this.#active.delete(issue.id);
+      this.store.events().append("worker.released", { stageId: candidate.stageId }, { issueId: issue.id });
+      if (this.#admission.current && !active.interrupted) {
+        log.info("Stage finished during drain", { ...this.itemFields(issue.id), stage: candidate.stageId });
       }
-      this.#active.set(issue.id, {
-        repositoryId: issue.repositoryId,
-        stageId: candidate.stageId,
-        controller: new AbortController(),
-        lightweight: candidate.lightweight === true,
-        gateOnly: candidate.gateOnly === true,
-        interrupted: false,
-        executorDone: false,
-      });
-      startedIds.add(issue.id);
-      const active = this.#active.get(issue.id)!;
-      log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
-      // A stage run outlives the sync that scheduled it, so it must not inherit that sync's held lock.
-      void this.#heldRepositoryLocks.exit(() => withCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal, candidate.gateOnly === true))).finally(() => {
-        this.#active.delete(issue.id);
-        this.store.events().append("worker.released", { stageId: candidate.stageId }, { issueId: issue.id });
-        if (this.#admission.current && !active.interrupted) {
-          log.info("Stage finished during drain", { ...this.itemFields(issue.id), stage: candidate.stageId });
-        }
-      });
-    }
-    const selectedIds = startedIds;
-    const waiting = candidates.filter((candidate) => candidate.eligible && candidate.dependenciesSatisfied && !candidate.rollupOnly && !selectedIds.has(candidate.id)).length;
-    this.#traceSchedulerDecision({ started: selectedIds.size, waiting, running: this.#active.size - selectedIds.size });
-    this.refreshStatusComments([
-      ...promotedIds,
-      ...selectedIds,
-      ...candidates
-        .filter((candidate) => candidate.eligible && candidate.dependenciesSatisfied && !candidate.rollupOnly && !selectedIds.has(candidate.id))
-        .map((candidate) => candidate.id),
-    ]);
-    this.armWakeTimer();
-  }
-
-  #lastSchedulerDecision = "";
-
-  /** A trace of what a scheduling pass decided, recorded only when the outcome changed. */
-  #traceSchedulerDecision(decision: EventPayload<"scheduler.decided">): void {
-    const key = JSON.stringify(decision);
-    if (decision.started === 0 && key === this.#lastSchedulerDecision) return;
-    this.#lastSchedulerDecision = key;
-    try {
-      this.store.events().trace("scheduler.decided", decision);
-    } catch (error) {
-      log.warn("Could not record a trace", {}, error);
-    }
-  }
-
-  private schedulerCandidates(
-    issues: readonly StoredIssue[] = this.store.listIssues(),
-    lookups?: {
-      stageState: (issueId: string) => ReturnType<ConveyorStore["getStageState"]>;
-      dependencies: (issueId: string) => readonly string[];
-      children: (issueId: string) => ReturnType<ConveyorStore["listChildren"]>;
-      issue: (issueId: string) => StoredIssue | null;
-    },
-  ): SchedulerCandidate[] {
-    const stageState = lookups?.stageState ?? ((issueId: string) => this.store.getStageState(issueId));
-    const dependencies = lookups?.dependencies ?? ((issueId: string) => this.store.listDependencies(issueId));
-    const children = lookups?.children ?? ((issueId: string) => this.store.listChildren(issueId));
-    const getIssue = lookups?.issue ?? ((issueId: string) => this.store.getIssue(issueId));
-    return issues.flatMap((issue) => {
-      const state = stageState(issue.id);
-      if (!state?.stageId || issue.queueRank === null) return [];
-      const lightweight = this.isLightweightStage(issue.repositoryId, state.stageId);
-      const dependenciesSatisfied = dependencies(issue.id).every((id) => {
-        const blocker = getIssue(id);
-        return Boolean(blocker && (blocker.sourceState === "closed" || blocker.projectedState === "done"));
-      });
-      return [{
-        id: issue.id,
-        repositoryId: issue.repositoryId,
-        stageId: state.stageId,
-        queueRank: issue.queueRank,
-        siblingOrder: null,
-        eligible:
-          issue.projectedState === "active" &&
-          (state.status === "ready" || state.status === "retry-ready") &&
-          !this.#active.has(issue.id) &&
-          this.wakeupReached(issue.id) &&
-          this.store.repositoryPause(issue.repositoryId) === null &&
-          !this.#startupRepositories.has(issue.repositoryId) &&
-          !this.#onboardingErrors.has(issue.repositoryId) &&
-          !this.#repositoryErrors.has(issue.repositoryId),
-        dependenciesSatisfied,
-        rollupOnly:
-          children(issue.id).length > 0 &&
-          !this.hasResumableQuestionExecution(issue.id) &&
-          !this.childCreationRetryQueued(issue, state.stageId),
-        lightweight,
-        skipped: this.isSkippedStage(issue.repositoryId, state.stageId),
-        gateOnly: !lightweight && this.isGateOnlyExecution(issue.id, issue.repositoryId, state.stageId),
-      }];
     });
   }
 
-  private concurrencyLimits(): ConcurrencyLimits {
-    const stages: Record<string, number> = {};
-    for (const pipeline of Object.values(this.config.pipelines)) {
-      for (const stage of pipeline.stages) {
-        stages[stage.id] = Math.min(stages[stage.id] ?? Infinity, stage.concurrency);
-      }
-    }
-    return {
-      global: this.config.settings.runners,
-      stages,
-      repositories: Object.fromEntries(
-        Object.entries(this.config.repositories).map(([id, repository]) => [id, repository.concurrency]),
-      ),
-    };
-  }
-
-  private schedulerOccupants(): SchedulerOccupant[] {
-    const occupants = new Map<string, SchedulerOccupant>();
-    for (const run of this.store.listActiveIssueRuns()) {
-      if (this.isSkippedStage(run.repository, run.stageId)) continue;
-      occupants.set(run.issueId, {
-        id: run.issueId,
-        repositoryId: run.repository,
-        stageId: run.stageId,
-        lightweight: this.isLightweightStage(run.repository, run.stageId),
-        gateOnly: this.isGateOnlyExecution(run.issueId, run.repository, run.stageId),
-      });
-    }
-    for (const [id, active] of this.#active) {
-      if (this.isSkippedStage(active.repositoryId, active.stageId)) continue;
-      occupants.set(id, { id, repositoryId: active.repositoryId, stageId: active.stageId, lightweight: active.lightweight, gateOnly: active.gateOnly });
-    }
-    return [...occupants.values()];
+  /** Every queued item as the scheduler sees it; see Scheduler.candidates. */
+  private schedulerCandidates(): SchedulerCandidate[] {
+    return this.#scheduler.candidates();
   }
 
   private refreshStatusComments(issueIds: readonly string[]): void {
     for (const issueId of new Set(issueIds)) {
-      void this.#heldRepositoryLocks.exit(() => this.updateStatusComment(issueId))
+      void this.#sync.outsideLocks(() => this.updateStatusComment(issueId))
         .catch((error) => log.warn("Status comment refresh failed", this.itemFields(issueId), error))
         .catch(() => {});
     }
   }
 
-  /** The current presentation status, derived from durable gate state and live scheduler facts. */
-  /**
-   * `queue` is the scheduler's view of every item. Reading it costs a pass over all of them, so a
-   * caller that asks about many items builds it once and passes it along.
-   */
-  private schedulerQueue(
-    issues?: readonly StoredIssue[],
-    lookups?: Parameters<ConveyorService["schedulerCandidates"]>[1],
-  ): () => { candidates: SchedulerCandidate[]; occupants: SchedulerOccupant[] } {
-    let queue: { candidates: SchedulerCandidate[]; occupants: SchedulerOccupant[] } | undefined;
-    return () => queue ??= { candidates: this.schedulerCandidates(issues, lookups), occupants: this.schedulerOccupants() };
-  }
-
-  private currentIssueStatus(issue: StoredIssue, queue = this.schedulerQueue()): LiveIssueStatus | null {
-    if (this.store.listActiveIssueRuns().some((run) => run.issueId === issue.id)) return null;
-    const inFlightReason = this.inFlightWaitingReason(issue);
-    if (inFlightReason) {
-      return {
-        kind: "waiting",
-        reason: inFlightReason,
-        since: this.store.getStageState(issue.id)?.updatedAt ?? issue.sourceUpdatedAt,
-        nextCheckAt: null,
-        deadline: null,
-      };
-    }
-    const cursor = this.store.executions().getCursor(issue.id);
-    const pending = cursor?.state === "pending" ? this.store.executions().pendingMessage(issue.id) : null;
-    const wakeAt = cursor?.state === "pending" ? cursor.wakeAt : null;
-    const wakeInFuture = wakeAt !== null && Date.parse(wakeAt) > Date.now();
-    if (cursor?.state === "pending" && wakeInFuture) {
-      return {
-        kind: "waiting",
-        reason: (cursor.taskInstanceId ? this.currentCiWaitingReason(issue, cursor.taskInstanceId, pending) : null) ?? pending ?? issue.warning ?? "Waiting for the next check",
-        since: cursor.pendingSince ?? this.store.getStageState(issue.id)?.updatedAt ?? issue.sourceUpdatedAt,
-        nextCheckAt: wakeAt,
-        deadline: cursor.deadlineAt,
-      };
-    }
-
-    const candidate = queue().candidates.find((item) => item.id === issue.id);
-    if (!candidate || !candidate.eligible || candidate.rollupOnly) return null;
-    if (!candidate.dependenciesSatisfied) {
-      const dependencies = this.store.listDependencies(issue.id)
-        .map((dependencyId) => this.store.getIssue(dependencyId))
-        .filter((dependency): dependency is StoredIssue => dependency !== null)
-        .filter((dependency) => dependency.sourceState !== "closed" && dependency.projectedState !== "done")
-        .map((dependency) => `#${dependency.sourceNumber}`);
-      return {
-        kind: "waiting",
-        reason: `Waiting for dependencies: ${dependencies.join(", ")}`,
-        since: this.store.getStageState(issue.id)?.updatedAt ?? issue.sourceUpdatedAt,
-        nextCheckAt: null,
-        deadline: null,
-      };
-    }
-    const blockers = capacityBlockers(candidate, this.concurrencyLimits(), queue().occupants);
-    if (blockers.length === 0) return null;
-    const reason = blockers.map((blocker) => {
-      const holderNumbers = blocker.occupants
-        .map((id) => this.store.getIssue(id)?.sourceNumber)
-        .filter((number): number is number => number !== undefined)
-        .map((number) => `#${number}`)
-        .join(", ");
-      const name = blocker.scope === "global"
-        ? "global runner slots"
-        : blocker.scope === "stage"
-          ? `${candidate.stageId} slots`
-          : `${candidate.repositoryId} slots`;
-      return `${name} ${blocker.used}/${blocker.limit} busy: ${holderNumbers || "unknown item"}`;
-    }).join("; ");
-    return {
-      kind: "queued",
-      reason,
-      since: wakeAt ?? this.store.getStageState(issue.id)?.updatedAt ?? issue.sourceUpdatedAt,
-      nextCheckAt: null,
-      deadline: null,
-    };
-  }
-
   /** The live scheduler status for an item, when it is waiting or queued rather than running. */
   liveIssueStatus(issueId: string): LiveIssueStatus | null {
-    const issue = this.store.getIssue(issueId);
-    return issue ? this.currentIssueStatus(issue) : null;
+    return this.#scheduler.liveIssueStatus(issueId);
   }
 
   /** Where an item is now: its stage, state, why and since when. The CLI and the dashboard's journey show it. */
   itemNow(issueId: string): IssueJourneyViewModel["now"] | null {
-    const issue = this.store.getIssue(issueId);
-    if (!issue) return null;
-    const stageState = this.store.getStageState(issueId);
-    const cursor = this.store.executions().getCursor(issueId);
-    const pending = cursor?.state === "pending";
-    const activeRun = this.store.listActiveIssueRuns().find((run) => run.issueId === issueId);
-    const stopped = STOPPED_ISSUE_STATES.has(issue.projectedState ?? "");
-    const liveStatus = this.liveIssueStatus(issueId);
-    const nowState = liveStatus?.kind ?? (pending ? "waiting" : activeRun ? "running" : stopped ? "stopped" : issue.projectedState ?? issue.sourceState);
-    const nowReason = liveStatus?.reason ?? (pending
-      ? this.store.executions().pendingMessage(issueId) ?? issue.warning
-      : stopped ? latestStopReason(this.store, issueId) ?? issue.warning : null);
-    return {
-      stage: cursor?.stage ?? stageState?.stageId ?? issue.projectedStage,
-      state: nowState,
-      reason: nowReason,
-      since: liveStatus?.since ?? (pending
-        ? cursor.pendingSince
-        : activeRun?.startedAt ?? stageState?.updatedAt ?? issue.sourceUpdatedAt),
-    };
+    return this.#scheduler.itemNow(issueId);
   }
 
   /** What the dashboard plugin reads: store reads, the configuration and this service's live state. */
@@ -1639,15 +906,12 @@ export class ConveyorService {
       config: this.config,
       store: this.store,
       repositorySummaries: (issues) => this.repositorySummaries(issues),
-      repositoryErrors: () => [...this.#onboardingErrors.entries(), ...this.#repositoryErrors.entries()],
-      lastReconciledAt: () => this.#lastReconciledAt,
+      repositoryErrors: () => [...this.#sync.onboardingErrors.entries(), ...this.#sync.reconcileErrors.entries()],
+      lastReconciledAt: () => this.#sync.lastReconciledAt,
       drain: () => this.#admission.current,
       githubOutage: () => this.githubOutage(),
       retryWaiting: (issueId) => this.#infrastructureFailures.get(issueId)?.waiting ?? null,
-      liveStatusReader: (issues, lookups) => {
-        const queue = this.schedulerQueue(issues, lookups);
-        return (issue) => this.currentIssueStatus(issue, queue);
-      },
+      liveStatusReader: (issues, lookups) => this.#scheduler.liveStatusReader(issues, lookups),
       itemNow: (issueId) => this.itemNow(issueId),
       latestStopReason: (issueId) => latestStopReason(this.store, issueId),
       isRollupSatisfied: (issueId) => this.#rollups.satisfied(issueId),
@@ -1668,36 +932,6 @@ export class ConveyorService {
     for (const listener of this.#liveStateListeners) listener();
   }
 
-  private currentCiWaitingReason(issue: StoredIssue, taskInstanceId: string, pending: string | null): string | null {
-    if (!pending?.startsWith("Waiting for CI")) return null;
-    const indicator = this.store.listIndicators(issue.id).find((item) => item.id === CI_INDICATOR_ID);
-    if (!indicator) return null;
-    const head = indicator.headSha.slice(0, 7);
-    const unfinished = indicator.entries
-      .filter((entry) => entry.state === "queued" || entry.state === "running")
-      .map((entry) => entry.name);
-    if (unfinished.length > 0 || indicator.state === "running" || indicator.state === "unknown") {
-      return `Waiting for CI at ${head}: ${unfinished.join(", ") || indicator.detail}.`;
-    }
-    if (indicator.state === "failed") return `CI failed at ${head}: ${indicator.detail}.`;
-    const settleEnd = this.ciSettleEnd(issue, taskInstanceId, indicator);
-    return settleEnd !== null
-      ? `CI passed at ${head}; settling until ${settleEnd}.`
-      : `CI passed at ${head}; ready for the next gate evaluation.`;
-  }
-
-  private ciSettleEnd(issue: StoredIssue, taskInstanceId: string, indicator: StoredIndicator): string | null {
-    const plan = this.config.plans.find((candidate) => candidate.repositoryId === issue.repositoryId)
-      ?? compilePipeline({ config: this.config, repositoryId: issue.repositoryId, registry: createTaskRegistry() });
-    const stage = plan.stages.find((candidate) => candidate.id === this.store.getStageState(issue.id)?.stageId);
-    const task = stage && [...stage.actions, ...stage.exitGate].find((candidate) => candidate.id === taskInstanceId);
-    if (task?.task !== "ci.passed" && task?.task !== "ci.settled") return null;
-    const seconds = typeof task.with.settleSeconds === "number" ? task.with.settleSeconds : 120;
-    const firstSeen = this.store.executions().ciMarkAt(issue.id, indicator.headSha, "first-seen") ?? indicator.observedAt;
-    const settleEnd = new Date(Date.parse(firstSeen) + seconds * 1_000).toISOString();
-    return Date.parse(settleEnd) > Date.now() ? settleEnd : null;
-  }
-
   /** Polls due advisory CI watches (no permits, no stage state) and re-arms the timer for the next one. */
   private async pollAdvisoryCi(): Promise<void> {
     if (this.#shuttingDown || this.#advisoryPolling) return;
@@ -1713,13 +947,6 @@ export class ConveyorService {
       this.#timerFired("advisory-ci");
       void this.pollAdvisoryCi().catch(() => {});
     }, Math.max(0, Date.parse(next) - Date.now()) + 50);
-  }
-
-  /** Why a stage run starts: an early wake of a parked task, its wake-up time passing, or other stage work. */
-  private executionCallSource(issueId: string): CallSource {
-    const woken = this.#wokenEarly.delete(issueId);
-    if (this.store.executions().getCursor(issueId)?.state !== "pending") return "stage";
-    return woken ? "wait" : "fallback";
   }
 
   /** Registers the handler of every service command; release and restart are registered by the control socket. */
@@ -1813,15 +1040,15 @@ export class ConveyorService {
     // Every completed stop gets one read-only Operator summary run; the stop itself is already recorded.
     this.events.subscribe("journey.recorded", "start the stop-summary run", (event) => {
       if (event.issueId && event.payload.kind === "stopped" && event.payload.status === "completed") {
-        this.startStopSummaryRun(event.issueId, event.payload.transitionId);
+        this.#steering.startStopSummary(event.issueId, event.payload.transitionId);
       }
     });
-    for (const type of SCHEDULING_EVENTS) this.events.subscribe(type, "schedule", () => this.requestSchedule());
+    for (const type of SCHEDULING_EVENTS) this.events.subscribe(type, "schedule", () => this.#scheduler.requestSchedule());
     this.events.subscribe("criterion.approvalChanged", "refresh criterion approval status", (event) => {
       if (event.issueId) this.refreshStatusComments([event.issueId]);
     });
     for (const type of ["itemSource.itemChanged", "itemSource.relationsChanged", "code.changeUpdated", "ci.runUpdated"] as const) {
-      this.events.subscribe(type, "source observation", (event) => this.reactToObservation(event));
+      this.events.subscribe(type, "source observation", (event) => this.#sync.reactToObservation(event));
     }
     for (const type of ["ci.runUpdated", "code.changeUpdated", "item.updated", "item.stageChanged"] as const) {
       this.events.subscribe(type, "wake waiting tasks", (event) => this.#waitDispatcher.handle(event));
@@ -1838,24 +1065,6 @@ export class ConveyorService {
     });
   }
 
-  /** Schedules once after the current burst of events instead of once per event. */
-  private requestSchedule(): void {
-    if (this.#scheduleRequested) return;
-    this.#scheduleRequested = true;
-    queueMicrotask(() => this.flushSchedule());
-  }
-
-  private flushSchedule(): void {
-    if (!this.#scheduleRequested) return;
-    this.#scheduleRequested = false;
-    // It runs after the event that asked for it, so nothing awaits it to report a failure.
-    try {
-      this.schedule();
-    } catch (error) {
-      log.error("Scheduling after an event failed", {}, error);
-    }
-  }
-
   /**
    * Resolves once every committed event has been published and the scheduling it asked for ran:
    * a command that reports whether its item started reads that only after this.
@@ -1864,28 +1073,12 @@ export class ConveyorService {
     await this.store.events().settled();
     this.#waitDispatcher.flush();
     await this.store.events().settled();
-    this.flushSchedule();
+    this.#scheduler.flushSchedule();
   }
 
-  /** Makes a parked item due now and remembers that an event, not its wake-up time, woke it. */
+  /** Makes a parked item due now; see Scheduler.wakeParked. */
   private wakeParked(issueId: string): boolean {
-    const issue = this.store.getIssue(issueId);
-    if (issue && this.store.repositoryPause(issue.repositoryId)) return false;
-    const woken = this.store.executions().wakeNow(issueId);
-    if (woken) this.#wokenEarly.add(issueId);
-    return woken;
-  }
-
-  /** A parked item is schedulable only once its persisted wake-up time has passed. */
-  private wakeupReached(issueId: string): boolean {
-    const cursor = this.store.executions().getCursor(issueId);
-    // Manual exit gates and configured entry approvals have no clock wake-up.
-    // Their receipt event must explicitly wake the persisted cursor first.
-    if (!cursor) return true;
-    if (cursor.state === "pending" && cursor.wakeAt === null &&
-      (cursor.list === "exit-gate" ||
-        (cursor.list === "actions" && cursor.taskInstanceId === ENTRY_APPROVAL_TASK_ID))) return false;
-    return cursor.wakeAt === null || Date.parse(cursor.wakeAt) <= Date.now();
+    return this.#scheduler.wakeParked(issueId);
   }
 
   /** Whether a parked agent question belongs to this item's current execution. */
@@ -1910,20 +1103,6 @@ export class ConveyorService {
     });
     return this.store.listRunsForExecution(issueId, cursor.stage, "producer", executionKey)
       .some((run) => this.store.getQuestionForRun(run.id) !== null);
-  }
-
-  /** Schedules one pass for the earliest future wake-up; past-due items are picked up by ordinary passes. */
-  private armWakeTimer(): void {
-    if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
-    this.#wakeTimer = null;
-    if (this.#shuttingDown) return;
-    const next = this.store.executions().nextWakeupAfter(new Date());
-    if (next === null) return;
-    this.#wakeTimer = setTimeout(() => {
-      this.#wakeTimer = null;
-      this.#timerFired("wake");
-      this.schedule();
-    }, Math.max(0, Date.parse(next) - Date.now()) + 50);
   }
 
   /** What native-stage tasks and MCP tools receive. */
@@ -2043,10 +1222,6 @@ export class ConveyorService {
         journal.onStageChange(issue.id);
       }
     }
-  }
-
-  private followUpBodies(repositoryId: string): Map<string, string> {
-    return new Map(this.store.listIssues(repositoryId).map((issue) => [issue.id, issue.body]));
   }
 
   private hasWaitingFollowUp(issue: StoredIssue): boolean {
@@ -2217,7 +1392,7 @@ export class ConveyorService {
       manualGateWaiting: this.manualGateWaiting,
       boardApproval: this.boardApprovalStatus,
       waitFallback: (repositoryId, kind) => this.waitFallbackMs(repositoryId, kind),
-      admitInFlight: (currentIssue, targetStageId) => this.inFlightAdmission(currentIssue, targetStageId),
+      admitInFlight: (currentIssue, targetStageId) => this.#scheduler.inFlightAdmission(currentIssue, targetStageId),
       gateOnly,
       signal,
       runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
@@ -2687,120 +1862,9 @@ export class ConveyorService {
     }
   }
 
-  /**
-   * `full` lists every issue. `changed` lists the issues changed since Conveyor last saw the
-   * repository: since its previous listing in this run, or after a restart since the newest change it
-   * stored. `finish` records a successful read.
-   */
-  private issueListing(repositoryId: string, mode: "full" | "changed"): { since?: string; finish(): void } {
-    const startedAt = Date.now();
-    const since = mode === "changed" ? this.#issueListings.get(repositoryId)?.since ?? this.storedSince(repositoryId) : undefined;
-    return {
-      ...(since !== undefined ? { since } : {}),
-      finish: () => this.#issueListings.set(repositoryId, { since: new Date(startedAt - ISSUE_LISTING_OVERLAP_MS).toISOString() }),
-    };
-  }
-
-  /** Just before the newest change Conveyor stored for a repository; undefined when it stored none. */
-  private storedSince(repositoryId: string): string | undefined {
-    let newest = Number.NEGATIVE_INFINITY;
-    for (const issue of this.store.listIssues(repositoryId)) newest = Math.max(newest, Date.parse(issue.sourceUpdatedAt));
-    return Number.isFinite(newest) ? new Date(newest - ISSUE_LISTING_OVERLAP_MS).toISOString() : undefined;
-  }
-
-  /**
-   * Reads the source into the projection. `only` reads just those issues (one request each) and
-   * touches nothing else, for work on one item; otherwise a listing, partial for a webhook pass.
-   */
+  /** Reads the source into the projection; see RepositorySync.reconcileRepository. */
   private reconcileRepository(repositoryId: string, options: { partial?: boolean; includeIssueNumbers?: readonly number[]; only?: readonly number[] } = {}): Promise<void> {
-    return this.withRepositoryLock(repositoryId, () => this.reconcileRepositoryLocked(repositoryId, options));
-  }
-
-  private async reconcileRepositoryLocked(repositoryId: string, options: { partial?: boolean; includeIssueNumbers?: readonly number[]; only?: readonly number[] }): Promise<void> {
-    const repository = this.config.repositories[repositoryId];
-    if (!repository) return;
-    if (options.only) {
-      await this.refreshIssues(repositoryId, options.only);
-      return;
-    }
-    const pipeline = this.config.pipelines[repository.pipeline]!;
-    const followUpBodies = this.followUpBodies(repositoryId);
-    const listing = this.issueListing(repositoryId, options.partial === true ? "changed" : "full");
-    await reconcileRepository({
-      store: this.store,
-      configHash: this.config.hash,
-      repository: {
-        id: repositoryId,
-        configName: repositoryId,
-        source: repository.source,
-        address: repository.address,
-        folder: repository.folder,
-      },
-      stages: pipeline.stages.map((stage) => stage.id),
-      labels: this.config.labels,
-      source: this.executionSource(repositoryId),
-      trust: this.#issueTrust,
-      extraTrustedLogins: repository.extraTrustedLogins ?? [],
-      expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
-      onLeft: (issueId) => { void this.purgeItem(issueId); },
-      ...(listing.since !== undefined ? { since: listing.since } : {}),
-      ...(options.includeIssueNumbers !== undefined ? { includeIssueNumbers: options.includeIssueNumbers } : {}),
-    });
-    listing.finish();
-    this.#retries.restoreFeedback(repositoryId);
-    if (this.store.repositoryPause(repositoryId)) return;
-    const scope = options.includeIssueNumbers ? new Set(options.includeIssueNumbers) : null;
-    await this.reconcileRelationships(repositoryId, repository.address, scope);
-    await this.backfillCiIndicators(repositoryId, scope);
-    this.wakeClearedFollowUps(repositoryId, followUpBodies);
-    this.restorePendingStatus(repositoryId);
-    this.interruptIneligibleRuns();
-    this.store.events().append("repository.reconciled", { issueNumbers: options.includeIssueNumbers ? [...options.includeIssueNumbers] : null }, { repositoryId });
-  }
-
-  /** Reads the named issues of a repository and updates only them: one request per issue, no listing. */
-  private async refreshIssues(repositoryId: string, numbers: readonly number[]): Promise<void> {
-    const repository = this.config.repositories[repositoryId];
-    if (!repository) return;
-    const pipeline = this.config.pipelines[repository.pipeline]!;
-    const followUpBodies = this.followUpBodies(repositoryId);
-    const issues = (await Promise.all([...new Set(numbers)].map(async (number) => {
-      try {
-        return await this.itemSource.getIssue(repository.address, number);
-      } catch (error) {
-        if (!isIssueGone(error)) throw error;
-        // 404/410: the issue is gone, which is the same as having no Conveyor labels.
-        const stored = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
-        if (stored && stored.projectedState !== "unlisted") void this.purgeItem(stored.id);
-        return null;
-      }
-    }))).filter((issue) => issue !== null);
-    await reconcileRepository({
-      store: this.store,
-      configHash: this.config.hash,
-      repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
-      stages: pipeline.stages.map((stage) => stage.id),
-      labels: this.config.labels,
-      source: this.executionSource(repositoryId),
-      trust: this.#issueTrust,
-      extraTrustedLogins: repository.extraTrustedLogins ?? [],
-      expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
-      onLeft: (issueId) => { void this.purgeItem(issueId); },
-      issues,
-      // Conveyor's own label writes move updated_at but change neither enrollment nor text. Anyone
-      // else's change arrives as a delivery that names them, so a trusted item keeps its decision.
-      ...(this.webhookUrl(repositoryId)
-        ? { delivered: new Map(numbers.map((number) => [number, { enrollment: "unchanged", title: "unchanged", body: "unchanged" } as const])) }
-        : {}),
-    });
-    this.#retries.restoreFeedback(repositoryId);
-    if (this.store.repositoryPause(repositoryId)) return;
-    const scope = new Set(numbers);
-    await this.reconcileRelationships(repositoryId, repository.address, scope);
-    this.wakeClearedFollowUps(repositoryId, followUpBodies);
-    this.restorePendingStatus(repositoryId);
-    this.interruptIneligibleRuns();
-    this.store.events().append("repository.reconciled", { issueNumbers: [...scope] }, { repositoryId });
+    return this.#sync.reconcileRepository(repositoryId, options);
   }
 
   /** `scope` names the issues a webhook pass reads afresh; the others keep what was read before. Null reads all. */
@@ -2808,108 +1872,19 @@ export class ConveyorService {
     return this.#rollups.reconcile(repositoryId, address, scope);
   }
 
+  /** Creates item-scoped MCP grants for a stage's agents; see McpGrants.factory. */
   private mcpFactory(): ScopedMcpFactory {
-    return {
-      create: async ({ runId, stageId, context, allowedTools, actor }) => {
-        const token = randomBytes(32).toString("base64url");
-        this.#mcpGrants.set(token, {
-          runId,
-          stageId,
-          context,
-          allowedTools: new Set(allowedTools.map(canonicalToolName)),
-          actor,
-          calls: new Map(),
-        });
-        const directory = path.join(this.config.settings.artifacts, runId);
-        await mkdir(directory, { recursive: true });
-        const contextFile = path.join(directory, "mcp-context.json");
-        const port = listenPort(this.config.web.listen);
-        await writeFile(contextFile, JSON.stringify({
-          version: 1,
-          runId,
-          stageId,
-          repository: {
-            id: context.repository.id,
-            address: context.repository.address,
-            baseBranch: context.repository.baseBranch,
-          },
-          issue: {
-            id: context.issue.id,
-            number: context.issue.sourceNumber,
-            title: context.issue.title,
-            body: context.issue.body,
-            labels: context.issue.labels,
-            url: context.issue.sourceUrl,
-          },
-          workspace: context.workspace,
-          delivery: context.delivery ?? { pullRequest: null, checks: [] },
-          sourceGuidance: context.sourceGuidance,
-          control: { url: `http://127.0.0.1:${port}/internal/mcp`, token },
-          allowedTools: [...new Set(allowedTools.map(canonicalToolName))],
-        }), { mode: 0o600 });
-        await chmod(contextFile, 0o600);
-        return {
-          configuration: mcpServerCommand(contextFile),
-          close: async () => {
-            this.#mcpGrants.delete(token);
-            await rm(contextFile, { force: true });
-          },
-        };
-      },
-    };
+    return this.#mcp.factory();
   }
 
-  private async steeringMcpLease(
+  /** A system-scoped MCP grant for a steering or Operator run; see McpGrants.steeringLease. */
+  private steeringMcpLease(
     runId: string,
     workspace: string,
     allowedTools: readonly string[],
     stopSummary?: { itemId: string; stopId: string },
   ): Promise<ScopedMcpLease> {
-    const token = randomBytes(32).toString("base64url");
-    this.#mcpGrants.set(token, {
-      runId,
-      stageId: "steering",
-      context: null,
-      allowedTools: new Set(allowedTools.map(canonicalToolName)),
-      actor: null,
-      calls: new Map(),
-      ...(stopSummary ? { stopSummary } : {}),
-    });
-    const directory = path.join(this.config.settings.artifacts, runId);
-    await mkdir(directory, { recursive: true });
-    const contextFile = path.join(directory, "mcp-context.json");
-    const port = listenPort(this.config.web.listen);
-    await writeFile(contextFile, JSON.stringify({
-      version: 1,
-      runId,
-      stageId: "steering",
-      repository: {
-        id: "conveyor-system",
-        address: "conveyor/system",
-        baseBranch: "main",
-      },
-      issue: {
-        id: `steering:${runId}`,
-        number: 1,
-        title: "Interactive Conveyor steering",
-        body: "",
-        labels: [],
-        url: this.config.web.publicUrl ?? `http://127.0.0.1:${port}/`,
-      },
-      workspace: { path: workspace, branch: "steering" },
-      delivery: { pullRequest: null, checks: [] },
-      sourceGuidance: "This is a system-scoped steering run. Only explicitly granted Operator diagnostic and control tools are available. Inspect before any control action.",
-      control: { url: `http://127.0.0.1:${port}/internal/mcp`, token },
-      allowedTools: [...new Set(allowedTools.map(canonicalToolName))],
-    }), { mode: 0o600 });
-    await chmod(contextFile, 0o600);
-    return {
-      configuration: mcpServerCommand(contextFile),
-      close: async () => {
-        this.#mcpGrants.delete(token);
-        await rm(contextFile, { force: true });
-      },
-    };
+    return this.#mcp.steeringLease(runId, workspace, allowedTools, stopSummary);
   }
 
   private sourceActions(context: RuntimeIssueContext): SourceActionHandler {
@@ -3027,273 +2002,9 @@ export class ConveyorService {
     return outcome;
   }
 
-  /** An MCP tool call: a thin wrapper over the task dispatcher, which enforces the grant and journals mutations. */
-  async handleMcp(payload: unknown, token: string, callId?: string): Promise<unknown> {
-    const grant = this.#mcpGrants.get(token);
-    if (!grant) throw new Error("expired MCP grant");
-    if (callId) {
-      const prior = grant.calls.get(callId);
-      if (prior) return prior;
-      const call = withEventContext({ actor: { kind: "agent", id: grant.runId } }, () => withCallSource("agent", () => this.handleMcpRequest(payload, grant)));
-      grant.calls.set(callId, call);
-      return call;
-    }
-    return withEventContext({ actor: { kind: "agent", id: grant.runId } }, () => withCallSource("agent", () => this.handleMcpRequest(payload, grant)));
-  }
-
-  private async handleMcpRequest(payload: unknown, grant: McpGrant): Promise<unknown> {
-    const context = grant.context;
-    const scheduled = this.#scheduledOperatorChecks.has(grant.runId);
-    let tool = "unknown";
-    try {
-      const request = object(payload);
-      tool = string(request.tool, "tool");
-      // The MCP server adds its run scope to every input; the grant is authoritative, so drop it.
-      const { runId: _run, stageId: _stage, repositoryId: _repository, issueId: _issue, ...input } = object(request.input ?? {});
-      const taskDeps = (): TaskDeps => context
-        // A system-scoped (steering) grant has no item: only explicitly allowed steering-safe tools are available.
-        ? this.taskDeps(context.issue.id, context.repository)
-        : ({
-            store: this.store as TaskStore,
-            config: this.config,
-            issueId: "",
-            operator: {
-              scheduled,
-              ...(grant.stopSummary ? { stopSummary: grant.stopSummary } : {}),
-              board: () => this.operatorBoard(),
-              findItem: (reference) => this.operatorFindItem(reference),
-              itemHistory: async (input) => {
-                const matches = this.operatorItemsForReference(input.itemId);
-                if (matches.length === 0) {
-                  if (scheduled) throw new Error("scheduled checks may inspect history only for their stopped targets");
-                  throw new Error("item is not on this configured board");
-                }
-                if (matches.length > 1) throw new Error("item reference matches multiple configured board items; use a repository-qualified reference");
-                const issue = matches[0]!;
-                if (scheduled && !this.#scheduledOperatorChecks.get(grant.runId)?.targets.has(issue.id)) {
-                  throw new Error("scheduled checks may inspect history only for their stopped targets");
-                }
-                const history = await this.operatorItemHistory({ ...input, itemId: issue.id });
-                if (scheduled) this.#scheduledOperatorChecks.get(grant.runId)?.inspected.add(issue.id);
-                return history;
-              },
-              retry: (itemId, note) => this.retryIssue(itemId, note, "AI Operator"),
-              scheduledRetry: (itemId, note, evidence) => this.#retries.scheduledRetry(grant.runId, itemId, note, evidence),
-              answerQuestion: (questionId, answer, evidence) => this.scheduledAnswerQuestion(grant.runId, questionId, answer, evidence),
-              scheduledOutcome: (itemId, reason) => this.reportScheduledOutcome(grant.runId, itemId, reason),
-              moveBacklog: (input) => this.operatorMoveBacklog(input),
-            },
-          } as TaskDeps);
-      const result = await dispatchTool({
-        name: tool,
-        input,
-        actor: grant.actor,
-        grant: {
-          runId: grant.runId,
-          stageId: grant.stageId,
-          issueScoped: context !== null,
-          actor: grant.actor,
-          tasks: grant.allowedTools,
-        },
-      }, {
-        registry: createTaskRegistry(),
-        deps: taskDeps,
-        liveHeadSha: async (options) => {
-          if (!context) return null;
-          if (options?.refresh) this.forgetChange(context.issue.id, context.repository.address);
-          const state = await this.loadDeliveryState(context.issue.id, context.repository.address) as {
-            change?: { headSha?: string } | null;
-            pullRequest?: { headSha?: string } | null;
-          };
-          return state.change?.headSha ?? state.pullRequest?.headSha ?? null;
-        },
-        store: this.store,
-      });
-      if (context && canonicalToolName(tool) === "agent.askQuestion") {
-        await this.updateStatusComment(context.issue.id);
-      }
-      return result;
-    } catch (error) {
-      if (context) log.warn("Issue MCP tool failed", { ...this.itemFields(context.issue.id), tool: canonicalToolName(tool) }, error);
-      throw error;
-    }
-  }
-
-  /** A redacted board view for the scoped Operator MCP tools; it intentionally has no credentials or raw config. */
-  private operatorBoard(): unknown {
-    const activeIssueIds = new Set(this.store.listActiveIssueRuns().map((run) => run.issueId));
-    const items = this.operatorVisibleItems().map((issue) => {
-      const cursor = this.store.executions().getCursor(issue.id);
-      const manualGates = this.manualGateViews(issue);
-      const manualWaiting = manualGates.find((gate) => gate.waiting) ?? null;
-      const active = activeIssueIds.has(issue.id);
-      const stopped = STOPPED_ISSUE_STATES.has(issue.projectedState ?? "");
-      const parent = issue.parentId ? this.store.getIssue(issue.parentId) : null;
-      return {
-        ...this.operatorReference(issue),
-        stage: this.store.getStageState(issue.id)?.stageId ?? issue.projectedStage,
-        state: issue.projectedState ?? issue.sourceState,
-        activity: active ? "active" : cursor?.state === "pending" ? "waiting" : "idle",
-        queue: issue.queueRank === null ? { status: "not-queued" } : { status: "queued", rank: issue.queueRank },
-        waitingOrStopReason: cursor?.state === "pending"
-          ? this.store.executions().pendingMessage(issue.id) ?? issue.warning
-          : stopped ? latestStopReason(this.store, issue.id) ?? issue.warning : null,
-        parent: this.operatorVisibleItem(parent) ? this.operatorReference(parent) : null,
-        dependencies: this.store.listDependencies(issue.id)
-          .map((id) => this.store.getIssue(id))
-          .filter((dependency): dependency is StoredIssue => this.operatorVisibleItem(dependency))
-          .map((dependency) => this.operatorReference(dependency)),
-      };
-    });
-    return {
-      reconciledAt: this.#lastReconciledAt,
-      repositories: Object.entries(this.config.repositories).map(([id, repository]) => ({
-        id,
-        address: repository.address,
-        health: this.#repositoryErrors.has(id) || this.#onboardingErrors.has(id) ? "degraded" : "healthy",
-        lastReconciledAt: this.#lastReconciledAt,
-      })),
-      items,
-    };
-  }
-
-  private operatorVisibleItem(issue: StoredIssue | null): issue is StoredIssue {
-    return Boolean(issue && this.config.repositories[issue.repositoryId] && issue.projectedState !== "unlisted");
-  }
-
-  private operatorVisibleItems(): StoredIssue[] {
-    return this.store.listIssues().filter((issue) => this.operatorVisibleItem(issue));
-  }
-
-  private operatorReference(issue: StoredIssue): { id: string; repositoryId: string; number: number; url: string; title: string } {
-    return {
-      id: issue.id,
-      repositoryId: issue.repositoryId,
-      number: issue.sourceNumber,
-      url: issue.sourceUrl,
-      title: issue.title,
-    };
-  }
-
-  /** Resolves the forms people use without consulting a source outside the configured board. */
-  private operatorItemsForReference(input: string): StoredIssue[] {
-    const reference = input.trim().toLowerCase();
-    const visible = this.operatorVisibleItems();
-    const direct = visible.filter((issue) => issue.id.toLowerCase() === reference);
-    if (direct.length > 0) return direct;
-    const bare = /^#?(\d+)$/.exec(reference);
-    if (bare) return visible.filter((issue) => issue.sourceNumber === Number(bare[1]));
-    const qualified = /^(.+?)(?:#\s*|:\s*|\s+)(\d+)$/.exec(reference);
-    if (!qualified) {
-      const matching = Object.entries(this.config.repositories).flatMap(([id, repository]) =>
-        [id, repository.address, repository.address.split("/").at(-1)!]
-          .map((alias) => alias.toLowerCase())
-          .filter((alias) => reference.startsWith(alias) && /^\d+$/.test(reference.slice(alias.length)))
-          .map((alias) => ({ id, number: Number(reference.slice(alias.length)) })),
-      );
-      return visible.filter((issue) => matching.some((candidate) =>
-        issue.repositoryId === candidate.id && issue.sourceNumber === candidate.number,
-      ));
-    }
-    const [, repositoryReference, number] = qualified;
-    if (!repositoryReference || !number) return [];
-    const repositories = Object.entries(this.config.repositories)
-      .filter(([id, repository]) => {
-        const address = repository.address.toLowerCase();
-        return [id.toLowerCase(), address, address.split("/").at(-1)!].includes(repositoryReference.trim());
-      })
-      .map(([id]) => id);
-    return visible.filter((issue) => repositories.includes(issue.repositoryId) && issue.sourceNumber === Number(number));
-  }
-
-  private operatorFindItem(reference: string): unknown {
-    const items = this.operatorItemsForReference(reference).map((issue) => this.operatorReference(issue));
-    return items.length > 0
-      ? { reference, status: "found", items }
-      : { reference, status: "not-on-board", message: "This reference is not on this configured board.", items: [] };
-  }
-
-  /** History is deliberately bounded by transition, run, and event limits and rejects non-board references uniformly. */
-  private async operatorItemHistory(input: {
-    itemId: string;
-    beforeRunId?: string;
-    eventRunId?: string;
-    beforeEventSequence?: number;
-    runLimit: number;
-    eventLimit: number;
-  }): Promise<unknown> {
-    const issue = this.store.getIssue(input.itemId);
-    if (!this.operatorVisibleItem(issue)) {
-      throw new Error("item is not on this configured board");
-    }
-    const runs = this.store.listIssueRunsPage(issue.id, {
-      ...(input.beforeRunId ? { before: input.beforeRunId } : {}),
-      limit: input.runLimit,
-    });
-    const eventRun = input.eventRunId ? this.store.getRun(input.eventRunId) : null;
-    if (input.eventRunId && (!eventRun || eventRun.issueId !== issue.id)) {
-      throw new Error("event cursor does not belong to this board item");
-    }
-    let delivery: unknown;
-    try {
-      const repository = this.config.repositories[issue.repositoryId]!;
-      delivery = { status: "available", ...await this.loadDeliveryState(issue.id, repository.address) };
-    } catch (error) {
-      delivery = {
-        status: "unavailable",
-        reason: error instanceof Error ? error.message : "delivery diagnostics are unavailable",
-      };
-    }
-    return {
-      item: { id: issue.id, repositoryId: issue.repositoryId, number: issue.sourceNumber, url: issue.sourceUrl, title: issue.title },
-      transitions: this.store.listStageTransitions(issue.id).slice(-50).map((transition) => ({
-        id: transition.id,
-        fromStage: transition.fromStage,
-        toStage: transition.toStage,
-        kind: transition.kind,
-        status: transition.status,
-        resultStatus: transition.resultStatus,
-        reason: transition.error ?? transition.reason,
-        createdAt: transition.createdAt,
-        completedAt: transition.completedAt,
-      })),
-      runs: runs.runs.map((run) => {
-        const page = this.store.listRunEventsPage(run.id, {
-          limit: input.eventLimit,
-          ...(run.id === input.eventRunId && input.beforeEventSequence !== undefined
-            ? { before: input.beforeEventSequence }
-            : {}),
-        });
-        return {
-          id: run.id,
-          stageId: run.stageId,
-          attempt: run.attempt,
-          kind: run.kind,
-          status: run.status,
-          result: run.result,
-          startedAt: run.startedAt,
-          finishedAt: run.finishedAt,
-          events: page.events,
-          nextEventBefore: page.nextBefore,
-        };
-      }),
-      nextRunBefore: runs.nextBefore,
-      delivery,
-    };
-  }
-
-  private operatorMoveBacklog(input: { itemId: string; position: "up" | "down" | "before" | "end"; beforeItemId?: string }): unknown {
-    if (input.position === "up" || input.position === "down") {
-      this.reorderBacklog(input.itemId, input.position);
-    } else {
-      this.moveBacklogIssue(input.itemId, input.position === "before" ? input.beforeItemId! : null);
-    }
-    const issue = this.store.getIssue(input.itemId);
-    return {
-      position: input.position,
-      queueRank: issue?.queueRank ?? null,
-      ...(input.position === "before" ? { beforeIssueId: input.beforeItemId } : {}),
-    };
+  /** An MCP tool call; see McpGrants.handle. */
+  handleMcp(payload: unknown, token: string, callId?: string): Promise<unknown> {
+    return this.#mcp.handle(payload, token, callId);
   }
 
   /** An item source's webhook secret, as its plugin reads it; empty when it has none. */
@@ -3343,183 +2054,9 @@ export class ConveyorService {
     if (!repository) this.schedule();
   }
 
-  /**
-   * The projection's reaction to what a provider observed: the CI indicator first, so the board shows
-   * a finished run within seconds, then the item the observation carries, or a reconcile of the items
-   * it names. It runs in the background: a provider may count a delivery as failed after a few
-   * seconds, and the event bus must not wait for the provider either.
-   */
-  private reactToObservation(event: StoredEvent): void {
-    const repositoryId = event.repositoryId;
-    if (!repositoryId || !this.config.repositories[repositoryId]) return;
-    // A deleted or transferred issue is gone: purge its item now, synchronously, so its run is aborted
-    // before anything makes another GitHub request, and without a read or a sync.
-    if (isEventOf(event, "itemSource.itemChanged") && !event.payload.pullRequest && (event.payload.action === "deleted" || event.payload.action === "transferred")) {
-      const gone = event.payload.number;
-      for (const issue of this.store.listIssues(repositoryId)) {
-        if (issue.sourceNumber === gone && issue.projectedState !== "unlisted") void this.purgeItem(issue.id);
-      }
-      return;
-    }
-    const work = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withCallSource("webhook", async () => {
-      await this.applyCiEvent(repositoryId, event)
-        .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: event.type }, error));
-      if (isEventOf(event, "itemSource.itemChanged")) {
-        // A comment on a pull request changes nothing on the item's issue.
-        if (event.payload.pullRequest) {
-          const named = new Set(this.issueNumbersFor(repositoryId, event));
-          this.refreshStatusComments(this.store.listIssues(repositoryId).filter((issue) => named.has(issue.sourceNumber)).map((issue) => issue.id));
-          return;
-        }
-        const { item, actors } = event.payload;
-        if (item && actors) {
-          // An item source that reports no issue type or close reason leaves them out, which differs from null.
-          const { stateReason, type, ...fields } = item;
-          const issue: SourceIssue = { ...fields, ...(stateReason !== undefined ? { stateReason } : {}), ...(type !== undefined ? { type } : {}) };
-          if (await this.applyIssueDelivery(repositoryId, { issue, actors })) return;
-        }
-      }
-      if (isEventOf(event, "code.changeUpdated") && event.payload.action === "closed" && event.payload.merged) {
-        const named = new Set(this.issueNumbersFor(repositoryId, event));
-        for (const issue of this.store.listIssues(repositoryId).filter((candidate) => named.has(candidate.sourceNumber))) {
-          await this.recoverClosedItem(repositoryId, issue);
-        }
-        this.refreshStatusComments(this.store.listIssues(repositoryId).filter((issue) => named.has(issue.sourceNumber)).map((issue) => issue.id));
-        return;
-      }
-      const issueNumbers = this.issueNumbersFor(repositoryId, event);
-      if (issueNumbers.length === 0) return;
-      // CI and pull request events change no issue data: the indicator is updated above, a waiting
-      // task reads the change itself, and the status comments of the items involved are refreshed.
-      if (isEventOf(event, "ci.runUpdated") || isEventOf(event, "code.changeUpdated")) {
-        // CI progress changes nothing the comment shows.
-        if (isEventOf(event, "ci.runUpdated") && !event.payload.completed) return;
-        const named = new Set(issueNumbers);
-        this.refreshStatusComments(this.store.listIssues(repositoryId).filter((issue) => named.has(issue.sourceNumber)).map((issue) => issue.id));
-        return;
-      }
-      if (isEventOf(event, "itemSource.relationsChanged")) this.#rollups.forget(repositoryId, event.payload.numbers);
-      await this.queueWebhookReconcile(repositoryId, issueNumbers);
-    }));
-    this.#webhookWork.add(work);
-    void work.finally(() => this.#webhookWork.delete(work));
-  }
-
-  /**
-   * Applies the item an observation carries, with no request to the item source: the plugin read the
-   * item's current state and who made the change from the delivery. An observation that cannot stand
-   * in for a read (a transfer, an unknown action) carries no item, and the caller reads it instead.
-   */
-  private async applyIssueDelivery(repositoryId: string, change: DeliveredIssue): Promise<boolean> {
-    const repository = this.config.repositories[repositoryId];
-    if (!repository) return false;
-    return this.withRepositoryLock(repositoryId, () => this.applyIssueDeliveryLocked(repositoryId, repository, change));
-  }
-
-  private async applyIssueDeliveryLocked(
-    repositoryId: string,
-    repository: NonNullable<ConveyorConfig["repositories"][string]>,
-    change: DeliveredIssue,
-  ): Promise<boolean> {
-    const number = change.issue.number;
-    const prior = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
-    const followUpBodies = this.followUpBodies(repositoryId);
-    // Deliveries can arrive out of order: an older state of the issue changes nothing.
-    if (prior && Date.parse(prior.sourceUpdatedAt) > Date.parse(change.issue.updatedAt)) return true;
-    const pipeline = this.config.pipelines[repository.pipeline]!;
-    await reconcileRepository({
-      store: this.store,
-      configHash: this.config.hash,
-      repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
-      stages: pipeline.stages.map((stage) => stage.id),
-      labels: this.config.labels,
-      source: this.executionSource(repositoryId),
-      trust: this.#issueTrust,
-      extraTrustedLogins: repository.extraTrustedLogins ?? [],
-      expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
-      onLeft: (issueId) => { void this.purgeItem(issueId); },
-      issues: [change.issue],
-      delivered: new Map([[number, change.actors]]),
-    });
-    this.#retries.restoreFeedback(repositoryId);
-    // A run that must not go on (the item was closed, paused, left Conveyor) stops before closed-item
-    // recovery makes any GitHub call for it.
-    await this.runsEnded(this.interruptIneligibleRuns());
-    const applied = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
-    if (change.issue.state === "closed" && applied) await this.recoverClosedItem(repositoryId, applied, change.issue);
-    if (this.store.repositoryPause(repositoryId)) return true;
-    this.wakeClearedFollowUps(repositoryId, followUpBodies);
-    this.restorePendingStatus(repositoryId);
-    this.interruptIneligibleRuns();
-    this.store.events().append("repository.reconciled", { issueNumbers: [number] }, { repositoryId });
-    this.schedule();
-    if (applied) this.refreshStatusComments([applied.id]);
-    return true;
-  }
-
   /** Resolves once every accepted webhook delivery has been processed. */
-  async webhooksSettled(): Promise<void> {
-    // A delivery's work starts from its event, and that work records events of its own.
-    for (;;) {
-      await this.eventsSettled();
-      if (this.#webhookWork.size === 0) return;
-      await Promise.all([...this.#webhookWork]);
-    }
-  }
-
-  /** The issue numbers whose status a GitHub event may change; a pull request names its item's issue. */
-  private issueNumbersFor(repositoryId: string, event: StoredEvent): number[] {
-    const forPullRequests = (numbers: readonly number[]) => {
-      const wanted = new Set(numbers);
-      return this.store.listIssues(repositoryId).flatMap((issue) => {
-        const pullRequest = this.store.getCurrentPullRequest(issue.id);
-        return pullRequest && wanted.has(pullRequest.number) ? [issue.sourceNumber] : [];
-      });
-    };
-    if (isEventOf(event, "itemSource.itemChanged")) return event.payload.pullRequest ? forPullRequests([event.payload.number]) : [event.payload.number];
-    if (isEventOf(event, "itemSource.relationsChanged")) return event.payload.numbers;
-    if (isEventOf(event, "code.changeUpdated")) return forPullRequests([event.payload.number]);
-    if (isEventOf(event, "ci.runUpdated")) return forPullRequests(event.payload.changes);
-    return [];
-  }
-
-  /**
-   * Reconciles a repository for webhook deliveries, one pass at a time. Deliveries arriving while a
-   * pass waits to start join it, so a burst of deliveries costs one or two passes rather than one each.
-   * Only the status comments of the issues the deliveries name are refreshed.
-   */
-  private queueWebhookReconcile(repositoryId: string, issueNumbers: number[] | null): Promise<void> {
-    const queued = this.#queuedWebhookReconciles.get(repositoryId);
-    if (queued) {
-      if (issueNumbers === null) queued.issueNumbers = null;
-      else for (const issueNumber of issueNumbers) queued.issueNumbers?.add(issueNumber);
-      return queued.done;
-    }
-    const entry: { issueNumbers: Set<number> | null; done: Promise<void> } = {
-      issueNumbers: issueNumbers === null ? null : new Set(issueNumbers),
-      done: Promise.resolve(),
-    };
-    this.#queuedWebhookReconciles.set(repositoryId, entry);
-    const previous = this.#webhookReconciles.get(repositoryId) ?? Promise.resolve();
-    entry.done = previous.then(async () => {
-      // Deliveries from here on queue the next pass: this one may already have read past them.
-      this.#queuedWebhookReconciles.delete(repositoryId);
-      if (this.#shuttingDown) return;
-      await this.reconcileRepository(repositoryId, {
-        partial: true,
-        ...(entry.issueNumbers === null ? {} : { includeIssueNumbers: [...entry.issueNumbers] }),
-      });
-      this.schedule();
-      const issues = this.store.listIssues(repositoryId);
-      this.refreshStatusComments((entry.issueNumbers === null
-        ? issues
-        : issues.filter((issue) => entry.issueNumbers!.has(issue.sourceNumber))).map((issue) => issue.id));
-    }).catch((error) => log.error("Repository reconciliation failed", { repository: repositoryId }, error));
-    this.#webhookReconciles.set(repositoryId, entry.done);
-    void entry.done.then(() => {
-      if (this.#webhookReconciles.get(repositoryId) === entry.done) this.#webhookReconciles.delete(repositoryId);
-    });
-    return entry.done;
+  webhooksSettled(): Promise<void> {
+    return this.#sync.webhooksSettled();
   }
 
   /**
@@ -3651,324 +2188,24 @@ export class ConveyorService {
     this.#answers.retryDelayMs = delayMs;
   }
 
-  /**
-   * Starts one cadence-triggered Operator run when the reconciled board contains stopped enrolled
-   * work. This deliberately does not queue missed intervals: a live steering run is the lock.
-   */
-  async runScheduledOperatorCheck(): Promise<string | null> {
-    const steering = this.config.web?.steering;
-    if (!steering?.periodic || !this.#lastReconciledAt || this.#repositoryErrors.size > 0 ||
-      this.#shuttingDown || this.#admission.current || this.#steeringActive.size > 0) return null;
-    const targets = this.store.listIssues().filter((issue) =>
-      Boolean(this.config.repositories[issue.repositoryId]) &&
-      this.store.repositoryPause(issue.repositoryId) === null &&
-      issue.labels.includes(this.config.labels.enrollment) &&
-      issue.projectedState !== "unlisted" &&
-      issue.projectedState !== null && STOPPED_ISSUE_STATES.has(issue.projectedState),
-    );
-    if (targets.length === 0) return null;
-    const agent = this.config.agents[steering.agent];
-    if (!agent) throw new Error(`Unknown steering agent: ${steering.agent}`);
-    const runner = this.config.runners[agent.runner];
-    if (!runner || runner.type !== "codex") throw new Error("The steering agent must use a Codex runner");
-    const allowed = agent.tasks.filter((task) => new Set([
-      "operator.getBoard", "operator.getItemHistory", "operator.retryStoppedItem", "operator.answerItemQuestion",
-      "operator.reportStoppedItemOutcome",
-    ]).has(task));
-    if (!allowed.includes("operator.getBoard") || !allowed.includes("operator.getItemHistory")) {
-      throw new Error("The scheduled Operator requires operator.getBoard and operator.getItemHistory grants");
-    }
-
-    const runId = randomUUID();
-    this.store.createRun({
-      id: runId, issueId: null, stageId: "steering", attempt: 1, kind: "steering", status: "running",
-      configHash: this.config.hash, startedAt: new Date().toISOString(),
-    });
-    this.store.appendRunEvent(runId, "operator.scheduled", { itemIds: targets.map((issue) => issue.id), cadenceMs: steering.periodic.intervalMs });
-    this.#scheduledOperatorChecks.set(runId, {
-      targets: new Set(targets.map((issue) => issue.id)),
-      inspected: new Set(),
-      outcomes: new Map(),
-    });
-    const controller = new AbortController();
-    this.#steeringActive.set(runId, controller);
-    const prompt = [
-      "This is a scheduled Operator check, not an owner request.",
-      `Consider only these stopped items: ${targets.map((issue) => issue.id).join(", ")}.`,
-      "Inspect the board and each target's history before acting. Record a concise outcome for every target.",
-      "You may retry only a target after quoting source content added after its recorded stop, or non-Operator conversation recorded after that stop.",
-      "You may answer only an open target question when its answer is unambiguous and you quote the current issue, acceptance criteria, or recorded conversation evidence.",
-      "For every inspected target you cannot safely retry or answer, use the outcome-reporting tool to record why it remains stopped. Do not move backlog items, inspect or act on unrelated items, or make up owner preferences.",
-    ].join("\n");
-    const completion = this.executeSteering(runId, prompt, { ...agent, tasks: allowed }, runner, steering.workspace, controller.signal, true)
-      .finally(() => {
-        const check = this.#scheduledOperatorChecks.get(runId);
-        const run = this.store.getRun(runId);
-        for (const issue of targets) {
-          const outcome = check?.outcomes.get(issue.id);
-          this.store.appendRunEvent(runId, "operator.outcome", {
-            issueId: issue.id,
-            outcome: outcome?.outcome ?? "unresolved",
-            reason: outcome?.reason ??
-              (check?.inspected.has(issue.id)
-                ? `Scheduled check ${run?.status ?? "ended"} before recording a disposition.`
-                : `Scheduled check ${run?.status ?? "ended"} before inspecting this target.`),
-            runStatus: run?.status ?? "unknown",
-            ...(outcome?.evidence ? { evidence: outcome.evidence } : {}),
-          });
-        }
-        this.#scheduledOperatorChecks.delete(runId);
-        this.#steeringActive.delete(runId);
-        this.#steeringCompletions.delete(runId);
-      });
-    this.#steeringCompletions.set(runId, completion);
-    void completion;
-    return runId;
-  }
-
-
-  /**
-   * Starts the one read-only Operator run that summarises an item's stop. Nothing starts without a
-   * configured steering agent. The run never changes the item and never retries or answers anything;
-   * a run that cannot produce a summary leaves an `operator.stopSummaryFailed` event with its reason.
-   */
-  private startStopSummaryRun(issueId: string, stopId: string): void {
-    const steering = this.config.web?.steering;
-    if (!steering || this.#shuttingDown || this.#stopSummaryStarted.has(stopId)) return;
-    this.#stopSummaryStarted.add(stopId);
-    const runId = randomUUID();
-    const controller = new AbortController();
-    const completion = this.executeStopSummary(runId, issueId, stopId, steering.agent, controller)
-      .catch((error) => log.warn("Stop-summary run failed", { ...this.itemFields(issueId) }, error))
-      .finally(() => { this.#stopSummaryActive.delete(runId); });
-    this.#stopSummaryActive.set(runId, { controller, completion });
+  /** Starts one scheduled Operator check when stopped work is on the board; see Steering.runScheduledCheck. */
+  runScheduledOperatorCheck(): Promise<string | null> {
+    return this.#steering.runScheduledCheck();
   }
 
   /** Wait for every running stop-summary run to settle. */
-  async waitForStopSummaryRuns(): Promise<void> {
-    while (this.#stopSummaryActive.size > 0) {
-      await Promise.all([...this.#stopSummaryActive.values()].map((active) => active.completion));
-    }
+  waitForStopSummaryRuns(): Promise<void> {
+    return this.#steering.waitForStopSummaries();
   }
 
-  private async executeStopSummary(runId: string, issueId: string, stopId: string, agentId: string, controller: AbortController): Promise<void> {
-    const started = performance.now();
-    this.store.createRun({
-      id: runId, issueId: null, stageId: "steering", attempt: 1, kind: "steering", status: "running",
-      configHash: this.config.hash, startedAt: new Date().toISOString(),
-    });
-    this.store.appendRunEvent(runId, "operator.stopSummary", { issueId, stopId });
-    let failure: { kind: "failed" | "timeout"; reason: string } | null = null;
-    let lease: ScopedMcpLease | null = null;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let timedOut = false;
-    let sessionId: string | null = null;
-    let usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
-    try {
-      const agent = this.config.agents[agentId];
-      if (!agent) throw new Error(`Unknown steering agent: ${agentId}`);
-      const runner = this.config.runners[agent.runner];
-      if (!runner || runner.type === "json-process") {
-        throw new Error(`The steering agent ${agentId} must use a Codex or Claude Code runner`);
-      }
-      const harness = this.#harnesses[runner.type];
-      if (!harness) throw new Error(`No harness is available for runner type ${runner.type}`);
-      const instructions = await readFile(agent.instructions, "utf8");
-      const scratch = path.join(this.config.settings.artifacts, runId, "scratch");
-      await mkdir(scratch, { recursive: true });
-      lease = await this.steeringMcpLease(runId, scratch, STOP_SUMMARY_TOOLS, { itemId: issueId, stopId });
-      timer = setTimeout(() => { timedOut = true; controller.abort(); }, this.#stopSummaryTimeoutMs);
-      const result = await harness.run({
-        command: runner.command,
-        // Always the run's own empty scratch directory: the same filesystem a confined Operator gets.
-        workspace: scratch,
-        artifactsDirectory: path.join(this.config.settings.artifacts, runId),
-        prompt: [
-          instructions.trim(),
-          conveyorToolGuidance([...STOP_SUMMARY_TOOLS]),
-          "",
-          "You are the Conveyor Operator writing a stop summary. This is a read-only run: you cannot retry, answer, reorder or change anything.",
-          `Read the history of item ${issueId} with operator.getItemHistory, then record the summary of stop ${stopId} with operator.recordStopSummary (itemId ${issueId}, stopId ${stopId}).`,
-          "The summary is one or two short plain sentences naming the exact failing test, command, check or step and, when clear, what unblocks it. No log excerpts, stack traces, links or speculation.",
-          "Finish with a one-line result.",
-        ].join("\n"),
-        ...(agent.model ? { model: agent.model } : {}),
-        ...(agent.effort ? { effort: agent.effort } : {}),
-        sandbox: "read-only",
-        automaticApprovals: harness.profile.sandbox === "runner" && "automaticApprovals" in runner ? runner.automaticApprovals : false,
-        ...(harness.profile.optionalShell ? { shell: false as const } : {}),
-        mcp: lease.configuration,
-        timeoutMs: this.#stopSummaryTimeoutMs,
-        interruptGraceMs: this.config.settings.interruptGraceMs,
-        signal: controller.signal,
-        onEvent: (event: unknown) => { this.store.appendRunEvent(runId, "harness", event); },
-      });
-      sessionId = result.sessionId;
-      usage = result.usage;
-      if (result.stageResult.outcome === "failure") {
-        failure = { kind: "failed", reason: result.stageResult.reason ?? result.stageResult.summary };
-      } else if (this.store.currentStopId(issueId) === stopId && this.store.currentStopSummary(issueId) === null) {
-        failure = { kind: "failed", reason: "The run finished without recording a summary for the stop." };
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      failure = timedOut || /timed out/i.test(message)
-        ? { kind: "timeout", reason: `The stop-summary run timed out after ${this.#stopSummaryTimeoutMs}ms.` }
-        : { kind: "failed", reason: message };
-    } finally {
-      if (timer) clearTimeout(timer);
-      try { await lease?.close(); } catch { /* a teardown failure must not replace the run's own outcome */ }
-    }
-    if (failure) {
-      // The recording tool may have stored a summary before the run failed; a failed run leaves none.
-      try { this.store.clearStopSummary({ issueId, stopId }); } catch (error) { log.warn("Could not clear the stop summary of a failed run", { ...this.itemFields(issueId) }, error); }
-      this.store.appendRunEvent(runId, "operator.stopSummaryFailed", { issueId, stopId, kind: failure.kind, reason: failure.reason });
-    }
-    this.store.finishRun(runId, {
-      status: failure ? "failed" : "succeeded",
-      exitCode: failure ? 1 : 0,
-      result: failure ? { reason: failure.reason } : { summary: "Stop summary recorded." },
-      sessionId,
-      usage: { ...usage, amount: 0, currency: "USD", source: "unavailable", durationMs: Math.max(0, Math.round(performance.now() - started)) },
-    });
-  }
-
-  async startSteering(prompt: string): Promise<string> {
-    const request = prompt.trim();
-    if (!request || request.length > 12_000) {
-      throw new Error("The steering prompt must contain between 1 and 12000 characters");
-    }
-    if (this.#admission.current) throw new Error("Conveyor is draining: no new work is admitted");
-    const steering = this.config.web?.steering;
-    if (!steering) throw new Error("The steering agent is not configured");
-    // A human request wins over a cadence check. Abort and wait for its lease to close so their
-    // grants cannot overlap; another owner request still receives the existing busy response.
-    const scheduled = [...this.#steeringActive]
-      .filter(([runId]) => this.#scheduledOperatorChecks.has(runId));
-    for (const [, controller] of scheduled) controller.abort();
-    await Promise.all(scheduled.map(([runId]) => this.#steeringCompletions.get(runId)));
-    if (this.#steeringActive.size > 0) {
-      throw new Error("A steering agent is already running");
-    }
-    const agent = this.config.agents[steering.agent];
-    if (!agent) throw new Error(`Unknown steering agent: ${steering.agent}`);
-    const runner = this.config.runners[agent.runner];
-    if (!runner || runner.type !== "codex") {
-      throw new Error("The steering agent must use a Codex runner");
-    }
-
-    const runId = randomUUID();
-    const startedAt = new Date().toISOString();
-    this.store.createRun({
-      id: runId,
-      issueId: null,
-      stageId: "steering",
-      attempt: 1,
-      kind: "steering",
-      status: "running",
-      configHash: this.config.hash,
-      startedAt,
-    });
-    this.store.appendRunEvent(runId, "user", { text: request });
-    const controller = new AbortController();
-    this.#steeringActive.set(runId, controller);
-    const completion = this.executeSteering(runId, request, agent, runner, steering.workspace, controller.signal)
-      .finally(() => {
-        this.#steeringActive.delete(runId);
-        this.#steeringCompletions.delete(runId);
-      });
-    this.#steeringCompletions.set(runId, completion);
-    void completion;
-    return runId;
+  /** Starts a person's steering request; see Steering.start. */
+  startSteering(prompt: string): Promise<string> {
+    return this.#steering.start(prompt);
   }
 
   /** Wait for a currently running steering request to settle. */
-  async waitForSteeringRun(runId: string): Promise<void> {
-    await this.#steeringCompletions.get(runId);
-  }
-
-  /** The steering agent's harness, unless the service was given its own Operator runner. */
-  private steeringRunner(runnerType: string): (input: SteeringRunInput) => Promise<SteeringRunResult> {
-    if (this.#runSteering) return this.#runSteering;
-    const harness = this.#harnesses[runnerType];
-    if (!harness?.steer) throw new Error(`No harness can run the steering agent for runner type ${runnerType}`);
-    return harness.steer.bind(harness);
-  }
-
-  private async executeSteering(
-    runId: string,
-    userPrompt: string,
-    agent: ConveyorConfig["agents"][string],
-    runner: Extract<ConveyorConfig["runners"][string], { type: "codex" }>,
-    workspace: string,
-    signal: AbortSignal,
-    scheduled = false,
-  ): Promise<void> {
-    const started = performance.now();
-    let lease: ScopedMcpLease | null = null;
-    try {
-      const steer = this.steeringRunner(runner.type);
-      lease = await this.steeringMcpLease(runId, workspace, agent.tasks);
-      const instructions = await readFile(agent.instructions, "utf8");
-      const result = await steer({
-        command: runner.command,
-        workspace,
-        artifactsDirectory: path.join(this.config.settings.artifacts, runId),
-        prompt: [
-          instructions.trim(),
-          conveyorToolGuidance(agent.tasks),
-          "",
-          scheduled ? "You are the scheduled Conveyor Operator. Work only within the scheduled check." : "You are the authenticated Conveyor steering agent. Work only within the user's request.",
-          "Inspect current state before changing it. Never close source issues. Finish with a concise report of actions, verification, and anything still unresolved.",
-          "Use agent.reportProgress only for concise user-facing updates. Never expose private reasoning, raw command output, command names, or tool-call mechanics in those updates.",
-          "",
-          "User request:",
-          userPrompt,
-        ].join("\n"),
-        ...(agent.model ? { model: agent.model } : {}),
-        ...(agent.effort ? { effort: agent.effort } : {}),
-        sandbox: agent.workspaceAccess === "workspace-write" ? runner.sandbox : "read-only",
-        ...(agent.workspaceAccess === "confined" ? { filesystem: "scratch" as const } : {}),
-        automaticApprovals: runner.automaticApprovals,
-        mcp: lease.configuration,
-        interruptGraceMs: this.config.settings.interruptGraceMs,
-        signal,
-      });
-      this.store.appendRunEvent(runId, "report", { text: result.summary });
-      this.store.finishRun(runId, {
-        status: "succeeded",
-        exitCode: result.exitCode,
-        result: { summary: result.summary },
-        sessionId: result.sessionId,
-        usage: {
-          ...result.usage,
-          amount: 0,
-          currency: "USD",
-          source: "unavailable",
-          durationMs: result.durationMs,
-        },
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.store.appendRunEvent(runId, "error", { text: message });
-      this.store.finishRun(runId, {
-        status: signal.aborted ? "interrupted" : "failed",
-        exitCode: 1,
-        result: { reason: message },
-        sessionId: null,
-        usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          cachedTokens: 0,
-          amount: 0,
-          currency: "USD",
-          source: "unavailable",
-          durationMs: Math.max(0, Math.round(performance.now() - started)),
-        },
-      });
-    } finally {
-      await lease?.close();
-    }
+  waitForSteeringRun(runId: string): Promise<void> {
+    return this.#steering.waitFor(runId);
   }
 
   reorderBacklog(issueId: string, direction: "up" | "down"): void {
@@ -4060,10 +2297,10 @@ export class ConveyorService {
       store: this.store,
       config: this.config,
       ...(issues ? { issues } : {}),
-      onboardingErrors: this.#onboardingErrors,
-      reconciliationErrors: this.#repositoryErrors,
-      startup: this.#startupRepositories,
-      lastReconciledAt: this.#lastReconciledAt,
+      onboardingErrors: this.#sync.onboardingErrors,
+      reconciliationErrors: this.#sync.reconcileErrors,
+      startup: this.#sync.startup,
+      lastReconciledAt: this.#sync.lastReconciledAt,
       webhookHealth: this.#webhooks.health,
       githubCalls: this.githubCalls.summary(GITHUB_CALL_SUMMARY_MS),
     });
@@ -4176,52 +2413,6 @@ export class ConveyorService {
     return { status, stageId };
   }
 
-  private async scheduledAnswerQuestion(runId: string, questionId: string, answer: string, evidence: string): Promise<void> {
-    const question = this.store.getQuestion(questionId);
-    if (!question) throw new Error("question not found");
-    const check = this.#scheduledOperatorChecks.get(runId);
-    if (!check?.targets.has(question.issueId)) throw new Error("scheduled checks may answer only questions for their stopped targets");
-    if (!check.inspected.has(question.issueId)) throw new Error("inspect the item's history before answering it");
-    const issue = this.store.getIssue(question.issueId);
-    const repository = issue && this.config.repositories[issue.repositoryId];
-    if (!issue || !repository || issue.projectedState === "unlisted") throw new Error("question belongs to an ineligible board item");
-    let evidenceText: string | undefined;
-    try {
-      const live = await this.itemSource.getIssue(repository.address, issue.sourceNumber);
-      evidenceText = evidence.trim();
-      if (!evidenceText) throw new Error("scheduled answer evidence must not be blank");
-      const sources = [live.title, live.body, ...criteriaOf(live.body).map((criterion) => criterion.text), ...this.store.listConversationMessages(issue.id).map((message) => message.message)];
-      if (!sources.some((text) => text.includes(evidenceText!))) {
-        throw new Error("scheduled answers require an unambiguous quote from current issue content, acceptance criteria, or recorded conversation");
-      }
-      const response = scheduledQuestionAnswerEvidence(question, answer, evidenceText, sources);
-      await this.answerQuestion(questionId, response, `scheduled-operator:${runId}`, evidenceText);
-      this.store.appendRunEvent(runId, "operator.answer", { questionId, issueId: issue.id, evidence: evidenceText });
-      check.outcomes.set(issue.id, {
-        outcome: "answered",
-        reason: `Answered question ${questionId} from recorded evidence.`,
-        evidence: evidenceText,
-      });
-    } catch (error) {
-      check.outcomes.set(issue.id, {
-        outcome: "unresolved",
-        reason: error instanceof Error ? error.message : String(error),
-        ...(evidenceText ? { evidence: evidenceText } : {}),
-      });
-      throw error;
-    }
-  }
-
-  private reportScheduledOutcome(runId: string, issueId: string, reason: string): void {
-    const check = this.#scheduledOperatorChecks.get(runId);
-    if (!check?.targets.has(issueId)) throw new Error("scheduled checks may report only their stopped targets");
-    if (!check.inspected.has(issueId)) throw new Error("inspect the item's history before reporting its outcome");
-    if (check.outcomes.has(issueId)) throw new Error("scheduled outcome is already recorded for this target");
-    const message = reason.trim();
-    if (!message) throw new Error("scheduled outcome reason must not be blank");
-    check.outcomes.set(issueId, { outcome: "unresolved", reason: message });
-  }
-
   /**
    * Whether an agent is running for the item right now: the item executes (or has a live run in)
    * a stage whose runner is an agent, not a script, a gate-only pass or a source action.
@@ -4292,10 +2483,7 @@ export class ConveyorService {
 
   /** Reconciled at least once, not stopping, and every repository onboarded and reconciling. */
   isReady(): boolean {
-    return Boolean(this.#lastReconciledAt) && !this.#shuttingDown &&
-      (!this.#startupStarted || this.#startupCompleted) && !this.#startupRunning &&
-      !this.#startupFailed &&
-      this.#repositoryErrors.size === 0 && this.#onboardingErrors.size === 0;
+    return !this.#shuttingDown && this.#sync.ready();
   }
 
   /** Stops admitting new work; running work continues. Idempotent: the first reason is kept. */
@@ -4321,7 +2509,7 @@ export class ConveyorService {
   activeWork(): ActiveWork {
     return {
       items: [...this.#active.entries()].map(([issueId, active]) => ({ issueId, repositoryId: active.repositoryId, stageId: active.stageId })),
-      steering: this.#steeringActive.size,
+      steering: this.#steering.running,
     };
   }
 
