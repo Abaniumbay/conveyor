@@ -323,11 +323,13 @@ describeSandbox("runCodexCheck", () => {
     // The process records its paths and whether they exist while it runs; a run that timed out before
     // the process started is repeated with a longer timeout, so no fixed delay decides whether it ran.
     const slowSource = `
-      import { existsSync } from "node:fs";
-      await Bun.write(process.env.CAPTURE!, JSON.stringify({
+      import { existsSync, renameSync } from "node:fs";
+      // Written then renamed, so the capture file never exists half-written.
+      await Bun.write(process.env.CAPTURE! + ".tmp", JSON.stringify({
         tmpdir: process.env.TMPDIR, home: process.env.HOME,
         existedWhileRunning: existsSync(process.env.TMPDIR!) && existsSync(process.env.HOME!),
       }));
+      renameSync(process.env.CAPTURE! + ".tmp", process.env.CAPTURE!);
       await Bun.sleep(${CLEANUP_HANG_GUARD_MS});
     `;
     let timeoutPaths: { tmpdir: string; home: string; existedWhileRunning: boolean } | undefined;
@@ -342,7 +344,10 @@ describeSandbox("runCodexCheck", () => {
     expect(existsSync(timeoutPaths.home)).toBe(false);
 
     const interrupted = await fixture(`
-      await Bun.write(process.env.CAPTURE!, JSON.stringify({ tmpdir: process.env.TMPDIR, home: process.env.HOME }));
+      import { renameSync } from "node:fs";
+      // Written then renamed, so the capture file never exists half-written.
+      await Bun.write(process.env.CAPTURE! + ".tmp", JSON.stringify({ tmpdir: process.env.TMPDIR, home: process.env.HOME }));
+      renameSync(process.env.CAPTURE! + ".tmp", process.env.CAPTURE!);
       await Bun.sleep(${CLEANUP_HANG_GUARD_MS});
     `);
     const controller = new AbortController();
