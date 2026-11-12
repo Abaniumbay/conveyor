@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 import { defineGroup, fail, pass, type TaskDefinition } from "./contract";
-import type { TaskDeps } from "./deps";
+import type { TaskDeps, TaskStore } from "./deps";
 import { summarizeTodos, type TodoItem } from "../db/todos";
 
 const MAX_UNFINISHED_ITEMS = 40;
@@ -24,7 +24,12 @@ export const todoUpdateInput = z.object({
   note: z.string().trim().max(500).optional(),
 }).strict().refine((input) => input.status !== undefined || input.note !== undefined, "give a status, a note or both");
 
-type Deps = TaskDeps;
+/** What the todo group uses: the item's todo list and the run that changes it. */
+export interface TodoTaskDeps extends Pick<TaskDeps, "issueId" | "run" | "clock"> {
+  store: Pick<TaskStore, "todos">;
+}
+
+type Deps = TodoTaskDeps;
 
 const todosOf = (deps: Deps) => deps.store.todos();
 const now = (deps: Deps) => (deps.clock?.() ?? new Date()).toISOString();
@@ -147,4 +152,4 @@ const update: TaskDefinition<unknown, z.output<typeof todoUpdateInput>, Deps> = 
   },
 };
 
-export const todoGroup = defineGroup("todo", [get, set, update]);
+export const todoGroup = defineGroup<TodoTaskDeps>("todo", [get, set, update]);

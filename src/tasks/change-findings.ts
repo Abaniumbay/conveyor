@@ -10,9 +10,19 @@ import { DEFAULT_FINDING_TYPE, FINDING_TYPES, type Finding } from "../db/review-
 import { threadIsOpen } from "../db/review-threads";
 import type { ChangeContext } from "./context";
 import { fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
-import type { TaskDeps } from "./deps";
+import type { TaskDeps, TaskStore } from "./deps";
 
-type Deps = TaskDeps;
+/** What the finding tasks of the change group use: findings, review threads, their source mutations and the code host's review projection. */
+export interface ChangeFindingsDeps extends Pick<TaskDeps, "config" | "repository" | "issueId" | "run" | "clock"> {
+  store: Pick<TaskStore,
+    | "findings" | "reviewThreads" | "getCurrentPullRequest"
+    | "beginSourceMutation" | "completeSourceMutation" | "failSourceMutation" | "getSourceMutationByKey">;
+  codeHost?: Pick<CodeHost,
+    | "getChange" | "getChangeDelivery" | "createFinding" | "resolveNativeFinding" | "resolveFindingProjection"
+    | "listReviewArtifacts" | "listReviewThreadStates"> | null;
+}
+
+type Deps = ChangeFindingsDeps;
 
 const NO_CHANGE = "No change request exists yet";
 
@@ -46,7 +56,7 @@ function actorOf(name: string, args: { actor?: string; deps: Deps }): string {
   return actor;
 }
 
-function codeHostOf(deps: Deps): CodeHost {
+function codeHostOf(deps: Deps): NonNullable<Deps["codeHost"]> {
   if (!deps.codeHost) throw new Error(`no code host configured for ${deps.issueId}`);
   return deps.codeHost;
 }

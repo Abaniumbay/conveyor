@@ -8,7 +8,7 @@ import { z } from "zod";
 import { issueTopic } from "../events/topics";
 import type { ItemContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
-import type { TaskDeps } from "./deps";
+import type { TaskDeps, TaskStore } from "./deps";
 import { ToolRequestError } from "./errors";
 import {
   resolveFieldValues,
@@ -23,7 +23,7 @@ import {
   renderRefinementSection,
   upsertManagedSection,
 } from "../source/managed-sections";
-import type { SourceIssue } from "../source/types";
+import type { ItemComments, ItemMarkers, ItemMetadata, ItemReader, ItemRelations, ItemSections, ItemTitles, SourceIssue } from "../source/types";
 
 export const acceptanceCriterionInput = z.object({
   id: z.string().min(1),
@@ -112,7 +112,13 @@ export function criteriaFromBody(body: string): string[] {
   return parseCriteria(body).map((criterion) => criterion.text);
 }
 
-type Deps = TaskDeps;
+/** What the item group uses: the stored item and its relations, and the item source's write ports. */
+export interface ItemTaskDeps extends Pick<TaskDeps, "config" | "repository" | "issueId" | "sourceGuidance" | "clock"> {
+  store: Pick<TaskStore, "getIssue" | "listIssues" | "listChildren" | "listDependencies" | "replaceRelationships" | "setIssueMetadata" | "upsertIssue" | "getCurrentPullRequest" | "getActiveWorkspace">;
+  items: Pick<ItemReader, "getIssue"> & ItemComments & ItemSections & ItemRelations & ItemMarkers & ItemTitles & ItemMetadata;
+}
+
+type Deps = ItemTaskDeps;
 type Args<I = unknown> = TaskArgs<unknown, I, Deps>;
 
 function noSplitContext(label: string) {
@@ -816,7 +822,7 @@ const createChild = tool("item.createChild",
     };
   });
 
-export const itemGroup = defineGroup("item", [
+export const itemGroup = defineGroup<ItemTaskDeps>("item", [
   load, criteriaDefined, labelsValid, childrenValid, refinementComplete, dependenciesMet, followUps, issueClosed,
   get, guidance, listOpen, comment, setCriteria, setTitle, setSystemLabels, setParent, setDependencies,
   setType, setFields, setRefinement, addFollowUp, createChild,

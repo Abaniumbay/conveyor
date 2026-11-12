@@ -3,11 +3,11 @@ import { z } from "zod";
 
 import type { ItemContext } from "./context";
 import { defineGroup, fail, pass, type TaskArgs, type TaskDefinition } from "./contract";
-import type { TaskDeps } from "./deps";
+import type { TaskDeps, TaskStore } from "./deps";
 import { ToolRequestError } from "./errors";
 import { criteriaOf } from "./item";
 import { formatDependencies, parseManagedSections, renderAcceptanceCriteriaSection, upsertManagedSection } from "../source/managed-sections";
-import type { SourceIssue } from "../source/types";
+import type { ItemMarkers, ItemReader, ItemRelations, ItemSections, ItemTitles, SourceIssue } from "../source/types";
 
 const entryId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
 const criterion = z.object({ id: entryId, text: z.string().trim().min(1) }).strict();
@@ -32,7 +32,13 @@ const storedPlan = z.discriminatedUnion("decision", [
 type PlanInput = z.infer<typeof planInput>;
 export type BreakdownPlan = z.infer<typeof storedPlan>;
 type Entry = z.infer<typeof entry>;
-type Deps = TaskDeps;
+/** What the breakdown group uses: the stored item and its relations, and the item source's write ports. */
+export interface BreakdownTaskDeps extends Pick<TaskDeps, "config" | "repository" | "issueId"> {
+  store: Pick<TaskStore, "getIssue" | "listIssues" | "listDependencies" | "replaceRelationships" | "upsertIssue">;
+  items: Pick<ItemReader, "getIssue"> & ItemSections & Pick<ItemRelations, "createChildIssue" | "setDependencies"> & ItemMarkers & ItemTitles;
+}
+
+type Deps = BreakdownTaskDeps;
 type Args<I = unknown> = TaskArgs<unknown, I, Deps>;
 
 export function renderBreakdownPlan(plan: BreakdownPlan): string {
@@ -319,4 +325,4 @@ const createChildren = tool("breakdown.createChildren", "Create exactly the appr
   return { decision: "split", children: plan.entries.map((candidate) => ({ entryId: candidate.id, number: created.get(candidate.id)!.number })) };
 });
 
-export const breakdownGroup = defineGroup("breakdown", [planComplete, reviewed, complete, setPlan, reviewPlan, createChildren]);
+export const breakdownGroup = defineGroup<BreakdownTaskDeps>("breakdown", [planComplete, reviewed, complete, setPlan, reviewPlan, createChildren]);
