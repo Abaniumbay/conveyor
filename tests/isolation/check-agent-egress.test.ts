@@ -5,7 +5,7 @@ import path from "node:path";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
-import { claudeCodeChecks, judgeLiveOutput, liveArguments, liveHosts, livePrompt, loadCheckConfig, runLiveClaudeCheck, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
+import { claudeCodeChecks, judgeLiveOutput, liveArguments, liveHosts, liveModeNote, livePrompt, loadCheckConfig, runLiveClaudeCheck, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
@@ -226,5 +226,12 @@ describeSandbox("egress checks run in the real sandbox", () => {
       expect(result.exitCode).toBe(0);
       expect(result.passed).toBe(false);
     }
+  });
+});
+
+describe("liveModeNote", () => {
+  test("states the real CLI was not exercised without --live and prints nothing with it", () => {
+    expect(liveModeNote(false)).toMatch(/real Claude Code CLI was not exercised.*--live/);
+    expect(liveModeNote(true)).toBeUndefined();
   });
 });

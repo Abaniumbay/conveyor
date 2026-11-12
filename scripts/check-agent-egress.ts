@@ -211,6 +211,11 @@ async function runClaudeCodeCheck(options: {
 
 export interface LiveHosts { allowed: string; refused: string }
 
+/** The line printed when the real Claude Code CLI was not run (no `--live`); nothing under `--live`. */
+export function liveModeNote(live: boolean): string | undefined {
+  return live ? undefined : "NOTE the real Claude Code CLI was not exercised; run again with --live before turning on agentEgress for Claude Code agents";
+}
+
 /** The hosts the live check probes: the first non-control `httpsHosts` entry, and one outside `httpsHosts`. */
 export function liveHosts(options: { httpsHosts: readonly string[]; controlPlaneHosts: readonly string[] }): LiveHosts | undefined {
   const allowed = options.httpsHosts.find((host) => !options.controlPlaneHosts.includes(host));
@@ -370,8 +375,9 @@ async function main(): Promise<number> {
         console.log(`${result.passed ? "PASS" : "FAIL"} ${check.name}${result.passed ? "" : ` (exit ${result.exitCode})`}`);
         if (!result.passed) console.log(result.output.split("\n").slice(-15).join("\n"));
       }
-      if (!live) {
-        console.log("NOTE the real Claude Code CLI was not exercised; run again with --live before turning on agentEgress for Claude Code agents");
+      const note = liveModeNote(live);
+      if (note) {
+        console.log(note);
       } else {
         const hosts = liveHosts({ httpsHosts: repository.agentEgress.httpsHosts, controlPlaneHosts });
         if (!hosts) throw new Error("--live needs an httpsHosts entry that is not a control-plane host");
