@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 
+import { STOP_SUMMARY_MAX_LENGTH } from "../db/store";
 import { defineGroup, pass, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 
@@ -36,6 +37,11 @@ const answerInput = z.object({
 const scheduledOutcomeInput = z.object({
   itemId: z.string().min(1),
   reason: z.string().min(1).max(4_000),
+}).strict();
+const stopSummaryInput = z.object({
+  itemId: z.string().min(1),
+  stopId: z.string().min(1),
+  summary: z.string().trim().min(1).max(STOP_SUMMARY_MAX_LENGTH),
 }).strict();
 const moveInput = z.object({
   itemId: z.string().min(1),
@@ -186,6 +192,21 @@ const reportStoppedItemOutcome: TaskDefinition<unknown, z.infer<typeof scheduled
   },
 };
 
+const recordStopSummary: TaskDefinition<unknown, z.infer<typeof stopSummaryInput>, Deps> = {
+  name: "operator.recordStopSummary",
+  kind: "tool",
+  description: `Record a short advice summary (at most ${STOP_SUMMARY_MAX_LENGTH} characters) of the item's current stop. Only for the item and stop this run was started for. It never changes the item's stage, state, labels or stop reason.`,
+  reads: [], writes: [], invalidates: [], input: stopSummaryInput, mutating: true,
+  run({ deps, input }) {
+    const scope = operator(deps).stopSummary;
+    if (!scope) throw new Error("operator.recordStopSummary requires a stop-summary Operator run");
+    if (input!.itemId !== scope.itemId) throw new Error("operator.recordStopSummary: this run was started for another item");
+    if (input!.stopId !== scope.stopId) throw new Error("operator.recordStopSummary: this run was started for another stop");
+    deps.store.recordStopSummary({ issueId: scope.itemId, stopId: scope.stopId, summary: input!.summary });
+    return pass({ itemId: scope.itemId, stopId: scope.stopId, action: "record-stop-summary", status: "recorded" });
+  },
+};
+
 export const OPERATOR_STEERING_TOOLS = new Set([
   "operator.getBoard",
   "operator.findItem",
@@ -195,6 +216,7 @@ export const OPERATOR_STEERING_TOOLS = new Set([
   "operator.retryStoppedItem",
   "operator.answerItemQuestion",
   "operator.reportStoppedItemOutcome",
+  "operator.recordStopSummary",
 ]);
 
 export const operatorGroup = defineGroup("operator", [
@@ -206,4 +228,5 @@ export const operatorGroup = defineGroup("operator", [
   scheduledRetry,
   answerQuestion,
   reportStoppedItemOutcome,
+  recordStopSummary,
 ]);

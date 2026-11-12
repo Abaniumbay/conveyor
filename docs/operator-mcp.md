@@ -49,3 +49,14 @@ A tool module under `src/operator-mcp/tools/` exports `{ name, description, inpu
 (use `defineOperatorTool`) and is registered with one line in `src/operator-mcp/registry.ts`. The
 handler receives `{ input, facade }`: read service state through `facade` and make every change with
 `facade.dispatch`, which goes through the command bus. A handler never sees an HTTP request.
+
+## Stop summary
+
+A stop-summary Operator run records a short summary of one item's current stop with the task
+`operator.recordStopSummary` (`itemId`, `stopId`, `summary`). The tool is granted only to a run started for
+exactly that item and stop: a call naming another item or another stop is refused. A summary is 1 to 600
+characters; a longer one is refused. The record is advice only. It never changes the item's stage, state,
+labels or recorded stop reason, and gates and routing never read it. It is kept one per item, and
+`currentStopSummary(itemId)` returns it only while its stop is the item's current one: after the item
+resumes and stops again the read returns nothing until a new summary is recorded. Recording appends the
+event `item.stopSummaryRecorded`, which carries the stop id and never the summary text.

@@ -73,6 +73,8 @@ export interface TaskDeps {
   operator?: {
     /** True only for a cadence-triggered Operator run. */
     scheduled?: boolean;
+    /** Set only for a stop-summary Operator run: the one item and stop it was started for. */
+    stopSummary?: { itemId: string; stopId: string };
     board: () => unknown;
     findItem: (reference: string) => unknown;
     itemHistory: (input: {

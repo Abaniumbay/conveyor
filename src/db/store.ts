@@ -11,6 +11,9 @@ import { EventThrottle } from "../events/throttle";
 import type { GitHubMirrorStorage } from "../plugins/github/shared/read-cache";
 import { migrations } from "./migrations";
 
+/** The longest stop summary the Operator may record, in characters. */
+export const STOP_SUMMARY_MAX_LENGTH = 600;
+
 export interface RepositoryRecord {
   id: string;
   configName: string;
@@ -1982,6 +1985,44 @@ export class ConveyorStore {
       .get(id) as { issue_id: string; kind: string; from_stage: string | null; to_stage: string | null } | null;
     if (!row) return;
     this.#events.append("journey.recorded", { transitionId: id, kind: row.kind, fromStage: row.from_stage, toStage: row.to_stage, status }, { issueId: row.issue_id });
+  }
+
+  /** The id of the item's current stop: its latest completed transition, when that one is a stop. */
+  currentStopId(issueId: string): string | null {
+    const row = this.#database
+      .query("SELECT id, kind FROM stage_transitions WHERE issue_id = ? AND status = 'completed' ORDER BY created_at DESC, id DESC LIMIT 1")
+      .get(issueId) as { id: string; kind: string } | null;
+    return row?.kind === "stopped" ? row.id : null;
+  }
+
+  /**
+   * Records the Operator's summary of one stop of an item, replacing an earlier one. Advice only: it
+   * changes nothing else about the item. Refused when `stopId` is not the item's current stop.
+   */
+  recordStopSummary(input: { issueId: string; stopId: string; summary: string }): void {
+    const summary = input.summary.trim();
+    if (summary.length === 0) throw new Error("A stop summary cannot be empty");
+    if (summary.length > STOP_SUMMARY_MAX_LENGTH) throw new Error(`A stop summary is at most ${STOP_SUMMARY_MAX_LENGTH} characters`);
+    this.#database.transaction(() => {
+      if (this.currentStopId(input.issueId) !== input.stopId) throw new Error(`Stop ${input.stopId} is not the current stop of ${input.issueId}`);
+      this.#database
+        .query(
+          `INSERT INTO item_stop_summaries(issue_id, stop_id, summary, recorded_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(issue_id) DO UPDATE SET stop_id = excluded.stop_id, summary = excluded.summary, recorded_at = excluded.recorded_at`,
+        )
+        .run(input.issueId, input.stopId, summary, now());
+      this.#events.append("item.stopSummaryRecorded", { stopId: input.stopId }, { issueId: input.issueId });
+    })();
+  }
+
+  /** The summary recorded for the item's current stop; null when none was, or the item has moved on. */
+  currentStopSummary(issueId: string): string | null {
+    const stopId = this.currentStopId(issueId);
+    if (stopId === null) return null;
+    const row = this.#database
+      .query("SELECT summary FROM item_stop_summaries WHERE issue_id = ? AND stop_id = ?")
+      .get(issueId, stopId) as { summary: string } | null;
+    return row?.summary ?? null;
   }
 
   listStageTransitions(issueId: string): StoredStageTransition[] {
