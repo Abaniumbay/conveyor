@@ -2,12 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { ItemPurges } from "../../src/app/purge";
 import { GitHubIssueGoneError, GitHubTransportError } from "../../src/plugins/github/shared/adapter";
 import { ItemTodos } from "../../src/db/todos";
 import { WorkspaceManager } from "../../src/workspace/manager";
 import { createWorkspace } from "../../src/workspace/lifecycle";
 import { deliveryWorld, git, type DeliveryWorld } from "../support/delivery-world";
 import { dashboardViews } from "../support/dashboard";
+import { itemWorld, type ItemWorld } from "../support/item-world";
 
 let world: DeliveryWorld | null = null;
 afterEach(async () => { await world?.close(); world = null; });
@@ -337,4 +339,89 @@ describe("an `only` refresh that reads an enrolled issue by number", () => {
       expect(w.store.isPurging("issue")).toBe(false);
     });
   }
+});
+
+describe("item purges", () => {
+  let opened: ItemWorld | null = null;
+  afterEach(async () => { await opened?.close(); opened = null; });
+
+  async function setup(options: { shuttingDown?: boolean; failRemoval?: () => boolean } = {}) {
+    const items = await itemWorld();
+    opened = items;
+    const calls = { interrupted: [] as string[], waited: [] as string[], removed: [] as Array<{ workspacePath: string; branch: string; deleteBranch?: boolean }>, scheduled: 0 };
+    const purges = new ItemPurges({
+      config: { repositories: items.config.repositories, artifacts: items.config.settings.artifacts },
+      store: items.store,
+      source: items.items.client,
+      workspaces: () => ({
+        remove: async (input) => {
+          if (options.failRemoval?.()) throw new Error("worktree is locked");
+          calls.removed.push({ workspacePath: input.workspacePath, branch: input.branch, ...(input.deleteBranch !== undefined ? { deleteBranch: input.deleteBranch } : {}) });
+        },
+      }),
+      interrupt: (issueId) => { calls.interrupted.push(issueId); },
+      runsEnded: async (issueIds) => { calls.waited.push(...issueIds); },
+      shuttingDown: () => options.shuttingDown ?? false,
+      schedule: () => { calls.scheduled += 1; },
+    });
+    items.items.add(1, ["conveyor", "conveyor:implementation"]);
+    const issueId = items.seed(1, { stage: "implementation", state: "active" });
+    const enrollment = items.store.activateEnrollment(issueId);
+    items.store.recordWorkspace({ id: "w1", enrollmentId: enrollment.id, path: path.join(items.root, "ws"), branch: "conveyor/1", status: "active" });
+    items.store.createRun({ id: "run-1", issueId, stageId: "implementation", attempt: 1, kind: "producer", status: "completed", configHash: "config-hash", startedAt: new Date().toISOString() });
+    mkdirSync(path.join(items.config.settings.artifacts, "run-1"), { recursive: true });
+    return { items, purges, calls, issueId };
+  }
+
+  test("stops the run, removes the workspace, branch and run artifacts, then deletes the item", async () => {
+    const { items, purges, calls, issueId } = await setup();
+    const purge = purges.purge(issueId);
+    expect(calls.interrupted).toEqual([issueId]);
+    expect(items.store.getIssue(issueId)?.projectedState).toBe("unlisted");
+    expect(purges.busy).toBe(true);
+    expect(purges.purge(issueId)).toBe(purge);
+    await purge;
+    expect(calls.waited).toEqual([issueId]);
+    expect(calls.removed).toEqual([{ workspacePath: path.join(items.root, "ws"), branch: "conveyor/1", deleteBranch: true }]);
+    expect(existsSync(path.join(items.config.settings.artifacts, "run-1"))).toBe(false);
+    expect(items.store.getIssue(issueId)).toBeNull();
+    expect(items.store.isPurging(issueId)).toBe(false);
+    expect(items.items.forgotten).toEqual([1]);
+    expect(calls.scheduled).toBe(1);
+    expect(purges.busy).toBe(false);
+  });
+
+  test("an unknown item has nothing to purge", async () => {
+    const { purges, calls } = await setup();
+    await purges.purge("missing");
+    expect(calls.interrupted).toEqual([]);
+  });
+
+  test("a paused repository or a failed removal leaves the purge for a later resume", async () => {
+    let failing = true;
+    const { items, purges, calls, issueId } = await setup({ failRemoval: () => failing });
+    items.store.pauseRepository("repo", "maintainer", null);
+    await purges.purge(issueId);
+    expect(calls.removed).toEqual([]);
+    expect(items.store.isPurging(issueId)).toBe(true);
+
+    items.store.resumeRepository("repo");
+    purges.resume();
+    await purges.settled();
+    expect(items.store.isPurging(issueId)).toBe(true);
+    expect(items.store.getIssue(issueId)).not.toBeNull();
+
+    failing = false;
+    purges.resume();
+    await purges.settled();
+    expect(items.store.getIssue(issueId)).toBeNull();
+    expect(items.store.listPendingPurges()).toEqual([]);
+  });
+
+  test("a shutdown leaves the workspace and the rows in place", async () => {
+    const { items, purges, calls, issueId } = await setup({ shuttingDown: true });
+    await purges.purge(issueId);
+    expect(calls.removed).toEqual([]);
+    expect(items.store.isPurging(issueId)).toBe(true);
+  });
 });
