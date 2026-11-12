@@ -6,6 +6,7 @@ import path from "node:path";
 import { InfrastructureError } from "../../src/tasks/contract";
 import { IssueExecutor } from "../../src/app/issue-executor";
 import { ConveyorService } from "../../src/app/service";
+import { deliveryWorld } from "../support/delivery-world";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 
@@ -97,23 +98,25 @@ describe("infrastructure failures", () => {
     }
   });
 
-  test("a sandbox setup failure is retried with the same backoff and the stop reason names the sandbox error", async () => {
-    const { service, store, labels, execute, internals } = await setup();
-    const delays: number[] = [];
-    internals.retryLater = (_issueId: string, delayMs: number) => { delays.push(delayMs); };
+  test("a sandbox setup failure is retried like other infrastructure failures and the stop reason names the sandbox error", async () => {
     const error = new InfrastructureError("Codex sandbox could not start commands: bwrap: No permissions to create a new namespace");
-    const spy = spyOn(IssueExecutor.prototype, "execute").mockRejectedValue(error);
+    const world = await deliveryWorld({ agentFailure: error });
     try {
-      await execute(store.getIssue("issue")!);
-      await execute(store.getIssue("issue")!);
-      expect(delays).toEqual([1_000, 2_000]);
-      await execute(store.getIssue("issue")!);
-      expect(labels).toEqual([["conveyor", "conveyor:error", "conveyor:implementation"]]);
-      const notes = store.listConversationMessages("issue").map((message) => message.message);
-      expect(notes[0]).toContain("bwrap: No permissions to create a new namespace");
+      const attempts = world.config.settings.retries.infrastructureAttempts;
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        await world.step();
+        expect(world.store.getIssue("issue")!.warning).toContain("will retry");
+        expect(world.labelWrites).toEqual([]);
+        // The backoff timer's resume: the stage is ready to run again.
+        world.store.setStageState({ issueId: "issue", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: world.config.hash });
+      }
+      await world.step();
+      expect(world.agentRuns.length).toBeGreaterThan(0);
+      expect(world.labelWrites.at(-1)).toContain("conveyor:error");
+      const notes = world.store.listConversationMessages("issue").map((message) => message.message);
+      expect(notes.at(-1)).toContain("bwrap: No permissions to create a new namespace");
     } finally {
-      spy.mockRestore();
-      await service.close();
+      await world.close();
     }
   });
 
