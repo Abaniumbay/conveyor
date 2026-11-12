@@ -175,7 +175,15 @@ refused.
 For a Claude Code runner add `--runner <runner-id>`: it launches probes the way the runner does and
 reports that the process reaches its control-plane host (`controlPlaneHosts` on the runner, default
 Anthropic's hosts) and no other, that its commands reach only `httpsHosts`, and that `api.github.com`
-and direct IP connections are refused.
+and direct IP connections are refused. Commands are launched as `"$CLAUDE_CODE_SHELL_PREFIX" <command>`,
+the way Claude Code runs them: the prefix is the path of one per-run wrapper script, never a command line.
+
+Against an installed home, whose `conveyor.yaml` uses `!include builtin:…`, pass the home so the
+built-in includes resolve:
+
+```sh
+bun scripts/check-agent-egress.ts <repository-id> --config ~/.conveyor/config/conveyor.yaml --home ~/.conveyor --runner <runner-id>
+```
 
 ## 5. First run
 
