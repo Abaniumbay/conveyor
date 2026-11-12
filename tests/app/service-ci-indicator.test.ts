@@ -12,6 +12,7 @@ import { ConveyorStore } from "../../src/db/store";
 import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID } from "../../src/engine/stage-executor";
 import { ConsoleSink, log } from "../../src/log/logger";
 import type { GitHubAdapter } from "../../src/plugins/github/shared/adapter";
+import { githubPlugins } from "../support/plugins";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -101,7 +102,7 @@ repositories:
       return statusComments.length;
     },
   };
-  const service = new ConveyorService(config, store, github as never);
+  const service = new ConveyorService(config, store, github as never, { plugins: githubPlugins(config, github as never) });
   service.drain("tests: nothing executes");
   const internals = service as unknown as {
     ciProvider: () => CiProvider;
@@ -125,7 +126,7 @@ repositories:
   const card = () => service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
   const reopen = async () => {
     const reopenedStore = await ConveyorStore.open(config.settings.database);
-    const reopenedService = new ConveyorService(config, reopenedStore, github as never);
+    const reopenedService = new ConveyorService(config, reopenedStore, github as never, { plugins: githubPlugins(config, github as never) });
     reopenedService.drain("tests: nothing executes");
     const reopenedInternals = reopenedService as unknown as {
       ciProvider: () => CiProvider;

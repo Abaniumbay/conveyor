@@ -10,6 +10,7 @@ import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 import { GitHubTransportError } from "../../src/plugins/github/shared/adapter";
+import { githubPlugins } from "../support/plugins";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -69,7 +70,7 @@ async function service(options: { webhooks?: boolean; deliveries?: () => Deliver
     store.upsertRepository({ id: "app", configName: "app", source: "github", address: "owner/app", folder: root, configHash: "h" });
     store.upsertIssue({ id: "github:owner/app#1", repositoryId: "app", sourceNumber: 1, sourceUrl: "https://example.com/1", title: "Open", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: options.storedIssueChangedAt });
   }
-  const conveyor = new ConveyorService(config, store, github as never);
+  const conveyor = new ConveyorService(config, store, github as never, { plugins: githubPlugins(config, github as never) });
   conveyor.drain("tests: nothing executes");
   await conveyor.onboardRepositories();
   calls.visibility = 0;

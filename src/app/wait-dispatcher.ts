@@ -26,11 +26,11 @@ export class WaitDispatcher {
 
   /** The topics an event concerns. */
   topicsFor(event: StoredEvent): string[] {
-    if (isEventOf(event, "github.ciUpdated")) {
+    if (isEventOf(event, "ci.runUpdated")) {
       // Progress does not change what a CI wait decides; only a finished run or suite does.
       return event.payload.completed ? [ciTopic(event.payload.repository, event.payload.sha)] : [];
     }
-    if (isEventOf(event, "github.changeUpdated")) {
+    if (isEventOf(event, "code.changeUpdated")) {
       return CHANGE_ACTIONS.has(event.payload.action) ? [changeTopic(event.payload.repository, event.payload.number)] : [];
     }
     // A blocker counts once the projection has its new state, so the projection's events wake

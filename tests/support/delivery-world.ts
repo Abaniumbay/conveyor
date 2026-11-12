@@ -16,7 +16,7 @@ import { ConveyorService } from "../../src/app/service";
 import { CodeHostRegistry } from "../../src/codehost/registry";
 import type { ChangeDelivery, ChangeRequest, CodeHost } from "../../src/codehost/types";
 import { loadConfig } from "../../src/config/load";
-import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry } from "../../src/core/plugins";
+import { DEFAULT_CI_TYPE } from "../../src/core/plugins";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 import { CriterionApprovals, criterionTextHash } from "../../src/engine/review-records";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
@@ -382,7 +382,7 @@ export async function deliveryWorld(options: {
   // The public lifecycle reads CI from the simulated GitHub; otherwise the fake CI provider answers.
   const plugins = options.publicLifecycle
     ? githubPlugins(config, observed as never)
-    : new PluginRegistry([{ role: "ci", type: DEFAULT_CI_TYPE, create: () => provider }], pluginContext(config));
+    : githubPlugins(config, observed as never, undefined, [{ role: "ci", type: DEFAULT_CI_TYPE, create: () => provider }]);
   const service = new ConveyorService(config, store, observed as never, {
     plugins,
     harnesses: { codex: harness, "claude-code": harness },
