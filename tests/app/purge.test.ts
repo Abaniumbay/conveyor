@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import { GitHubIssueGoneError, GitHubTransportError } from "../../src/source/github/adapter";
+import { GitHubIssueGoneError, GitHubTransportError } from "../../src/plugins/github/shared/adapter";
 import { ItemTodos } from "../../src/engine/todos";
 import { WorkspaceManager } from "../../src/workspace/manager";
 import { createWorkspace } from "../../src/workspace/lifecycle";

@@ -9,8 +9,9 @@ import { CodeHostRegistry } from "../../src/codehost/registry";
 import type { CodeHost } from "../../src/codehost/types";
 import { loadConfig, type ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
-import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
+import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
 import { renderDashboard } from "../support/render-dashboard";
+import { githubPlugins } from "../support/plugins";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -216,7 +217,9 @@ repositories:
     async listReviewThreadStates() { return []; },
   };
   const transport = new NeverStartedCiTransport(annotation);
-  const service = new ConveyorService(config, store, new GitHubAdapter(transport, "conveyor"), {
+  const github = new GitHubAdapter(transport, "conveyor");
+  const service = new ConveyorService(config, store, github, {
+    plugins: githubPlugins(config, github),
     codeHosts: new CodeHostRegistry().register("github", codeHost),
   });
   return { service, transport };

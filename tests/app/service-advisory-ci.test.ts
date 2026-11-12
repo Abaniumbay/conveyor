@@ -7,7 +7,7 @@ import type { CiProvider, CiRun } from "../../src/app/ci-provider";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
-import type { GitHubAdapter } from "../../src/source/github/adapter";
+import type { GitHubAdapter } from "../../src/plugins/github/shared/adapter";
 
 const directories: string[] = [];
 afterEach(async () => {

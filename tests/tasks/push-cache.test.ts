@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
-import { GitHubCodeHost } from "../../src/source/github/codehost";
-import { GitHubReadCache } from "../../src/source/github/read-cache";
+import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
+import { GitHubCodeHost } from "../../src/plugins/github/code/codehost";
+import { GitHubReadCache } from "../../src/plugins/github/shared/read-cache";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { TaskDeps } from "../../src/tasks/deps";
 import { dispatchTool, type DispatchEnv } from "../../src/tasks/dispatch";

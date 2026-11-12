@@ -6,7 +6,7 @@ import path from "node:path";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
-import type { GitHubAdapter } from "../../src/source/github/adapter";
+import type { GitHubAdapter } from "../../src/plugins/github/shared/adapter";
 
 const directories: string[] = [];
 afterEach(async () => {

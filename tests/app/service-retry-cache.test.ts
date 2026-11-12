@@ -9,8 +9,8 @@ import { configSchema } from "../../src/config/schema";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
-import { GitHubAdapter, type GitHubIssue, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
-import { GitHubReadCache } from "../../src/source/github/read-cache";
+import { GitHubAdapter, type GitHubIssue, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
+import { GitHubReadCache } from "../../src/plugins/github/shared/read-cache";
 
 const directories: string[] = [];
 

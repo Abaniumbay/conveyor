@@ -19,20 +19,19 @@ export interface Violation {
 export type BoundaryRule = "implementation-import" | "plugin-import" | "sqlite-access";
 
 export const RULES: Record<BoundaryRule, string> = {
-  "implementation-import": "Only the composition root and the implementation itself may import a provider or harness implementation; everything else goes through a port (src/codehost/types.ts, src/app/ci-provider.ts, src/harness/types.ts, src/source/types.ts).",
+  "implementation-import": "Only the composition root and the implementation itself may import a provider or harness implementation; everything else goes through a port (src/codehost/types.ts, src/app/ci-provider.ts, src/harness/types.ts, src/source/types.ts, src/core/plugins.ts).",
   "plugin-import": "A plugin may not import another plugin; shared provider code lives in that provider's own folder.",
   "sqlite-access": "Only src/db may use SQLite directly; everything else goes through a store method.",
 };
 
-/** Provider and harness implementations: reached only through ports. */
+/** Provider and harness implementations (every plugin is one): reached only through ports. */
 const IMPLEMENTATIONS = [
-  /^src\/source\/github\//,
-  /^src\/harness\/(codex|claude-code)\.ts$/,
+  /^src\/plugins\/[^/]+\//,
   /^src\/runner\/(codex|codex-check|codex-steering|claude-code)\.ts$/,
 ];
 
 /** The composition root builds implementations and hands their ports to the core. */
-const COMPOSITION_ROOTS = new Set(["src/cli/commands/serve.ts"]);
+const COMPOSITION_ROOTS = new Set(["src/cli/commands/serve.ts", "src/plugins/index.ts"]);
 
 const SOURCE = /\.(ts|tsx)$/;
 

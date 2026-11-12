@@ -11,7 +11,7 @@ import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID } from "../../src/engine/stage-executor";
 import { ConsoleSink, log } from "../../src/log/logger";
-import type { GitHubAdapter } from "../../src/source/github/adapter";
+import type { GitHubAdapter } from "../../src/plugins/github/shared/adapter";
 
 const directories: string[] = [];
 afterEach(async () => {

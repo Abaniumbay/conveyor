@@ -4,11 +4,8 @@ import { releaseStateFile } from "../../release/state";
 import { createControlHandler, serveControlSocket, operatorItemTarget, status as controlStatus, type ControlInfo } from "../../control/server";
 import { ConsoleSink, FileSink, log, Redactor } from "../../log/logger";
 import { mcpSocketPath, serveMcpSocket } from "../../isolation/mcp-socket";
-import { GhCliTransport, GitHubAdapter } from "../../source/github/adapter";
-import { GitHubCallMeter, MeteredGitHubTransport } from "../../source/github/call-meter";
-import { RetryingGitHubTransport } from "../../source/github/retry";
-import { GitHubReadCache } from "../../source/github/read-cache";
-import { createGitHubCodeHostRegistry } from "../../source/github/codehost-registry";
+import { pluginContext, PluginRegistry } from "../../core/plugins";
+import { githubItems, PLUGINS } from "../../plugins";
 import { BUILD, versionLine } from "../../version";
 import { createWebAuth } from "../../web/auth";
 import { pushConfiguration } from "../../web/push";
@@ -90,10 +87,9 @@ export const serve: Command = {
       sinks: [new ConsoleSink(logging.format), new FileSink(config.settings.logs, logging.maxFileMegabytes * 1024 * 1024, logging.keepFiles)],
     });
     for (const warning of config.warnings ?? []) log.warn(warning);
-    const githubCalls = new GitHubCallMeter();
-    // Reads come from the cache; the meter counts only the requests that reach GitHub.
-    const github = new GitHubAdapter(new GitHubReadCache(new MeteredGitHubTransport(new RetryingGitHubTransport(new GhCliTransport()), githubCalls)), config.settings.labelPrefix);
-    const service = await ConveyorService.create(config, github, createGitHubCodeHostRegistry(config, github), githubCalls);
+    const plugins = new PluginRegistry(PLUGINS, pluginContext(config));
+    const { adapter: github, calls: githubCalls } = githubItems(plugins.context);
+    const service = await ConveyorService.create(config, github, { plugins, githubCalls });
     const bootstrapUsername = process.env.CONVEYOR_USERNAME;
     const bootstrapHash = process.env.CONVEYOR_PASSWORD_HASH;
     if (bootstrapUsername && bootstrapHash) service.seedDashboardSuperuser(bootstrapUsername, bootstrapHash);

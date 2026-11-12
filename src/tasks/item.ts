@@ -15,14 +15,14 @@ import {
   resolveIssueType,
   type IssueFieldDefinition,
   type ResolvedFieldValue,
-} from "../source/github/issue-metadata";
+} from "../plugins/github/items/issue-metadata";
 import {
   formatDependencies,
   parseManagedSections,
   renderAcceptanceCriteriaSection,
   renderRefinementSection,
   upsertManagedSection,
-} from "../source/github/managed-sections";
+} from "../plugins/github/shared/managed-sections";
 import type { SourceIssue } from "../source/types";
 
 export const acceptanceCriterionInput = z.object({

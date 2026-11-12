@@ -4,7 +4,7 @@
 import type { CodeHost } from "../codehost/types";
 import type { ConveyorConfig } from "../config/load";
 import type { ConveyorStore } from "../db/store";
-import type { GitHubAdapter } from "../source/github/adapter";
+import type { GitHubAdapter } from "../plugins/github/shared/adapter";
 import type { GitOps } from "../workspace/git";
 import type { WorkspaceLifecycleManager } from "../workspace/lifecycle";
 import type { RuntimeDeliveryState, ScopedMcpFactory } from "../app/runtime";

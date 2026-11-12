@@ -3,8 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { GitHubAdapter } from "../../src/source/github/adapter";
-import { GitHubCodeHost } from "../../src/source/github/codehost";
+import type { GitHubAdapter } from "../../src/plugins/github/shared/adapter";
+import { GitHubCodeHost } from "../../src/plugins/github/code/codehost";
 
 const roots: string[] = [];
 afterEach(async () => {

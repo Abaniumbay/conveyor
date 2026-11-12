@@ -13,11 +13,11 @@ import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
-import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
-import { GitHubCallMeter, MeteredGitHubTransport, currentGitHubCallSource, githubRoute } from "../../src/source/github/call-meter";
-import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-registry";
+import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
+import { GitHubCallMeter, MeteredGitHubTransport, currentGitHubCallSource, githubRoute } from "../../src/plugins/github/shared/call-meter";
+import { githubPlugins } from "../support/plugins";
 import { GitHubSimulator } from "../support/github-simulator";
-import { GitHubReadCache } from "../../src/source/github/read-cache";
+import { GitHubReadCache } from "../../src/plugins/github/shared/read-cache";
 import type { Harness } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST } from "../../src/runner/result";
 
@@ -171,7 +171,7 @@ async function scenario(
   seeded.close();
   if (options.restart) {
     // A first run that onboards everything and stops, so the measured start is a restart.
-    const first = await ConveyorService.create(w.config, w.github, createGitHubCodeHostRegistry(w.config, w.github), w.meter);
+    const first = await ConveyorService.create(w.config, w.github, { plugins: githubPlugins(w.config, w.github, w.meter), githubCalls: w.meter });
     first.start();
     await flush();
     jest.advanceTimersByTime(MINUTE);
@@ -186,11 +186,11 @@ async function scenario(
     await ensureRuntimeDirectories(w.config);
     const store = await ConveyorStore.open(w.config.settings.database);
     const harness = options.agent(() => service);
-    service = new ConveyorService(w.config, store, w.github, { codeHosts: createGitHubCodeHostRegistry(w.config, w.github), githubCalls: w.meter, harnesses: { codex: harness, "claude-code": harness } });
+    service = new ConveyorService(w.config, store, w.github, { plugins: githubPlugins(w.config, w.github, w.meter), githubCalls: w.meter, harnesses: { codex: harness, "claude-code": harness } });
     await service.onboardRepositories();
     await service.reconcileAll();
   } else {
-    service = await ConveyorService.create(w.config, w.github, createGitHubCodeHostRegistry(w.config, w.github), w.meter);
+    service = await ConveyorService.create(w.config, w.github, { plugins: githubPlugins(w.config, w.github, w.meter), githubCalls: w.meter });
   }
   const advance = async (ms: number) => {
     const step = 5_000;

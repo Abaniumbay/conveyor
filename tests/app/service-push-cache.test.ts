@@ -8,10 +8,11 @@ import { ConveyorService } from "../../src/app/service";
 import { CodeHostRegistry } from "../../src/codehost/registry";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
-import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
-import { GitHubCodeHost } from "../../src/source/github/codehost";
-import { GitHubReadCache } from "../../src/source/github/read-cache";
+import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
+import { GitHubCodeHost } from "../../src/plugins/github/code/codehost";
+import { GitHubReadCache } from "../../src/plugins/github/shared/read-cache";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
+import { githubPlugins } from "../support/plugins";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -102,7 +103,7 @@ repositories:
     };
     const github = new GitHubAdapter(new GitHubReadCache(transport), "conveyor");
     const codeHosts = new CodeHostRegistry().register("github", new GitHubCodeHost(github, undefined, { isTrusted: async () => true }));
-    const service = new ConveyorService(config, store, github, { codeHosts });
+    const service = new ConveyorService(config, store, github, { plugins: githubPlugins(config, github), codeHosts });
 
     const issue = store.getIssue("i1")!;
     const factory = (service as unknown as { mcpFactory(): ScopedMcpFactory }).mcpFactory();

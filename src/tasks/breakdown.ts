@@ -6,7 +6,7 @@ import { defineGroup, fail, pass, type TaskArgs, type TaskDefinition } from "./c
 import type { TaskDeps } from "./deps";
 import { ToolRequestError } from "./errors";
 import { criteriaOf } from "./item";
-import { formatDependencies, parseManagedSections, renderAcceptanceCriteriaSection, upsertManagedSection } from "../source/github/managed-sections";
+import { formatDependencies, parseManagedSections, renderAcceptanceCriteriaSection, upsertManagedSection } from "../plugins/github/shared/managed-sections";
 import type { SourceIssue } from "../source/types";
 
 const entryId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
