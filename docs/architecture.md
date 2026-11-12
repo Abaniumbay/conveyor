@@ -83,7 +83,7 @@ the rule new code follows; the current state is tracked by the boundary test.
 
 | Role | Ports today | Implementations |
 | --- | --- | --- |
-| Item source | `ItemReader`, `ItemComments`, `ItemSections`, `ItemRelations`, `ItemMarkers`, `ItemTitles`, `ItemMetadata` (together `ItemTracker`, what item tasks receive), `IssueSourceAdapter`, and the webhook receiver (`src/source/types.ts`, `src/core/plugins.ts`); still to come: lifecycle, trust, and the service using these instead of the GitHub client | GitHub Issues |
+| Item source | `ItemReader`, `ItemComments`, `ItemSections`, `ItemRelations`, `ItemMarkers`, `ItemTitles`, `ItemMetadata` (together `ItemTracker`, what item tasks receive) and `IssueSourceAdapter` (`src/source/types.ts`); `ItemLifecycle`, `ItemSourceAdmin`, `WebhookAdmin`, `StatusComments`, `SourceCache` and `ActorPermissions`, which together with `ItemTracker` make the `ItemSourceClient` the service holds (`src/source/client.ts`, `src/source/trust.ts`); the call meter and the reason each request is made (`src/source/calls.ts`); and the webhook receiver (`src/core/plugins.ts`). Conveyor's trust policy (`RepositoryActorTrust`) and the status comment's Markdown are core | GitHub Issues |
 | Code host | `CodeHost` (`src/codehost/types.ts`) | GitHub pull requests |
 | CI | `CiProvider` (`src/app/ci-provider.ts`) | GitHub Actions |
 | Agent harness | `Harness` (`src/harness/types.ts`) | Codex, Claude Code |
@@ -242,7 +242,7 @@ src/
 ├── plugins/      plugin implementations: github/{shared,items,code,ci}, codex, claude-code, dashboard (view models and live feed); index.ts lists them
 ├── release/      installed-release layout, verified staging, backups and switch history
 ├── runner/       Codex, Claude Code, legacy verifier, steering, and strict JSON-process runners
-├── source/       item source ports, the managed-section codec, item types and fields
+├── source/       item source ports and the client the service holds, call metering, the actor trust policy, the status comment, the managed-section codec, item types and fields
 ├── tasks/        task contract, registry, groups, plan compiler, legacy compiler
 ├── web/          authentication, HTTP/SSE server, the live dashboard model's shape and patches, Preact components, styles, and the browser application (app/)
 └── workspace/    managed Git worktree lifecycle

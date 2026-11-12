@@ -14,6 +14,7 @@ import { ReviewFindings } from "../../src/db/review-findings";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
+import { CallMeter } from "../../src/source/calls";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 import { fakeCommandBus } from "../support/web-commands";
 import { dashboardViews, webDependenciesOf } from "../support/dashboard";
@@ -130,7 +131,8 @@ async function running(options: {
   if (childCreationTask) {
     store.activateEnrollment("issue-1");
   }
-  const service = new ConveyorService(config, store, github as never);
+  const calls = new CallMeter();
+  const service = new ConveyorService(config, store, github as never, { githubCalls: calls });
   // Most control tests keep admission drained; child-creation retries exercise the scheduler.
   if (!childCreationTask) service.drain("tests");
   const socket = path.join(home, "run/control.sock");
@@ -145,13 +147,13 @@ async function running(options: {
     const code = await runCli([...argv, "--home", home], { out: (text) => out.push(text), err: (text) => err.push(text), environment: {}, interactive: false });
     return { code, out: out.join("\n"), err: err.join("\n") };
   };
-  return { home, socket, store, config, service, issues, cli };
+  return { home, socket, store, config, service, issues, cli, calls };
 }
 
 describe("control socket", () => {
   test("reports the last hour's GitHub calls of the running service", async () => {
-    const { service } = await running();
-    service.githubCalls.record({ method: "GET", route: "repos/:repo/issues", repository: "owner/app", source: "tick", durationMs: 1, ok: true, status: null });
+    const { service, calls } = await running();
+    calls.record({ method: "GET", route: "repos/:repo/issues", repository: "owner/app", source: "tick", durationMs: 1, ok: true, status: null });
     const handler = createControlHandler(service, { supervised: false } as never);
     const report = await (await handler(new Request("http://x/v1/github-calls"))).json() as { total: number; bySource: Record<string, number>; rateLimit: unknown };
     expect(report).toMatchObject({ total: 1, bySource: { tick: 1 }, rateLimit: null });

@@ -4,11 +4,8 @@ import type { ConversationStore, EvidenceStore, ItemStore, JournalStore, RunLogS
 import type { RepositoryRecord } from "../db/store";
 import { log } from "../log/logger";
 import { isIssueGone } from "../source/types";
+import type { ActorTrust } from "../source/trust";
 import type { IssueSourceAdapter, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../source/types";
-
-export interface RepositoryTrust {
-  isTrusted(input: { address: string; login: string | null; extraTrustedLogins: readonly string[] }): Promise<boolean>;
-}
 
 export interface ReconcileRepositoryInput {
   store: ItemStore & JournalStore & EvidenceStore & RunLogStore & ConversationStore;
@@ -17,7 +14,7 @@ export interface ReconcileRepositoryInput {
   stages: readonly string[];
   labels: LabelConfiguration;
   source: Pick<IssueSourceAdapter, "listIssues" | "getIssueProvenance"> & Partial<Pick<IssueSourceAdapter, "getIssue">>;
-  trust: RepositoryTrust;
+  trust: ActorTrust;
   extraTrustedLogins: readonly string[];
   expectedPostMergeClosure?: (issueId: string) => boolean;
   /** Read only issues updated since this time; issues not returned are left as they are rather than marked missing. */

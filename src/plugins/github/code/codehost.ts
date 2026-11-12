@@ -12,7 +12,7 @@ import type {
   ReviewThreadState,
 } from "../../../codehost/types";
 import { GitHubAdapter, GitHubTransportError } from "../shared/adapter";
-import { GitHubRepositoryTrust } from "../shared/trust";
+import { RepositoryActorTrust, type ActorTrust } from "../../../source/trust";
 
 interface CommandResult {
   stdout: string;
@@ -104,7 +104,7 @@ export class GitHubCodeHost implements CodeHost {
   constructor(
     private readonly github: GitHubAdapter,
     private readonly git: GitRunner = runGit,
-    private readonly trust: Pick<GitHubRepositoryTrust, "isTrusted"> = new GitHubRepositoryTrust(github),
+    private readonly trust: ActorTrust = new RepositoryActorTrust(github),
   ) {}
 
   readFileAtRevision(input: { address: string; path: string; headSha: string }): Promise<string | null> {

@@ -809,7 +809,7 @@ describe("agent.run through the service", () => {
     let releaseComment: (() => void) | undefined;
     let markCommentStarted: (() => void) | undefined;
     const commentStarted = new Promise<void>((resolve) => { markCommentStarted = resolve; });
-    Object.assign((w.service as unknown as { github: object }).github, {
+    Object.assign(w.service.itemSource, {
       async addComment(_address: string, _number: number, markdown: string) {
         markCommentStarted?.();
         await new Promise<void>((resolve) => { releaseComment = resolve; });

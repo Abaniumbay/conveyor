@@ -2,14 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { ConsoleSink, log, type LogRecord } from "../../../../src/log/logger";
 import { GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../../../src/plugins/github/shared/adapter";
-import {
-  GitHubCallMeter,
-  MeteredGitHubTransport,
-  currentGitHubCallSource,
-  githubRepository,
-  githubRoute,
-  withGitHubCallSource,
-} from "../../../../src/plugins/github/shared/call-meter";
+import { MeteredGitHubTransport, githubRepository, githubRoute } from "../../../../src/plugins/github/shared/call-meter";
+import { CallMeter, withCallSource } from "../../../../src/source/calls";
 
 afterEach(() => log.configure({ sinks: [new ConsoleSink()] }));
 
@@ -60,56 +54,6 @@ describe("githubRepository", () => {
   });
 });
 
-describe("withGitHubCallSource", () => {
-  test("the source follows asynchronous work and nested sources win", async () => {
-    expect(currentGitHubCallSource()).toBe("other");
-    const seen = await withGitHubCallSource("tick", async () => {
-      await Bun.sleep(1);
-      const inner = await withGitHubCallSource("webhook", async () => { await Bun.sleep(1); return currentGitHubCallSource(); });
-      return [currentGitHubCallSource(), inner];
-    });
-    expect(seen).toEqual(["tick", "webhook"]);
-  });
-});
-
-describe("GitHubCallMeter", () => {
-  const call = (source: "tick" | "webhook", route = "repos/:repo/pulls/:n", repository: string | null = "owner/my-app") =>
-    ({ method: "GET" as const, route, repository, source, durationMs: 1, ok: true, status: null });
-
-  test("counts per source, repository and route", () => {
-    const meter = new GitHubCallMeter(0);
-    meter.record(call("tick"), 1_000);
-    meter.record(call("tick", "repos/:repo/issues"), 2_000);
-    meter.record(call("webhook"), 3_000);
-    expect(meter.summary(60 * 60_000, 4_000)).toEqual({
-      total: 3,
-      bySource: { tick: 2, webhook: 1 },
-      byRepository: { "owner/my-app": { tick: 2, webhook: 1 } },
-      byRoute: { "GET repos/:repo/pulls/:n": 2, "GET repos/:repo/issues": 1 },
-    });
-  });
-
-  test("a summary covers only its window", () => {
-    const meter = new GitHubCallMeter(0);
-    meter.record(call("tick"), 0);
-    meter.record(call("webhook"), 30 * 60_000);
-    expect(meter.summary(10 * 60_000, 31 * 60_000).bySource).toEqual({ webhook: 1 });
-  });
-
-  test("calls older than an hour are dropped", () => {
-    const meter = new GitHubCallMeter(0);
-    meter.record(call("tick"), 0);
-    meter.record(call("webhook"), 61 * 60_000);
-    expect(meter.summary(60 * 60_000, 61 * 60_000).total).toBe(1);
-  });
-
-  test("reading the rate limit is not counted", () => {
-    const meter = new GitHubCallMeter(0);
-    meter.record(call("tick", "rate_limit", null), 0);
-    expect(meter.summary(60 * 60_000, 1).total).toBe(0);
-  });
-});
-
 describe("MeteredGitHubTransport", () => {
   const transport = (fail?: GitHubTransportError): GitHubTransport => ({
     async request<T>(_request: GitHubTransportRequest): Promise<T> {
@@ -120,9 +64,9 @@ describe("MeteredGitHubTransport", () => {
 
   test("counts a request under the current source and logs it at debug level", async () => {
     const records = capture();
-    const meter = new GitHubCallMeter();
+    const meter = new CallMeter();
     const metered = new MeteredGitHubTransport(transport(), meter);
-    await withGitHubCallSource("webhook", () => metered.request({ method: "GET", path: "repos/owner/my-app/pulls/3" }));
+    await withCallSource("webhook", () => metered.request({ method: "GET", path: "repos/owner/my-app/pulls/3" }));
     expect(meter.summary().bySource).toEqual({ webhook: 1 });
     expect(records).toEqual([expect.objectContaining({
       level: "debug", message: "GitHub call", method: "GET", route: "repos/:repo/pulls/:n", source: "webhook", address: "owner/my-app", ok: true,
@@ -131,7 +75,7 @@ describe("MeteredGitHubTransport", () => {
 
   test("counts a failed request with its HTTP status and rethrows it", async () => {
     const records = capture();
-    const meter = new GitHubCallMeter();
+    const meter = new CallMeter();
     const error = new GitHubTransportError("GitHub API GET repos/owner/my-app/pulls/3 failed", 1, "gh: Not Found (HTTP 404)");
     const metered = new MeteredGitHubTransport(transport(error), meter);
     await expect(metered.request({ method: "GET", path: "repos/owner/my-app/pulls/3" })).rejects.toBe(error);
@@ -142,7 +86,7 @@ describe("MeteredGitHubTransport", () => {
   test("a rate-limit refusal is warned about once, not for every refused request", async () => {
     const records = capture();
     const error = new GitHubTransportError("GitHub API GET repos/owner/my-app/pulls/3 failed", 1, "gh: API rate limit exceeded (HTTP 403)");
-    const metered = new MeteredGitHubTransport(transport(error), new GitHubCallMeter());
+    const metered = new MeteredGitHubTransport(transport(error), new CallMeter());
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await metered.request({ method: "GET", path: "repos/owner/my-app/pulls/3" }).catch(() => {});
     }

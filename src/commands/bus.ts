@@ -5,7 +5,7 @@
 import type { EventLog } from "../db/event-log";
 import { newCorrelationId, withEventContext } from "../events/context";
 import { log } from "../log/logger";
-import { withGitHubCallSource } from "../plugins/github/shared/call-meter";
+import { withCallSource } from "../source/calls";
 import { COMMANDS, type CommandInput, type CommandName, type CommandRole } from "./registry";
 
 /** What each command returns to the dashboard or the CLI. */
@@ -102,7 +102,7 @@ export class CommandBus {
    */
   async dispatch<N extends CommandName>(name: N, input: CommandInput<N>, actor: CommandActor): Promise<CommandOutcome<N>> {
     const correlationId = newCorrelationId();
-    return withEventContext({ actor: { kind: actor.kind, id: actor.id }, correlationId }, () => withGitHubCallSource("command", async () => {
+    return withEventContext({ actor: { kind: actor.kind, id: actor.id }, correlationId }, () => withCallSource("command", async () => {
       const reject = (error: Error): never => {
         const reason = error.message.slice(0, REASON_LIMIT) || error.name;
         this.events.append("command.rejected", { command: name, reason });

@@ -88,8 +88,8 @@ export const serve: Command = {
     });
     for (const warning of config.warnings ?? []) log.warn(warning);
     const plugins = new PluginRegistry(PLUGINS, pluginContext(config));
-    const { adapter: github, calls: githubCalls } = githubItems(plugins.context);
-    const service = await ConveyorService.create(config, github, { plugins, githubCalls });
+    const { client: itemSource, calls: githubCalls } = githubItems(plugins.context);
+    const service = await ConveyorService.create(config, itemSource, { plugins, githubCalls });
     const bootstrapUsername = process.env.CONVEYOR_USERNAME;
     const bootstrapHash = process.env.CONVEYOR_PASSWORD_HASH;
     if (bootstrapUsername && bootstrapHash) service.seedDashboardSuperuser(bootstrapUsername, bootstrapHash);

@@ -6,19 +6,14 @@
 // source of truth; the copy only saves requests. It lives in the database, so a restart reads
 // nothing it already holds.
 
+import type { SourceMirrorEntry, SourceMirrorStorage } from "../../../source/client";
 import type { GitHubTransport, GitHubTransportRequest } from "./adapter";
 
 /** One stored item: its kind, the format version it was written in, the data and when it was read or updated. */
-export interface GitHubMirrorEntry { kind: string; version: number; value: unknown; at: number }
+export type GitHubMirrorEntry = SourceMirrorEntry;
 
 /** Where the copy is kept: the database in the service, memory until one is attached. */
-export interface GitHubMirrorStorage {
-  get(key: string): GitHubMirrorEntry | null;
-  set(key: string, entry: GitHubMirrorEntry): void;
-  delete(key: string): void;
-  /** Every key that starts with `prefix`. */
-  keys(prefix: string): string[];
-}
+export type GitHubMirrorStorage = SourceMirrorStorage;
 
 /**
  * The format of stored items. Raise it when what is stored changes (a GitHub API version, a new

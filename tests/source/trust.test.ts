@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
-import { GitHubRepositoryTrust } from "../../../../src/plugins/github/shared/trust";
+import { RepositoryActorTrust } from "../../src/source/trust";
 
-describe("GitHubRepositoryTrust", () => {
+describe("RepositoryActorTrust", () => {
   test("trusts write-level permissions and configured logins case-insensitively", async () => {
     const lookedUp: string[] = [];
     const permissions = new Map<string, "admin" | "maintain" | "write" | "triage" | "read" | "none">([
       ["writer", "write"], ["maintainer", "maintain"], ["admin", "admin"],
       ["reader", "read"], ["triager", "triage"], ["outsider", "none"],
     ] as const);
-    const trust = new GitHubRepositoryTrust({
+    const trust = new RepositoryActorTrust({
       async collaboratorPermission(_address, login) {
         lookedUp.push(login);
         return permissions.get(login) ?? "none";
@@ -28,7 +28,7 @@ describe("GitHubRepositoryTrust", () => {
   });
 
   test("propagates unavailable permission data instead of treating it as untrusted", async () => {
-    const trust = new GitHubRepositoryTrust({
+    const trust = new RepositoryActorTrust({
       async collaboratorPermission() { throw new Error("GitHub unavailable"); },
     });
     await expect(trust.isTrusted({ address: "owner/repository", login: "writer", extraTrustedLogins: [] })).rejects.toThrow("GitHub unavailable");

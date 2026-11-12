@@ -14,6 +14,7 @@ import {
   type GitHubTransportRequest,
 } from "../../../../src/plugins/github/shared/adapter";
 import { GitHubReadCache } from "../../../../src/plugins/github/shared/read-cache";
+import { isSourceAccessDenied } from "../../../../src/source/client";
 
 class FakeTransport implements GitHubTransport {
   readonly requests: GitHubTransportRequest[] = [];
@@ -131,6 +132,22 @@ describe("GitHubAdapter.setDependencies", () => {
         blockerNumbers: [2],
       }),
     ).rejects.toThrow("HTTP 500");
+  });
+});
+
+describe("GitHubTransportError.accessDenied", () => {
+  const failure = (stderr: string) => new GitHubTransportError("GitHub API GET repos/owner/my-app/hooks/7/deliveries failed", 1, stderr);
+
+  test("a 403 refusal is access denied", () => {
+    expect(isSourceAccessDenied(failure("gh: Resource not accessible by integration (HTTP 403)"))).toBe(true);
+  });
+
+  test("a 404 is access denied, as GitHub hides what a caller may not see", () => {
+    expect(isSourceAccessDenied(failure("gh: Not Found (HTTP 404)"))).toBe(true);
+  });
+
+  test("a server error is not access denied", () => {
+    expect(isSourceAccessDenied(failure("gh: Server Error (HTTP 500)"))).toBe(false);
   });
 });
 

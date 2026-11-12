@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { Indicator, StoredIndicator } from "../app/indicators";
 import type { Observation } from "../events/catalogue";
 import { EventThrottle } from "../events/throttle";
-import type { GitHubMirrorStorage } from "../plugins/github/shared/read-cache";
+import type { SourceMirrorStorage } from "../source/client";
 import { AdvisoryCiWatchStore } from "./advisory-ci";
 import { vacuumInto } from "./backup";
 import { eventLog, type EventLog } from "./event-log";
@@ -2287,7 +2287,7 @@ export class ConveyorStore {
   }
 
   /** Conveyor's stored copy of GitHub reads: what the read cache keeps across restarts. */
-  githubMirror(): GitHubMirrorStorage {
+  githubMirror(): SourceMirrorStorage {
     const database = this.#database;
     return {
       get(key) {

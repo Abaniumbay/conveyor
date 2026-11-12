@@ -7,9 +7,8 @@ import { tmpdir } from "node:os";
 import { ConfigError, loadConfig, type ConveyorConfig } from "../../config/load";
 import { dashboardAccountCount } from "../../db/store";
 import { scriptCommand } from "../../self";
-import { GhCliTransport, GitHubAdapter, type GitHubTransport } from "../../plugins/github/shared/adapter";
-import { publicRepositoryTrustPolicy } from "../../plugins/github/shared/trust";
-import { GITHUB_CALL_SOURCES } from "../../plugins/github/shared/call-meter";
+import { publicRepositoryTrustPolicy } from "../../source/trust";
+import { CALL_SOURCES } from "../../source/calls";
 import type { GitHubCallReport } from "../../app/service";
 import { EXIT } from "../args";
 import { probeAgentMcpServers } from "../../isolation/mcp-probe";
@@ -21,7 +20,7 @@ import { printJson, type Command } from "../command";
 import { control, serviceRunning } from "../control-client";
 import { autoUpgradeSummary } from "./service";
 import { filesystemPressure, filesystemPressureDetail, type FilesystemMeasure, type FilesystemPressure } from "../filesystem-pressure";
-import { PLUGINS } from "../plugins";
+import { doctorItemSource, PLUGINS, type DoctorItemSource, type DoctorTransport } from "../plugins";
 
 export interface DoctorCheck {
   name: string;
@@ -181,7 +180,7 @@ export async function doctorReport(
   home: string,
   configPath: string,
   serviceRunning: () => Promise<boolean>,
-  github?: GitHubTransport,
+  github?: DoctorTransport,
   measureFilesystem?: FilesystemMeasure,
   runtime: DoctorRuntime = {},
 ): Promise<DoctorReport> {
@@ -229,7 +228,6 @@ export async function doctorReport(
   }
 
   const githubReady = !gh && checks[checks.length - 1]?.status === "ok";
-  const transport = github ?? (githubReady ? new GhCliTransport() : null);
   const bwrap = tool("sandbox", "bwrap", "install bubblewrap (for example: sudo apt install bubblewrap)", find);
   if (bwrap) checks.push(bwrap);
   else {
@@ -271,7 +269,7 @@ export async function doctorReport(
         ? { name: `repository ${id}`, status: "ok", detail: repository.folder }
         : { name: `repository ${id}`, status: "fail", detail: `${repository.folder} is not a Git checkout`, fix: `git clone the repository into ${repository.folder}` });
     }
-    const adapter = transport ? new GitHubAdapter(transport, config.settings.labelPrefix) : null;
+    const adapter = doctorItemSource(github, githubReady, config.settings.labelPrefix);
     checks.push(...await repositoryTrustChecks(config, adapter));
     if (adapter) checks.push(...await issueMetadataChecks(config, adapter));
     const accounts = await accountCount(config.settings.database);
@@ -293,7 +291,7 @@ export async function doctorChecks(
   home: string,
   configPath: string,
   serviceRunning: () => Promise<boolean>,
-  github?: GitHubTransport,
+  github?: DoctorTransport,
   measureFilesystem?: FilesystemMeasure,
   runtime?: DoctorRuntime,
 ): Promise<DoctorCheck[]> {
@@ -306,7 +304,7 @@ export async function doctorChecks(
  */
 export async function repositoryTrustChecks(
   config: ConveyorConfig,
-  adapter: Pick<GitHubAdapter, "repositoryVisibility" | "collaboratorPermission" | "authenticatedLogin"> | null,
+  adapter: Pick<DoctorItemSource, "repositoryVisibility" | "collaboratorPermission" | "authenticatedLogin"> | null,
 ): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   for (const [id, repository] of Object.entries(config.repositories)) {
@@ -357,7 +355,7 @@ export async function repositoryTrustChecks(
  * For each repository that configures refinement outputs: can the credentials read and write the
  * organization's issue types and issue fields? Read-only; no issue is changed.
  */
-export async function issueMetadataChecks(config: ConveyorConfig, adapter: GitHubAdapter): Promise<DoctorCheck[]> {
+export async function issueMetadataChecks(config: ConveyorConfig, adapter: Pick<DoctorItemSource, "probeIssueMetadata">): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   for (const [id, repository] of Object.entries(config.repositories)) {
     const outputs = repository.refinement;
@@ -427,7 +425,7 @@ async function accountCount(database: string): Promise<number> {
 
 /** The doctor line for the running service's GitHub requests of the last hour and its rate limit. */
 export function githubCallCheck(report: GitHubCallReport): DoctorCheck {
-  const sources = GITHUB_CALL_SOURCES.filter((source) => report.bySource[source]).map((source) => `${source} ${report.bySource[source]}`);
+  const sources = CALL_SOURCES.filter((source) => report.bySource[source]).map((source) => `${source} ${report.bySource[source]}`);
   const since = Date.parse(report.countingSince) > Date.now() - report.windowMs ? ` since the service started at ${report.countingSince}` : " in the last hour";
   const calls = `${report.total} call${report.total === 1 ? "" : "s"}${since}${sources.length > 0 ? ` (${sources.join(", ")})` : ""}`;
   const limit = report.rateLimit;

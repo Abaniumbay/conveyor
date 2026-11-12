@@ -8,7 +8,7 @@ import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 import type { GitHubRateLimits } from "../../src/plugins/github/shared/adapter";
-import { GitHubCallMeter } from "../../src/plugins/github/shared/call-meter";
+import { CallMeter } from "../../src/source/calls";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -37,7 +37,7 @@ async function service(limits: GitHubRateLimits | Error) {
       return limits;
     },
   };
-  const meter = new GitHubCallMeter();
+  const meter = new CallMeter();
   const conveyor = new ConveyorService(config, store, github as never, { githubCalls: meter });
   const call = (source: "tick" | "webhook", repository: string) =>
     meter.record({ method: "GET", route: "repos/:repo/pulls/:n", repository, source, durationMs: 1, ok: true, status: null });
