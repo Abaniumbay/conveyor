@@ -1,4 +1,5 @@
 import { ConveyorService } from "../../app/service";
+import { webDependencies } from "../../app/web-sources";
 import { ReleaseCoordinator } from "../../control/releases";
 import { releaseStateFile } from "../../release/state";
 import { createControlHandler, serveControlSocket, operatorItemTarget, status as controlStatus, type ControlInfo } from "../../control/server";
@@ -90,10 +91,13 @@ export const serve: Command = {
     const plugins = new PluginRegistry(PLUGINS, pluginContext(config));
     const { client: itemSource, calls: githubCalls } = githubItems(plugins.context);
     const service = await ConveyorService.create(config, itemSource, { plugins, githubCalls });
+    // The presentations (web routes, control socket, operator MCP) take narrow sources, never the service.
+    const web = service.webSources();
+    const control = service.controlSources();
     const bootstrapUsername = process.env.CONVEYOR_USERNAME;
     const bootstrapHash = process.env.CONVEYOR_PASSWORD_HASH;
-    if (bootstrapUsername && bootstrapHash) service.seedDashboardSuperuser(bootstrapUsername, bootstrapHash);
-    const accounts = service.store.dashboardAccounts();
+    if (bootstrapUsername && bootstrapHash) web.store.seedDashboardSuperuser(bootstrapUsername, bootstrapHash);
+    const accounts = web.store.dashboardAccounts();
     if (accounts.length === 0) {
       await service.close();
       throw new CliError(`no dashboard account exists: run conveyor init${context.options.home ? ` --home ${context.paths.home}` : ""}`, EXIT.failure);
@@ -102,8 +106,8 @@ export const serve: Command = {
       passwordHash: undefined,
       sessionSecret: await resolveSessionSecret(config.web.sessionSecret, config.settings.database),
       secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
-      accountById: (id) => service.dashboardAccountById(id),
-      accountByUsername: (name) => service.dashboardAccountByUsername(name),
+      accountById: (id) => web.store.dashboardAccountById(id),
+      accountByUsername: (name) => web.store.dashboardAccountByUsername(name),
     });
     if (!auth.isConfigured) {
       await service.close();
@@ -116,21 +120,21 @@ export const serve: Command = {
       await service.close();
       throw new CliError("this build ships no dashboard plugin", EXIT.failure);
     }
-    const webDependencies = {
-      ...service.webDependencies(auth, operator, pushConfiguration(config.web.push)),
+    const webRoutes = {
+      ...webDependencies(web, auth, operator, pushConfiguration(config.web.push)),
       ...dashboard.reads,
       handleOperatorMcp: createOperatorMcpHandler({
         facade: {
-          store: service.store,
-          status: () => controlStatus(service, controlInfo),
-          findItem: (reference) => operatorItemTarget(service, reference),
-          createIssue: (input) => service.createIssue(input),
-          dispatch: (name, input) => service.commands.dispatch(name, input, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }),
+          store: control.store,
+          status: () => controlStatus(control, controlInfo),
+          findItem: (reference) => operatorItemTarget(control, reference),
+          createIssue: (input) => control.createIssue(input),
+          dispatch: (name, input) => control.commands.dispatch(name, input, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }),
         },
-        tokenIsActive: (hash) => service.store.operatorMcpTokenIsActive(hash),
+        tokenIsActive: (hash) => control.store.operatorMcpTokenIsActive(hash),
       }),
     };
-    const handler = createWebHandler(webDependencies);
+    const handler = createWebHandler(webRoutes);
     const server = Bun.serve({
       ...listenAddress(config.web.listen),
       fetch: handler,
@@ -146,7 +150,7 @@ export const serve: Command = {
     const dashboardUrl = config.web.publicUrl ?? server.url.href;
     let requestStop: (reason: string, exitCode?: number, afterClose?: () => Promise<void>) => void = () => {};
     const supervised = Boolean(process.env.INVOCATION_ID);
-    const releases = new ReleaseCoordinator(service, context.paths.home, {
+    const releases = new ReleaseCoordinator(control, context.paths.home, {
       supervised,
       restartExitCode: RESTART_EXIT_CODE,
       stop: (reason, code, afterClose) => requestStop(reason, code, afterClose),
@@ -163,14 +167,14 @@ export const serve: Command = {
       startedAt: new Date().toISOString(),
       supervised,
     };
-    const control = await serveControlSocket(context.paths.controlSocket, createControlHandler(service, controlInfo, { restart: () => requestStop("restart requested", RESTART_EXIT_CODE), releases })).catch(async (error: unknown) => {
+    const controlSocket = await serveControlSocket(context.paths.controlSocket, createControlHandler(control, controlInfo, { restart: () => requestStop("restart requested", RESTART_EXIT_CODE), releases })).catch(async (error: unknown) => {
       await server.stop(true);
       await mcpSocket?.stop();
       await service.close();
       throw new CliError(error instanceof Error ? error.message : String(error), EXIT.failure);
     });
     service.start();
-    const dispatchPushEvents = () => Promise.resolve(webDependencies.dispatchPushEvents?.()).catch((error: unknown) => log.error("Push notification delivery failed", {}, error));
+    const dispatchPushEvents = () => Promise.resolve(webRoutes.dispatchPushEvents?.()).catch((error: unknown) => log.error("Push notification delivery failed", {}, error));
     const pushTimer = setInterval(() => void dispatchPushEvents(), 5_000);
     void dispatchPushEvents();
     log.info(`${versionLine()} started`, {
@@ -187,7 +191,7 @@ export const serve: Command = {
         void (async () => {
           const cleanup = (async () => {
             clearInterval(pushTimer);
-            await control.stop();
+            await controlSocket.stop();
             // Keep both transports available until active stages have completed or been interrupted.
             await stopAgentTransportsAfterService(service, server, mcpSocket);
           })();

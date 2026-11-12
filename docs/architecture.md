@@ -66,8 +66,8 @@ flowchart LR
 | Scoped MCP server | Serves the registry's `tool` tasks to each live run under an exact grant, through one dispatcher that re-checks the grant and preconditions. Grants expire with the run. |
 | Agent isolation | Sanitized agent environment and, per repository, a network namespace with allowlisting proxies (`src/isolation`). |
 | SQLite store | Persists source projections, stage state, events, transitions, runs and their logs, questions and conversations, costs, review findings, criterion approvals, advisory CI watches and idempotency records in WAL mode. |
-| Web control plane | Serves the authenticated dashboard application (a Preact application that runs in the browser), its JSON endpoints for issue conversations, stage history, technical logs, views and steering runs, health endpoints, and the live SSE stream. The dashboard is a presentation plugin (`src/plugins/dashboard`): it builds its view models from `DashboardSources` (`src/app/dashboard-sources.ts`: the store reads it makes, the configuration and the service's live state), never from the service or the whole store, and serves them to the routes. Its live model (`src/plugins/dashboard/feed.ts`, `src/web/model.ts`) follows the event bus, is rebuilt once per burst of changes and is sent as a snapshot plus field-level patches (`/api/v1/snapshot`, `/api/v1/stream`), so the work per change does not grow with the number of open dashboards. |
-| Control interface and releases | Serves the CLI over a private Unix socket with the same operations as the dashboard; drains, backs up, switches the installed release and restarts under systemd for upgrades and rollbacks (`src/control`). |
+| Web control plane | Serves the authenticated dashboard application (a Preact application that runs in the browser), its JSON endpoints for issue conversations, stage history, technical logs, views and steering runs, health endpoints, and the live SSE stream. The dashboard is a presentation plugin (`src/plugins/dashboard`): it builds its view models from `DashboardSources` (`src/app/dashboard-sources.ts`: the store reads it makes, the configuration and the service's live state), never from the service or the whole store, and serves them to the routes. The other routes (accounts, push, commands, the webhook, the agents' MCP endpoint, reports) take `WebSources` (`src/app/web-sources.ts`). Its live model (`src/plugins/dashboard/feed.ts`, `src/web/model.ts`) follows the event bus, is rebuilt once per burst of changes and is sent as a snapshot plus field-level patches (`/api/v1/snapshot`, `/api/v1/stream`), so the work per change does not grow with the number of open dashboards. |
+| Control interface and releases | Serves the CLI over a private Unix socket with the same operations as the dashboard; drains, backs up, switches the installed release and restarts under systemd for upgrades and rollbacks (`src/control`). The socket, the release coordinator and the operator MCP read only `ControlSources` (`src/app/control-sources.ts`: the store reads they make, the configuration, the service's live state and the command bus), never the service or the whole store; every change they make is a command. |
 | Service logging | Structured, redacted service logs on stdout/stderr and in a rotated JSON-lines file (`src/log`). |
 
 ## Modules and ports
@@ -87,7 +87,7 @@ the rule new code follows; the current state is tracked by the boundary test.
 | Code host | `CodeHost` (`src/codehost/types.ts`) | GitHub pull requests |
 | CI | `CiProvider` (`src/app/ci-provider.ts`) | GitHub Actions |
 | Agent harness | `Harness` (`src/harness/types.ts`) | Codex, Claude Code |
-| Presentation | `DashboardSources` (`src/app/dashboard-sources.ts`) in, `DashboardReads` (`src/web/server.ts`) out | The web dashboard |
+| Presentation | `DashboardSources` (`src/app/dashboard-sources.ts`) in, `DashboardReads` (`src/web/server.ts`) out; the other web routes take `WebSources` (`src/app/web-sources.ts`) and the control socket, release coordinator and operator MCP take `ControlSources` (`src/app/control-sources.ts`), all assembled by the composition root (`src/cli/commands/serve.ts`) | The web dashboard |
 | Storage | Per-domain store ports (`src/db/ports.ts`): items, journal, evidence, events, run logs, conversations, provider cache, webhook deliveries, accounts, reports; `ConveyorStore` implements them all | SQLite |
 
 - **Plugins** live in their own folders (`src/plugins/<provider>/<role>/`) and are selected by
@@ -227,11 +227,11 @@ Operator check (real network, not part of `bun test`): `bun scripts/check-agent-
 
 ```text
 src/
-├── app/          service orchestration, issue execution, configured stage runtime, and retention
+├── app/          service orchestration, issue execution, configured stage runtime, retention, and the sources the presentations read (dashboard, web routes, control)
 ├── cli/          the conveyor command line: commands, home layout, control-socket client
 ├── codehost/     code-host contract and provider-neutral change actions
 ├── config/       entrypoint composition (include/secret tags), packaged defaults, migration, validation
-├── control/      the local control socket and in-service upgrades and rollbacks
+├── control/      the local control socket and in-service upgrades and rollbacks, over ControlSources
 ├── core/         issue projection, scheduling, transitions, and the plugin contract and registry
 ├── db/           all SQLite: migrations, the store and its domain ports, the execution journal, the event log, review and gate records, advisory CI watches, report queries
 ├── engine/       stage executor, stage context and routing, finding types, remaining-work summary

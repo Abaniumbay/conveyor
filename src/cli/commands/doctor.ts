@@ -9,7 +9,7 @@ import { dashboardAccountCount } from "../../db/store";
 import { scriptCommand } from "../../self";
 import { publicRepositoryTrustPolicy } from "../../source/trust";
 import { CALL_SOURCES } from "../../source/calls";
-import type { GitHubCallReport } from "../../app/service";
+import type { GitHubCallReport } from "../../app/control-sources";
 import { EXIT } from "../args";
 import { probeAgentMcpServers } from "../../isolation/mcp-probe";
 import { agentLaunchCommand } from "../../isolation/sandbox";

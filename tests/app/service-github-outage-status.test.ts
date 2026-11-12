@@ -108,7 +108,7 @@ repositories:
   const home = path.join(root, "home");
   const socket = path.join(home, "run/control.sock");
   const info = { home, config: path.join(root, "config.yml"), logs: config.settings.logs, database: config.settings.database, dashboardUrl: "http://localhost", startedAt: new Date().toISOString(), supervised: false };
-  const control = await serveControlSocket(socket, createControlHandler(service, info));
+  const control = await serveControlSocket(socket, createControlHandler(service.controlSources(), info));
   const cli = async (...argv: string[]) => {
     const out: string[] = [];
     await runCli(argv, { out: (text) => out.push(text), err: () => {}, environment: {}, interactive: false });

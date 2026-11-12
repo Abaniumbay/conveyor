@@ -39,13 +39,10 @@ import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steer
 import { WorkspaceManager } from "../workspace/manager";
 import { displayName, formatDuration } from "../web/format";
 import type { IssueJourneyViewModel, IssueWaitingViewModel } from "../web/types";
-import type { DashboardReads, WebAuthApi, WebHandlerDependencies } from "../web/server";
-import { deliverPushEvents, type PushConfiguration } from "../web/push";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
 import { infrastructureRetry, isUsageLimitError } from "./retry-policy";
 import { classifyUpstreamError } from "../tasks/upstream-error";
-import { buildAgentProfiles } from "./agent-profiles";
 import { createTaskRegistry } from "../tasks/catalogue";
 import { runTask, TransientScriptError } from "../tasks/contract";
 import type { TaskDeps, TaskStore } from "../tasks/deps";
@@ -55,7 +52,6 @@ import { compilePipeline } from "../tasks/plan";
 import { cliGit } from "../workspace/git";
 import { removeWorkspace } from "../workspace/lifecycle";
 import { AdvisoryCiWatches, DEFAULT_POLL_MS as ADVISORY_POLL_MS } from "./advisory-ci";
-import { buildReport } from "./reports";
 import { buildRepositorySummaries, type RepositorySummaries } from "./repository-summary";
 import { isLightweightRepositoryStage } from "./stage-capacity";
 import { remainingWorkStartsProcess } from "../engine/remaining-work";
@@ -74,8 +70,10 @@ import { isEventOf, type EventPayload, type EventType, type StoredEvent } from "
 import { withEventContext } from "../events/context";
 import type { WaitKind } from "../events/topics";
 import { WaitDispatcher } from "./wait-dispatcher";
+import type { ActiveWork, ControlSources, GitHubCallReport, StartupRepositoryPhase, StartupStatus } from "./control-sources";
 import type { DashboardSources, LiveIssueStatus } from "./dashboard-sources";
-import { CALL_SOURCES, CallMeter, withCallSource, type CallSource, type CallSummary, type ProviderCallMeter } from "../source/calls";
+import type { WebSources } from "./web-sources";
+import { CALL_SOURCES, CallMeter, withCallSource, type CallSource, type ProviderCallMeter } from "../source/calls";
 import type { FindingType } from "../db/review-findings";
 import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
 
@@ -110,13 +108,6 @@ interface ActiveRun {
   executorDone: boolean;
 }
 
-type StartupRepositoryPhase = "waiting" | "onboarding" | "reconciling";
-
-export type StartupStatus =
-  | { state: "starting"; repository: string | null; phase: StartupRepositoryPhase | null }
-  | { state: "ready"; repository: null; phase: null }
-  | { state: "degraded"; repository: string | null; phase: null };
-
 interface McpGrant {
   runId: string;
   stageId: string;
@@ -127,14 +118,6 @@ interface McpGrant {
   calls: Map<string, Promise<unknown>>;
   /** Set only for a stop-summary Operator run: the one item and stop it may record a summary for. */
   stopSummary?: { itemId: string; stopId: string };
-}
-
-/** What `conveyor doctor` and the dashboard show of the service's GitHub requests. */
-export interface GitHubCallReport extends CallSummary {
-  /** When counting started; a window reaching further back covers only the time since. */
-  countingSince: string;
-  windowMs: number;
-  rateLimit: { limit: number; remaining: number; resetAt: string } | null;
 }
 
 /** An item as a delivery described it, and who made each change. */
@@ -5595,7 +5578,7 @@ export class ConveyorService {
   }
 
   /** Work in flight: items executing a stage, and steering runs. */
-  activeWork(): { items: Array<{ issueId: string; repositoryId: string; stageId: string }>; steering: number } {
+  activeWork(): ActiveWork {
     return {
       items: [...this.#active.entries()].map(([issueId, active]) => ({ issueId, repositoryId: active.repositoryId, stageId: active.stageId })),
       steering: this.#steeringActive.size,
@@ -5753,55 +5736,39 @@ export class ConveyorService {
     return { changed: this.store.findings().reclassify(issueId, findingId, type, username) };
   }
 
-  /** What the web routes need from the service; the dashboard's reads come from the dashboard plugin. */
-  webDependencies(auth: WebAuthApi, username: string, push: PushConfiguration | null = null): Omit<WebHandlerDependencies, keyof DashboardReads> {
-    // The dashboard serves one webhook route: the first item source that receives webhooks names it.
-    const webhookPath = Object.keys(this.config.sources).map((name) => this.webhookSettings(name)?.path).find((path) => path !== undefined);
+  /** What the web routes take from this service besides the dashboard's reads. */
+  webSources(): WebSources {
     return {
-      auth,
-      username,
-      listAccounts: () => this.store.dashboardAccounts().map(({ id, username, role, avatar }) => ({ id, username, role, avatar })),
-      getAccount: (id) => this.store.dashboardAccountById(id),
-      getPushPreferences: (id) => this.store.getPushPreferences(id),
-      pushPublicKey: push?.publicKey ?? null,
-      dispatchPushEvents: () => deliverPushEvents(this.store, async (issueId) => {
-        const target = this.store.getIssue(issueId);
-        return target && target.projectedState !== "unlisted"
-          ? `/issues/${encodeURIComponent(target.repositoryId)}/${target.sourceNumber}`
-          : null;
-      }, push),
-      dispatch: (name, input, actor) => this.commands.dispatch(name, input, actor),
-      recordSession: (change, accountId) => withEventContext({ actor: { kind: "user", id: accountId } }, () =>
-        this.store.events().append(change === "signedIn" ? "session.signedIn" : "session.signedOut", { accountId })),
+      config: this.config,
+      store: this.store,
+      commands: this.commands,
       isReady: () => this.isReady(),
-      webhookPath: webhookPath ?? "/hooks/github",
+      webhookPath: () => Object.keys(this.config.sources).map((name) => this.webhookSettings(name)?.path).find((path) => path !== undefined) ?? null,
       handleWebhook: (body, headers) => this.handleWebhook(body, headers),
       handleMcp: (body, token, callId) => this.handleMcp(body, token, callId),
-      getIssueRoute: (reference) => {
-        const issue = "id" in reference
-          ? this.store.getIssue(reference.id)
-          : this.store.listIssues(reference.repository).find((candidate) => candidate.sourceNumber === reference.number) ?? null;
-        if (!issue) return null;
-        return { id: issue.id, repository: issue.repositoryId, number: issue.sourceNumber };
-      },
-      getAgentProfiles: () => buildAgentProfiles(this.config),
-      getReport: ({ period, repository }) => (repository !== null && !this.config.repositories[repository]
-        ? null
-        : buildReport({ store: this.store, config: this.config, period, repository })),
-      getAgentProfile: async (agentId) =>
-        (await buildAgentProfiles(this.config)).find((profile) => profile.id === agentId) ?? null,
     };
   }
 
-  seedDashboardSuperuser(username: string, passwordHash: string): void {
-    this.store.seedDashboardSuperuser(username, passwordHash);
-  }
-
-  dashboardAccountById(id: string) {
-    return this.store.dashboardAccountById(id);
-  }
-
-  dashboardAccountByUsername(username: string) {
-    return this.store.dashboardAccountByUsername(username);
+  /** What the control socket, the release coordinator and the operator MCP read, and the commands they send. */
+  controlSources(): ControlSources {
+    return {
+      config: this.config,
+      store: this.store,
+      commands: this.commands,
+      isReady: () => this.isReady(),
+      startupStatus: () => this.startupStatus(),
+      draining: () => this.draining(),
+      githubOutage: () => this.githubOutage(),
+      activeWork: () => this.activeWork(),
+      githubCallReport: () => this.githubCallReport(),
+      itemNow: (issueId) => this.itemNow(issueId),
+      hasRunningAgent: (issueId) => this.hasRunningAgent(issueId),
+      canResumeRollupParent: (issueId) => this.canResumeRollupParent(issueId),
+      canRetryIssue: (issueId) => this.canRetryIssue(issueId),
+      retryTargetStage: (issueId) => this.retryTargetStage(issueId),
+      createIssue: (input) => this.createIssue(input),
+      drain: (reason, upgrade) => this.drain(reason, upgrade),
+      resumeAdmission: () => this.resumeAdmission(),
+    };
   }
 }

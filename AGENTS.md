@@ -49,12 +49,13 @@ Run these from the repository root.
 
 | Path | Contents |
 | --- | --- |
-| `src/app/` | The service (`service.ts`), issue execution, CI provider, retention, reports, and `dashboard-sources.ts` (what the dashboard plugin may read). |
+| `src/app/` | The service (`service.ts`), issue execution, CI provider, retention, reports, and the narrow interfaces the presentations take instead of the service: `dashboard-sources.ts` (what the dashboard plugin may read), `web-sources.ts` (`WebSources`, what the other web routes take, and `webDependencies`, which builds the routes' callbacks from it) and `control-sources.ts` (`ControlSources`, what the control socket, the release coordinator and the operator MCP read and the commands they send). |
 | `src/engine/` | Stage executor, stage context and routing, finding types. |
 | `src/events/` | Event catalogue (`catalogue.ts`), the in-process bus (`bus.ts`), sinks, actor and correlation context. |
 | `src/tasks/` | Task contract (`contract.ts`), every task group (`item.ts`, `change.ts`, `agent.ts`, …), the registry (`catalogue.ts`), the plan compiler, MCP dispatch. |
 | `src/db/` | All SQLite: `migrations.ts` (schema), `store.ts` (`ConveyorStore`), `ports.ts` (the per-domain store ports), the record classes the store hands out (`journal.ts` with epochs and cursors, `event-log.ts`, `review-findings.ts`, `review-records.ts`, `review-threads.ts`, `manual-gates.ts`, `todos.ts`, `advisory-ci.ts`), the report queries (`reports.ts`) and backups (`backup.ts`). |
 | `src/config/` | `schema.ts` (zod schemas), loader, packaged defaults, migration. |
+| `src/control/` | The CLI's control socket (`server.ts`) and in-service upgrades and rollbacks (`releases.ts`). Both take `ControlSources`, never the service; `serve.ts` (the composition root) builds them from `service.controlSources()`. |
 | `src/core/plugins.ts` | The plugin contract and registry: item source, code host, CI, harness and presentation plugins by `type`. |
 | `src/plugins/` | Plugin implementations, one folder per provider and one per role inside it: `github/{shared,items,code,ci}`, `codex/`, `claude-code/`, and `dashboard/` (the dashboard's view models in `views.ts`, its live feed in `feed.ts`). `index.ts` is the list the composition root registers. |
 | `src/source/`, `src/codehost/` | Item source and code host ports (`types.ts`: `ItemReader`, `ItemSections`, `ItemMarkers`, … combined as `ItemTracker`; `client.ts`: the service-only ports combined as `ItemSourceClient`, the type the service holds instead of a provider client), call metering and the reason each request is made (`calls.ts`), who may act (`trust.ts`), the status comment (`status-comment.ts`), Conveyor's managed-section codec (`managed-sections.ts`), item types and fields (`item-metadata.ts`), and provider-neutral change actions. |
@@ -231,7 +232,11 @@ a service mutation directly.
    `ConveyorService.dashboardSources()`. Never build view models in `src/app/service.ts`. Data a
    view loads on its own comes from a JSON endpoint. `src/web/render.tsx` only renders; keep logic
    out of it.
-2. Routes and JSON endpoints live in `src/web/server.ts`. A route that changes state requires a
+2. Routes and JSON endpoints live in `src/web/server.ts`. They reach the service only through
+   `WebHandlerDependencies`, which `serve.ts` assembles from `WebSources`
+   (`src/app/web-sources.ts`, built by `webDependencies`) and the dashboard plugin's reads. A new
+   dependency is built there from a store port or from live state `ConveyorService.webSources()`
+   exposes; never hand the routes the service. A route that changes state requires a
    signed-in session and the CSRF token, and sends a command (see above); a superuser-only action
    checks the role on the server, not only by hiding a button.
 3. The browser application is `src/web/app/`: `store.ts` holds the live model, `derive.ts` builds

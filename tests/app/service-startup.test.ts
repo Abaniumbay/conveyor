@@ -173,7 +173,7 @@ describe("startup reconciliation", () => {
     });
     const web = Bun.serve({ port: 0, fetch: createWebHandler(webDependenciesOf(service, auth, "operator")) });
     const socket = path.join(root, "control.sock");
-    const control = await serveControlSocket(socket, createControlHandler(service, {
+    const control = await serveControlSocket(socket, createControlHandler(service.controlSources(), {
       home: root, config: path.join(root, "conveyor.yaml"), logs: path.join(root, "logs"), database: path.join(root, "conveyor.sqlite"),
       dashboardUrl: "https://conveyor.example.com/", startedAt: new Date().toISOString(), supervised: false,
     }));
@@ -269,7 +269,7 @@ describe("startup reconciliation", () => {
     });
     const web = Bun.serve({ port: 0, fetch: createWebHandler(webDependenciesOf(service, auth, "operator")) });
     const socket = path.join(root, "control.sock");
-    const control = await serveControlSocket(socket, createControlHandler(service, {
+    const control = await serveControlSocket(socket, createControlHandler(service.controlSources(), {
       home: root, config: path.join(root, "conveyor.yaml"), logs: path.join(root, "logs"), database: path.join(root, "conveyor.sqlite"),
       dashboardUrl: "https://conveyor.example.com/", startedAt: new Date().toISOString(), supervised: false,
     }));

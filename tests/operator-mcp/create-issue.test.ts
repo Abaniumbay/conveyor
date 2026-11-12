@@ -143,7 +143,7 @@ describe("create_issue operator tool", () => {
   test("the created issue is enrolled and appears in the item list at the start stage", async () => {
     const { call, store, service } = await setup();
     await call({ repository: "repo", title: "Add a thing", body: "Details" });
-    const board = await createControlHandler(service, {
+    const board = await createControlHandler(service.controlSources(), {
       home: "/tmp", config: "/tmp/c", logs: "/tmp/l", database: "/tmp/d", dashboardUrl: "http://127.0.0.1:1/", startedAt: "2026-10-06T10:00:00.000Z", supervised: false,
     })(new Request("http://control/v1/board"));
     expect(JSON.stringify(await board.json())).toContain("Add a thing");
@@ -276,7 +276,7 @@ describe("issue creation stays operator-only", () => {
 
   test("the control API has no issue-creation route and no command creates an issue", async () => {
     const { service } = await setup();
-    const handler = createControlHandler(service, {
+    const handler = createControlHandler(service.controlSources(), {
       home: "/tmp", config: "/tmp/c", logs: "/tmp/l", database: "/tmp/d", dashboardUrl: "http://127.0.0.1:1/", startedAt: "2026-10-06T10:00:00.000Z", supervised: false,
     });
     for (const route of ["/v1/issues", "/v1/items", "/v1/repositories/repo/issues", "/v1/create-issue"]) {

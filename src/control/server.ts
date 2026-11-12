@@ -1,7 +1,7 @@
 // The local control interface: a small JSON API on a Unix socket under <home>/run, readable and
 // writable only by the service account (directory 0700, socket 0600). Filesystem ownership is the
 // authentication: whoever can open the socket can operate this Conveyor, as on its own dashboard.
-// Every request calls the same service operations the dashboard does.
+// It reads only ControlSources (src/app/control-sources.ts), and every change is a command, as on the dashboard.
 
 import { chmod, mkdir, rm } from "node:fs/promises";
 import net from "node:net";
@@ -10,7 +10,7 @@ import path from "node:path";
 
 import { buildFindingReport, parseSince } from "../app/finding-report";
 import { itemTransitions } from "../app/item-history";
-import type { ConveyorService } from "../app/service";
+import type { ControlSources } from "../app/control-sources";
 import { CommandForbiddenError, CommandInputError, CommandUnavailableError, type CommandActor } from "../commands/bus";
 import { MAX_SOCKET_PATH } from "../isolation/run-network";
 import { log } from "../log/logger";
@@ -34,7 +34,7 @@ export interface ControlInfo {
 export interface ControlHooks {
   /** Exits so the supervisor restarts the process (after draining, which the caller does). */
   restart?: () => void;
-  /** Upgrades and rollbacks of the running service. */
+  /** Upgrades and rollbacks of the running sources. */
   releases?: ReleaseCoordinator;
 }
 
@@ -46,56 +46,56 @@ class ControlError extends Error {
 
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 
-function itemReference(service: ConveyorService, issueId: string): string {
-  const issue = service.store.getIssue(issueId);
+function itemReference(sources: ControlSources, issueId: string): string {
+  const issue = sources.store.getIssue(issueId);
   return issue ? `${issue.repositoryId}:${issue.sourceNumber}` : issueId;
 }
 
 /** `<repository>:<number>`, `<repository>#<number>` or an internal item id. */
-export function resolveItem(service: ConveyorService, reference: string): string {
+export function resolveItem(sources: ControlSources, reference: string): string {
   const match = /^(.+)[:#](\d+)$/.exec(reference);
   const issue = match
-    ? service.store.listIssues(match[1]).find((candidate) => candidate.sourceNumber === Number(match[2]))
-    : service.store.getIssue(reference);
+    ? sources.store.listIssues(match[1]).find((candidate) => candidate.sourceNumber === Number(match[2]))
+    : sources.store.getIssue(reference);
   if (!issue || issue.projectedState === "unlisted") throw new ControlError(`no item ${reference}`, 404);
   return issue.id;
 }
 
 /** The item an operator tool targets, or null for an unknown reference; `running` means an agent is running on it. */
-export function operatorItemTarget(service: ConveyorService, reference: string): { issueId: string; running: boolean } | null {
+export function operatorItemTarget(sources: ControlSources, reference: string): { issueId: string; running: boolean } | null {
   let issueId: string;
   try {
-    issueId = resolveItem(service, reference);
+    issueId = resolveItem(sources, reference);
   } catch {
     return null;
   }
-  return { issueId, running: service.hasRunningAgent(issueId) };
+  return { issueId, running: sources.hasRunningAgent(issueId) };
 }
 
 const STOPPED = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
 
-function githubOutageStatus(service: ConveyorService): { since: string; waiting: number } | null {
-  const outage = service.githubOutage();
+function githubOutageStatus(sources: ControlSources): { since: string; waiting: number } | null {
+  const outage = sources.githubOutage();
   return outage ? { since: outage.since, waiting: outage.waitingItems.length } : null;
 }
 
 /** The status payload `GET /v1/status` and the operator MCP `conveyor_status` tool both return. */
-export function status(service: ConveyorService, info: ControlInfo) {
-  const work = service.activeWork();
-  const issues = service.store.listIssues().filter((issue) => issue.projectedState !== "unlisted");
+export function status(sources: ControlSources, info: ControlInfo) {
+  const work = sources.activeWork();
+  const issues = sources.store.listIssues().filter((issue) => issue.projectedState !== "unlisted");
   return {
     version: BUILD,
     pid: process.pid,
     ...info,
-    artifacts: service.config.settings.artifacts,
+    artifacts: sources.config.settings.artifacts,
     temporary: tmpdir(),
-    configHash: service.config.hash,
-    ready: service.isReady(),
-    startup: service.startupStatus(),
-    draining: service.draining(),
-    githubOutage: githubOutageStatus(service),
-    runners: { limit: service.config.settings.runners, busy: work.items.length },
-    active: work.items.map((item) => ({ item: itemReference(service, item.issueId), stage: item.stageId })),
+    configHash: sources.config.hash,
+    ready: sources.isReady(),
+    startup: sources.startupStatus(),
+    draining: sources.draining(),
+    githubOutage: githubOutageStatus(sources),
+    runners: { limit: sources.config.settings.runners, busy: work.items.length },
+    active: work.items.map((item) => ({ item: itemReference(sources, item.issueId), stage: item.stageId })),
     steering: work.steering,
     stopped: issues
       .filter((issue) => STOPPED.has(issue.projectedState ?? ""))
@@ -104,17 +104,17 @@ export function status(service: ConveyorService, info: ControlInfo) {
         title: issue.title,
         stage: issue.projectedStage,
         state: issue.projectedState,
-        reason: service.itemNow(issue.id)?.reason ?? issue.warning,
+        reason: sources.itemNow(issue.id)?.reason ?? issue.warning,
       })),
-    openQuestions: service.store.listOpenQuestions()
-      .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "unlisted")
+    openQuestions: sources.store.listOpenQuestions()
+      .filter((question) => sources.store.getIssue(question.issueId)?.projectedState !== "unlisted")
       .length,
   };
 }
 
-function board(service: ConveyorService) {
-  const running = new Set(service.activeWork().items.map((item) => item.issueId));
-  return service.store.listIssues()
+function board(sources: ControlSources) {
+  const running = new Set(sources.activeWork().items.map((item) => item.issueId));
+  return sources.store.listIssues()
     .filter((issue) => issue.projectedState !== "unlisted")
     .sort((left, right) => (left.queueRank ?? Infinity) - (right.queueRank ?? Infinity))
     .map((issue) => ({
@@ -127,26 +127,26 @@ function board(service: ConveyorService) {
     }));
 }
 
-function item(service: ConveyorService, issueId: string) {
-  const issue = service.store.getIssue(issueId)!;
-  const now = service.itemNow(issueId);
-  const question = service.store.listOpenQuestions().find((candidate) => candidate.issueId === issueId) ?? null;
-  const running = service.activeWork().items.some((entry) => entry.issueId === issueId);
-  const paused = issue.labels.includes(service.config.labels.metadata.paused);
-  const stoppedRollup = STOPPED.has(issue.projectedState ?? "") && service.store.listChildren(issueId).length > 0;
+function item(sources: ControlSources, issueId: string) {
+  const issue = sources.store.getIssue(issueId)!;
+  const now = sources.itemNow(issueId);
+  const question = sources.store.listOpenQuestions().find((candidate) => candidate.issueId === issueId) ?? null;
+  const running = sources.activeWork().items.some((entry) => entry.issueId === issueId);
+  const paused = issue.labels.includes(sources.config.labels.metadata.paused);
+  const stoppedRollup = STOPPED.has(issue.projectedState ?? "") && sources.store.listChildren(issueId).length > 0;
   const actions: string[] = [];
   if (question) actions.push(`answer the question: conveyor questions answer ${question.id} <answer>`);
-  if (service.canResumeRollupParent(issueId)) actions.push(`resume waiting for children: conveyor item resume-waiting ${itemReference(service, issueId)}`);
-  else if (service.canRetryIssue(issueId)) {
-    const retryTarget = service.retryTargetStage(issueId) ?? issue.projectedStage;
+  if (sources.canResumeRollupParent(issueId)) actions.push(`resume waiting for children: conveyor item resume-waiting ${itemReference(sources, issueId)}`);
+  else if (sources.canRetryIssue(issueId)) {
+    const retryTarget = sources.retryTargetStage(issueId) ?? issue.projectedStage;
     actions.push(retryTarget === issue.projectedStage
-      ? `retry the ${issue.projectedStage} stage: conveyor item retry ${itemReference(service, issueId)}`
-      : `retry to ${retryTarget}: conveyor item retry ${itemReference(service, issueId)}`);
+      ? `retry the ${issue.projectedStage} stage: conveyor item retry ${itemReference(sources, issueId)}`
+      : `retry to ${retryTarget}: conveyor item retry ${itemReference(sources, issueId)}`);
   }
-  if (!paused && issue.sourceState === "open") actions.push(`pause it: conveyor item pause ${itemReference(service, issueId)}`);
-  if (paused && issue.sourceState === "open") actions.push(`resume it: conveyor item resume ${itemReference(service, issueId)}`);
+  if (!paused && issue.sourceState === "open") actions.push(`pause it: conveyor item pause ${itemReference(sources, issueId)}`);
+  if (paused && issue.sourceState === "open") actions.push(`resume it: conveyor item resume ${itemReference(sources, issueId)}`);
   return {
-    item: itemReference(service, issueId),
+    item: itemReference(sources, issueId),
     id: issue.id,
     title: issue.title,
     url: issue.sourceUrl,
@@ -183,13 +183,13 @@ function cliActor(request: Request): CommandActor {
 }
 
 /** Registers the commands only the process that owns the control socket can carry out. */
-function registerControlCommands(service: ConveyorService, info: ControlInfo, hooks: ControlHooks): void {
-  const commands = service.commands;
+function registerControlCommands(sources: ControlSources, info: ControlInfo, hooks: ControlHooks): void {
+  const commands = sources.commands;
   if (!commands.has("service.restart")) {
     commands.handle("service.restart", (input) => {
       if (!hooks.restart || !info.supervised) throw new ControlError("this Conveyor is not run by systemd, so it cannot restart itself; stop and start it instead", 409);
       // force interrupts running work, which resumes after the restart (as with systemctl restart).
-      const work = service.activeWork();
+      const work = sources.activeWork();
       if (!input.force && (work.items.length > 0 || work.steering > 0)) throw new ControlError("work is still running: drain first, or force the restart", 409);
       setTimeout(() => hooks.restart?.(), 50);
     });
@@ -204,31 +204,31 @@ function registerControlCommands(service: ConveyorService, info: ControlInfo, ho
   }
 }
 
-export function createControlHandler(service: ConveyorService, info: ControlInfo, hooks: ControlHooks = {}) {
-  registerControlCommands(service, info, hooks);
+export function createControlHandler(sources: ControlSources, info: ControlInfo, hooks: ControlHooks = {}) {
+  registerControlCommands(sources, info, hooks);
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const route = `${request.method} ${url.pathname}`;
     try {
-      if (route === "GET /v1/status") return json(status(service, info));
-      if (route === "GET /v1/board") return json(board(service));
-      if (route === "GET /v1/github-calls") return json(await service.githubCallReport());
+      if (route === "GET /v1/status") return json(status(sources, info));
+      if (route === "GET /v1/board") return json(board(sources));
+      if (route === "GET /v1/github-calls") return json(await sources.githubCallReport());
       if (route === "GET /v1/reports/findings") {
         const repository = url.searchParams.get("repository");
-        if (repository !== null && !service.config.repositories[repository]) throw new ControlError(`no configured repository ${repository}`, 400);
+        if (repository !== null && !sources.config.repositories[repository]) throw new ControlError(`no configured repository ${repository}`, 400);
         const sinceText = url.searchParams.get("since");
         const since = sinceText === null ? null : parseSince(sinceText);
         if (sinceText !== null && since === null) throw new ControlError(`since must be an ISO 8601 date or timestamp, not ${sinceText}`, 400);
-        return json(buildFindingReport(service.store, {
+        return json(buildFindingReport(sources.store, {
           ...(repository !== null ? { repositoryId: repository } : {}),
           ...(since !== null ? { since } : {}),
         }));
       }
       if (route === "GET /v1/questions") {
-        return json(service.store.listOpenQuestions()
-          .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "unlisted")
+        return json(sources.store.listOpenQuestions()
+          .filter((question) => sources.store.getIssue(question.issueId)?.projectedState !== "unlisted")
           .map((question) => ({
-          id: question.id, item: itemReference(service, question.issueId), prompt: question.prompt, reason: question.reason,
+          id: question.id, item: itemReference(sources, question.issueId), prompt: question.prompt, reason: question.reason,
           options: question.options, allowFreeText: question.allowFreeText, createdAt: question.createdAt,
           })));
       }
@@ -236,66 +236,66 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
       if (answer) {
         const text = (await body(request)).answer;
         if (typeof text !== "string" || !text.trim() || text.length > 4_000) throw new ControlError("answer must be 1-4000 characters", 400);
-        const question = service.store.getQuestion(decodeURIComponent(answer[1]!));
+        const question = sources.store.getQuestion(decodeURIComponent(answer[1]!));
         if (!question) throw new ControlError("no such question", 404);
         if (question.status !== "open") throw new ControlError(`the question is ${question.status}`, 409);
         const answeringActor = cliActor(request);
-        await service.commands.dispatch("question.answer", { questionId: question.id, answer: text.trim() }, answeringActor);
-        log.info("Question answered", { item: itemReference(service, question.issueId), question: question.id, actor: answeringActor.name });
-        return json({ answered: question.id, item: itemReference(service, question.issueId) });
+        await sources.commands.dispatch("question.answer", { questionId: question.id, answer: text.trim() }, answeringActor);
+        log.info("Question answered", { item: itemReference(sources, question.issueId), question: question.id, actor: answeringActor.name });
+        return json({ answered: question.id, item: itemReference(sources, question.issueId) });
       }
       const itemRoute = /^(GET|POST) \/v1\/items\/([^/]+)(?:\/(history|logs|retry|resume-waiting|pause|resume))?$/.exec(route);
       if (itemRoute) {
         const [, method, reference, action] = itemRoute;
-        const issueId = resolveItem(service, decodeURIComponent(reference!));
-        if (method === "GET" && !action) return json(item(service, issueId));
-        if (method === "GET" && action === "history") return json({ item: itemReference(service, issueId), transitions: itemTransitions(service.config, service.store, issueId) ?? [] });
+        const issueId = resolveItem(sources, decodeURIComponent(reference!));
+        if (method === "GET" && !action) return json(item(sources, issueId));
+        if (method === "GET" && action === "history") return json({ item: itemReference(sources, issueId), transitions: itemTransitions(sources.config, sources.store, issueId) ?? [] });
         if (method === "GET" && action === "logs") {
           const after = Number(url.searchParams.get("after") ?? "0");
           if (!Number.isSafeInteger(after) || after < 0) throw new ControlError("after must be an event id", 400);
-          return json({ item: itemReference(service, issueId), events: service.store.listIssueRunEventsAfter(issueId, after, 500) });
+          return json({ item: itemReference(sources, issueId), events: sources.store.listIssueRunEventsAfter(issueId, after, 500) });
         }
         if (method === "POST" && action === "retry") {
           const note = (await body(request)).note;
-          const { result } = await service.commands.dispatch("item.retry", { issueId, note: typeof note === "string" ? note : "" }, cliActor(request));
-          return json({ item: itemReference(service, issueId), ...result });
+          const { result } = await sources.commands.dispatch("item.retry", { issueId, note: typeof note === "string" ? note : "" }, cliActor(request));
+          return json({ item: itemReference(sources, issueId), ...result });
         }
         if (method === "POST" && action === "resume-waiting") {
-          const { result } = await service.commands.dispatch("item.resumeRollup", { issueId }, cliActor(request));
-          return json({ item: itemReference(service, issueId), ...result });
+          const { result } = await sources.commands.dispatch("item.resumeRollup", { issueId }, cliActor(request));
+          return json({ item: itemReference(sources, issueId), ...result });
         }
         if (method === "POST" && action === "pause") {
-          const { result } = await service.commands.dispatch("item.pause", { issueId }, cliActor(request));
-          return json({ item: itemReference(service, issueId), ...result });
+          const { result } = await sources.commands.dispatch("item.pause", { issueId }, cliActor(request));
+          return json({ item: itemReference(sources, issueId), ...result });
         }
         if (method === "POST" && action === "resume") {
-          const { result } = await service.commands.dispatch("item.resume", { issueId }, cliActor(request));
-          return json({ item: itemReference(service, issueId), ...result });
+          const { result } = await sources.commands.dispatch("item.resume", { issueId }, cliActor(request));
+          return json({ item: itemReference(sources, issueId), ...result });
         }
       }
       const dismissal = /^POST \/v1\/items\/([^/]+)\/findings\/([^/]+)\/dismiss$/.exec(route);
       if (dismissal) {
-        const issueId = resolveItem(service, decodeURIComponent(dismissal[1]!));
+        const issueId = resolveItem(sources, decodeURIComponent(dismissal[1]!));
         const findingId = decodeURIComponent(dismissal[2]!);
         const reason = (await body(request)).reason;
         if (typeof reason !== "string" || reason.trim().length === 0 || reason.length > 2_000) throw new ControlError("a reason of 1 to 2,000 characters is required", 400);
-        await service.commands.dispatch("finding.dismiss", { issueId, findingId, reason: reason.trim() }, cliActor(request));
-        return json({ item: itemReference(service, issueId), finding: findingId, state: "dismissed" });
+        await sources.commands.dispatch("finding.dismiss", { issueId, findingId, reason: reason.trim() }, cliActor(request));
+        return json({ item: itemReference(sources, issueId), finding: findingId, state: "dismissed" });
       }
       if (route === "POST /v1/drain") {
         const reason = (await body(request)).reason;
-        const { result } = await service.commands.dispatch("admission.drain", { reason: typeof reason === "string" ? reason.slice(0, 500) : "" }, cliActor(request));
-        return json({ draining: result, active: service.activeWork() });
+        const { result } = await sources.commands.dispatch("admission.drain", { reason: typeof reason === "string" ? reason.slice(0, 500) : "" }, cliActor(request));
+        return json({ draining: result, active: sources.activeWork() });
       }
-      if (route === "DELETE /v1/drain") return json({ resumed: (await service.commands.dispatch("admission.resume", {}, cliActor(request))).result });
+      if (route === "DELETE /v1/drain") return json({ resumed: (await sources.commands.dispatch("admission.resume", {}, cliActor(request))).result });
       if (route === "POST /v1/restart") {
-        await service.commands.dispatch("service.restart", { force: (await body(request)).force === true }, cliActor(request));
+        await sources.commands.dispatch("service.restart", { force: (await body(request)).force === true }, cliActor(request));
         return json({ restarting: true });
       }
       if (route === "POST /v1/cleanup") {
         const input = await body(request);
         const age = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null);
-        return json((await service.commands.dispatch("service.cleanup", {
+        return json((await sources.commands.dispatch("service.cleanup", {
           dryRun: input.dryRun === true, runHistoryMs: age(input.runHistoryMs), artifactsMs: age(input.artifactsMs),
         }, cliActor(request))).result);
       }
@@ -307,14 +307,14 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
           throw new ControlError("kind (upgrade or rollback), prefix and, for an upgrade, version are required", 400);
         }
         const drainTimeoutMs = typeof input.drainTimeoutMs === "number" && Number.isSafeInteger(input.drainTimeoutMs) && input.drainTimeoutMs > 0 ? input.drainTimeoutMs : 30 * 60_000;
-        const { result: pending } = await service.commands.dispatch("release.schedule", {
+        const { result: pending } = await sources.commands.dispatch("release.schedule", {
           kind, prefix: input.prefix, drainTimeoutMs, restoreBackup: input.restoreBackup === true,
           ...(typeof input.version === "string" ? { version: input.version } : {}),
         }, cliActor(request));
         return json({ pending }, 202);
       }
       if (route === "DELETE /v1/releases/pending" && hooks.releases) {
-        return json({ cancelled: (await service.commands.dispatch("release.cancel", {}, cliActor(request))).result });
+        return json({ cancelled: (await sources.commands.dispatch("release.cancel", {}, cliActor(request))).result });
       }
       return json({ error: `no route ${route}` }, 404);
     } catch (error) {
