@@ -33,8 +33,8 @@ describe("configured Codex isolation doctor checks", () => {
 
     expect(guide).toContain("`agentEgress` report network and PID namespace support");
     expect(guide).toContain("the filesystem mounts required by Conveyor's bubblewrap egress wrapper");
-    expect(guide).toMatch(/Without `agentEgress`, the\s+check instead reports/);
-    expect(guide).toContain("the user namespace required by Codex's own sandbox");
+    expect(guide).toMatch(/Without `agentEgress`, Codex\s+needs no namespace of its own/);
+    expect(guide).not.toContain("user namespace required by Codex's own sandbox");
   });
 
   test("reports egress namespace and filesystem-mount isolation as available", async () => {
