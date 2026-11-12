@@ -2121,32 +2121,37 @@ describe("dashboard stop summary and full result", () => {
     }
   }, 30_000);
 
-  for (const theme of ["light", "dark"] as const) {
-    test(`the box and the Needs you list cause no horizontal scrolling at 360 px in the ${theme} theme`, async () => {
-      const item = stopped(null);
-      const server = startDashboard({ dashboard: () => withNeedsYou(item), revision: () => "stop-summary" });
-      try {
-        browser = await chromium.launch({ headless: true });
-        const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: theme });
-        await signIn(page, server.port);
-        const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
-        await page.locator("[data-needs-you] .needs-you-item").waitFor();
-        expect(await fits()).toBe(true);
-        expect(await page.locator("[data-needs-you]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-
-        await page.locator('article.issue[data-issue-id="stopped"] .card-open').click();
-        const box = page.locator(".blocked-summary");
-        await box.waitFor();
-        expect(await fits()).toBe(true);
-        expect(await box.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-        await page.getByRole("button", { name: "View full result" }).click();
-        const full = page.locator("dialog.full-result[open]");
-        await full.waitFor();
-        expect(await full.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-        expect(await fits()).toBe(true);
-      } finally {
-        server.stop(true);
-      }
-    }, 30_000);
+  async function expectNoSidewaysScroll(theme: "light" | "dark"): Promise<void> {
+    const item = stopped(null);
+    const server = startDashboard({ dashboard: () => withNeedsYou(item), revision: () => "stop-summary" });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: theme });
+      await signIn(page, server.port);
+      const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+      await page.locator("[data-needs-you] .needs-you-item").waitFor();
+      expect(await fits()).toBe(true);
+      expect(await page.locator("[data-needs-you]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await page.locator('article.issue[data-issue-id="stopped"] .card-open').click();
+      const box = page.locator(".blocked-summary");
+      await box.waitFor();
+      expect(await fits()).toBe(true);
+      expect(await box.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await page.getByRole("button", { name: "View full result" }).click();
+      const full = page.locator("dialog.full-result[open]");
+      await full.waitFor();
+      expect(await full.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+      expect(await fits()).toBe(true);
+    } finally {
+      server.stop(true);
+    }
   }
+
+  test("the box and the Needs you list cause no horizontal scrolling at 360 px in the light theme", async () => {
+    await expectNoSidewaysScroll("light");
+  }, 30_000);
+
+  test("the box and the Needs you list cause no horizontal scrolling at 360 px in the dark theme", async () => {
+    await expectNoSidewaysScroll("dark");
+  }, 30_000);
 });
