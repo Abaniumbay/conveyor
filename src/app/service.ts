@@ -22,7 +22,7 @@ import { ConveyorStore, type StoredIssue, type StoredQuestion } from "../db/stor
 import type { Harness } from "../harness/types";
 import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt, type WebhookSettings } from "../core/plugins";
 import { GitHubAdapter, GitHubTransportError } from "../plugins/github/shared/adapter";
-import { followUpsFromBody } from "../plugins/github/shared/managed-sections";
+import { followUpsFromBody } from "../source/managed-sections";
 import { GitHubRepositoryTrust } from "../plugins/github/shared/trust";
 import { isIssueGone, type SourceIssue } from "../source/types";
 import type { DeliveredActors } from "../core/reconciler";

@@ -21,7 +21,7 @@ import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 import { CriterionApprovals, criterionTextHash } from "../../src/db/review-records";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
-import { parseManagedSections, upsertManagedSection } from "../../src/plugins/github/shared/managed-sections";
+import { parseManagedSections, upsertManagedSection } from "../../src/source/managed-sections";
 import type { SourceIssue } from "../../src/source/types";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { renderBreakdownPlan } from "../../src/tasks/breakdown";

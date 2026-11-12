@@ -6,18 +6,11 @@
   "implementation-import src/app/service.ts -> src/plugins/github/items/status-comment.ts",
   "implementation-import src/app/service.ts -> src/plugins/github/shared/adapter.ts",
   "implementation-import src/app/service.ts -> src/plugins/github/shared/call-meter.ts",
-  "implementation-import src/app/service.ts -> src/plugins/github/shared/managed-sections.ts",
   "implementation-import src/app/service.ts -> src/plugins/github/shared/trust.ts",
   "implementation-import src/app/service.ts -> src/runner/codex-steering.ts",
   "implementation-import src/cli/commands/doctor.ts -> src/plugins/github/shared/adapter.ts",
   "implementation-import src/cli/commands/doctor.ts -> src/plugins/github/shared/call-meter.ts",
   "implementation-import src/cli/commands/doctor.ts -> src/plugins/github/shared/trust.ts",
   "implementation-import src/commands/bus.ts -> src/plugins/github/shared/call-meter.ts",
-  "implementation-import src/db/store.ts -> src/plugins/github/shared/read-cache.ts",
-  "implementation-import src/tasks/breakdown.ts -> src/plugins/github/shared/managed-sections.ts",
-  "implementation-import src/tasks/change-criteria.ts -> src/plugins/github/shared/managed-sections.ts",
-  "implementation-import src/tasks/change.ts -> src/plugins/github/shared/managed-sections.ts",
-  "implementation-import src/tasks/deps.ts -> src/plugins/github/shared/adapter.ts",
-  "implementation-import src/tasks/item.ts -> src/plugins/github/items/issue-metadata.ts",
-  "implementation-import src/tasks/item.ts -> src/plugins/github/shared/managed-sections.ts"
+  "implementation-import src/db/store.ts -> src/plugins/github/shared/read-cache.ts"
 ]

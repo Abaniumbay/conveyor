@@ -10,7 +10,7 @@ import type { ConversationStore, EvidenceStore, ItemStore, JournalStore, RunLogS
  * the event log, the provider cache, webhook deliveries and the database handle are not theirs.
  */
 export type TaskStore = ItemStore & JournalStore & EvidenceStore & RunLogStore & ConversationStore;
-import type { GitHubAdapter } from "../plugins/github/shared/adapter";
+import type { ItemTracker } from "../source/types";
 import type { GitOps } from "../workspace/git";
 import type { WorkspaceLifecycleManager } from "../workspace/lifecycle";
 import type { RuntimeDeliveryState, ScopedMcpFactory } from "../app/runtime";
@@ -21,26 +21,8 @@ import type { AgentActor } from "./agent-support";
 export interface TaskDeps {
   store: TaskStore;
   config: ConveyorConfig;
-  /** The source adapter methods the item group uses. */
-  items: Pick<
-    GitHubAdapter,
-    | "getIssue"
-    | "addComment"
-    | "updateManagedSection"
-    | "managedRevision"
-    | "setParent"
-    | "setDependencies"
-    | "listSubIssues"
-    | "replaceConveyorLabels"
-    | "replaceManagedProjectLabels"
-    | "createChildIssue"
-    | "setTitle"
-    | "listIssueTypes"
-    | "listIssueFields"
-    | "getIssueFieldValues"
-    | "setIssueType"
-    | "setIssueFieldValues"
-  >;
+  /** The item source ports the item group uses. */
+  items: ItemTracker;
   repository: { id: string; address: string; folder: string; baseBranch: string };
   issueId: string;
   sourceGuidance: string;
