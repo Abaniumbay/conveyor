@@ -7,6 +7,8 @@ import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
+import { codexProfile } from "../../src/plugins/codex/profile";
+import { claudeCodeProfile } from "../../src/plugins/claude-code/profile";
 import type { RunEnvelope } from "../../src/runner/result";
 
 const temporaryDirectories: string[] = [];
@@ -49,6 +51,7 @@ async function fixture(options: { runner?: "codex" | "claude-code"; steering?: b
   const calls: HarnessRunInput[] = [];
   const harness = (): Harness => ({
     id: runnerType, capabilities: { sessionResume: false } as Harness["capabilities"],
+    profile: runnerType === "codex" ? codexProfile : claudeCodeProfile,
     async run(input) { calls.push(input); return options.run(input, () => current); },
   });
   const service = new ConveyorService(config, store, {} as never, { harnesses: { [runnerType]: harness() }, ...(options.stopSummaryTimeoutMs ? { stopSummaryTimeoutMs: options.stopSummaryTimeoutMs } : {}) });

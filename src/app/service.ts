@@ -19,7 +19,7 @@ import { RepositoryPausedError } from "../core/repository-pause";
 import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
 import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue, type StoredQuestion } from "../db/store";
-import type { Harness } from "../harness/types";
+import type { Harness, SteeringRunInput, SteeringRunResult } from "../harness/types";
 import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt, type WebhookSettings } from "../core/plugins";
 import { isSourceAccessDenied, type HookDeliveryAttempt, type ItemSourceClient } from "../source/client";
 import { followUpsFromBody } from "../source/managed-sections";
@@ -35,7 +35,6 @@ import { canonicalToolName } from "../tasks/aliases";
 import type { Feedback } from "../tasks/context";
 import { conveyorToolGuidance } from "../mcp/guidance";
 import { dispatchTool } from "../tasks/dispatch";
-import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { displayName, formatDuration } from "../web/format";
 import type { IssueJourneyViewModel, IssueWaitingViewModel } from "../web/types";
@@ -127,7 +126,8 @@ interface DeliveredIssue {
 }
 
 interface ServiceImplementations {
-  steering?: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
+  /** Runs the Operator instead of the steering agent's harness. */
+  steering?: (input: SteeringRunInput) => Promise<SteeringRunResult>;
   /** The registered plugins: CI providers, and the code hosts and harnesses unless given below. */
   plugins?: PluginRegistry;
   codeHosts?: CodeHostRegistry;
@@ -449,7 +449,7 @@ export class ConveyorService {
   readonly #harnesses: Record<string, Harness>;
   readonly #stopSummaryTimeoutMs: number;
   readonly #plugins: PluginRegistry;
-  readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
+  readonly #runSteering: ((input: SteeringRunInput) => Promise<SteeringRunResult>) | undefined;
   readonly #manualGateApprovals: ManualGateApprovals;
   readonly #issueTrust: ActorTrust;
 
@@ -486,7 +486,7 @@ export class ConveyorService {
     ];
     this.#sinks = sinks.map((sink) => new SinkRunner(store.events(), sink));
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
-    this.#runSteering = implementations.steering ?? runCodexSteering;
+    this.#runSteering = implementations.steering;
     this.#harnesses = implementations.harnesses ?? this.#plugins.harnesses();
     this.#stopSummaryTimeoutMs = implementations.stopSummaryTimeoutMs ?? STOP_SUMMARY_TIMEOUT_MS;
     this.#manualGateApprovals = store.manualGates();
@@ -2358,7 +2358,7 @@ export class ConveyorService {
         this.mcpFactory(),
         this.sourceActions(context),
         refreshDeliveryState,
-        {},
+        { harnesses: this.#harnesses },
         signal,
       ),
     });
@@ -4593,7 +4593,7 @@ export class ConveyorService {
       const agent = this.config.agents[agentId];
       if (!agent) throw new Error(`Unknown steering agent: ${agentId}`);
       const runner = this.config.runners[agent.runner];
-      if (!runner || (runner.type !== "codex" && runner.type !== "claude-code")) {
+      if (!runner || runner.type === "json-process") {
         throw new Error(`The steering agent ${agentId} must use a Codex or Claude Code runner`);
       }
       const harness = this.#harnesses[runner.type];
@@ -4620,8 +4620,8 @@ export class ConveyorService {
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
         sandbox: "read-only",
-        automaticApprovals: runner.type === "codex" ? runner.automaticApprovals : false,
-        ...(runner.type === "claude-code" ? { shell: false as const } : {}),
+        automaticApprovals: harness.profile.sandbox === "runner" && "automaticApprovals" in runner ? runner.automaticApprovals : false,
+        ...(harness.profile.optionalShell ? { shell: false as const } : {}),
         mcp: lease.configuration,
         timeoutMs: this.#stopSummaryTimeoutMs,
         interruptGraceMs: this.config.settings.interruptGraceMs,
@@ -4712,6 +4712,14 @@ export class ConveyorService {
     await this.#steeringCompletions.get(runId);
   }
 
+  /** The steering agent's harness, unless the service was given its own Operator runner. */
+  private steeringRunner(runnerType: string): (input: SteeringRunInput) => Promise<SteeringRunResult> {
+    if (this.#runSteering) return this.#runSteering;
+    const harness = this.#harnesses[runnerType];
+    if (!harness?.steer) throw new Error(`No harness can run the steering agent for runner type ${runnerType}`);
+    return harness.steer.bind(harness);
+  }
+
   private async executeSteering(
     runId: string,
     userPrompt: string,
@@ -4724,9 +4732,10 @@ export class ConveyorService {
     const started = performance.now();
     let lease: ScopedMcpLease | null = null;
     try {
+      const steer = this.steeringRunner(runner.type);
       lease = await this.steeringMcpLease(runId, workspace, agent.tasks);
       const instructions = await readFile(agent.instructions, "utf8");
-      const result = await this.#runSteering({
+      const result = await steer({
         command: runner.command,
         workspace,
         artifactsDirectory: path.join(this.config.settings.artifacts, runId),

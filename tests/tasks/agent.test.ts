@@ -7,6 +7,8 @@ import { bwrapUnavailableReason } from "../support/bwrap";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
+import { codexProfile } from "../../src/plugins/codex/profile";
+import { claudeCodeProfile } from "../../src/plugins/claude-code/profile";
 import { ReviewFindings } from "../../src/db/review-findings";
 import { ItemTodos } from "../../src/db/todos";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
@@ -76,6 +78,7 @@ async function world(options: { sessionResume?: boolean; noWorkspace?: boolean; 
   const harness: Harness = {
     id: "fake",
     capabilities: { sessionResume: options.sessionResume ?? true },
+    profile: codexProfile,
     async run(input) {
       calls.push(input);
       return envelope(behaviour(input, leases.at(-1)!.runId, store));
@@ -337,7 +340,7 @@ describe("agent.run", () => {
     config.runners.claude = { type: "claude-code", command: "claude", configDir: "/claude-config" };
     config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude" };
     const harnesses = w.deps.harnesses as Record<string, unknown>;
-    harnesses["claude-code"] = harnesses.codex;
+    harnesses["claude-code"] = { ...harnesses.codex as Harness, profile: claudeCodeProfile };
     expect((await w.run(false, { agent: "jamshid" })).status).toBe("pass");
     expect(w.calls.at(-1)!.env).toEqual({ NUGET_PACKAGES: "/caches/nuget", CLAUDE_CONFIG_DIR: "/claude-config" });
   });
@@ -348,7 +351,7 @@ describe("agent.run", () => {
     config.runners.claude = { type: "claude-code", command: "claude" };
     config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude" };
     const harnesses = w.deps.harnesses as Record<string, unknown>;
-    harnesses["claude-code"] = harnesses.codex;
+    harnesses["claude-code"] = { ...harnesses.codex as Harness, profile: claudeCodeProfile };
     expect((await w.run(false, { agent: "jamshid" })).status).toBe("pass");
     expect("shell" in w.calls.at(-1)!).toBe(false);
     config.agents.jamshid = { ...config.agents.jamshid as object, shell: false };
@@ -461,7 +464,7 @@ describe("agent.run", () => {
       mcpServers: { serena: { command: "serena", args: ["--project", "{workspace}"], env: {}, enabledTools: ["find_symbol"], gitExclude: [".serena/"] } },
     };
     const harnesses = w.deps.harnesses as Record<string, unknown>;
-    harnesses["claude-code"] = harnesses.codex;
+    harnesses["claude-code"] = { ...harnesses.codex as Harness, profile: claudeCodeProfile };
     expect((await w.run(false, { agent: "jamshid" })).status).toBe("pass");
     const git = path.join(workspace, ".git");
     expect(w.calls[0]).toMatchObject({
@@ -480,7 +483,7 @@ describe("agent.run", () => {
     config.runners.claude = { type: "claude-code", command: "claude", controlPlaneHosts: ["model.example.test"] };
     config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude", workspaceAccess: "read-only" };
     const harnesses = w.deps.harnesses as Record<string, unknown>;
-    harnesses["claude-code"] = harnesses.codex;
+    harnesses["claude-code"] = { ...harnesses.codex as Harness, profile: claudeCodeProfile };
     config.web = { listen: "127.0.0.1:4310" };
     await w.run(false, { agent: "jamshid" });
     expect(w.calls[0]!.egress).toBeUndefined();
@@ -506,7 +509,7 @@ describe("agent.run", () => {
     config.runners.claude = { type: "claude-code", command: "claude" };
     config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude", workspaceAccess: "workspace-write" };
     const harnesses = w.deps.harnesses as Record<string, unknown>;
-    harnesses["claude-code"] = harnesses.codex;
+    harnesses["claude-code"] = { ...harnesses.codex as Harness, profile: claudeCodeProfile };
     await w.run(false, { agent: "kaveh" });
     await w.run(false, { agent: "jamshid" });
     const section = (prompt: string) => /"handover": \{[\s\S]*?"worktree"/.exec(prompt)?.[0];

@@ -4,51 +4,22 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { z } from "zod";
 
-import type { CheckResult } from "../core/pipeline";
-import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
-import { prepareCodexEnvironment } from "../isolation/environment";
-import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
-import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
+import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
+import { prepareCodexEnvironment } from "../../isolation/environment";
+import { acquireScratch, assertNoHostTmpWritableRoots } from "../../isolation/scratch";
+import { codexLaunch, type RunNetwork } from "../../isolation/run-network";
 import {
   CodexRunnerError,
   cleanupCodexRun,
   withCleanupError,
-  type CodexMcpConfiguration,
   type CodexErrorKind,
 } from "./codex";
-import { EMPTY_USAGE, type RunEnvelope } from "./result";
-import { writeOutputSchema } from "./output-schemas";
+import { EMPTY_USAGE } from "../../runner/result";
+import { writeOutputSchema } from "../../runner/output-schemas";
+import type { CheckRunInput, CheckRunResult } from "../../harness/types";
 
-export interface CodexCheckInput {
-  command: string;
-  workspace: string;
-  artifactsDirectory: string;
-  prompt: string;
-  model?: string;
-  effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
-  sandbox: "read-only" | "workspace-write" | "danger-full-access";
-  automaticApprovals: boolean;
-  mcp: CodexMcpConfiguration;
-  env?: Record<string, string>;
-  timeoutMs?: number;
-  interruptGraceMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: unknown) => void;
-  /** Network isolation policy; absent keeps the legacy (environment-only) behaviour. */
-  egress?: EgressInput;
-  writableRoots?: string[];
-  /** Persistent item scratch, or omitted for disposable runner-owned scratch. */
-  temporaryDirectory?: string;
-}
-
-export interface CodexCheckRunResult extends CheckResult {
-  sessionId: string | null;
-  usage: RunEnvelope["usage"];
-  durationMs: number;
-  exitCode: number;
-  stderr: string;
-  cleanupError?: string;
-}
+export type CodexCheckInput = CheckRunInput;
+export type CodexCheckRunResult = CheckRunResult;
 
 export const checkResultSchema = z
   .object({

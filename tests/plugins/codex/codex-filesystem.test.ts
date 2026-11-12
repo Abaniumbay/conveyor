@@ -3,9 +3,9 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { runCodex } from "../../src/runner/codex";
-import { bwrapUnavailableReason } from "../support/bwrap";
-import { shortTemporaryDirectory } from "../support/short-temporary-directory";
+import { runCodex } from "../../../src/plugins/codex/codex";
+import { bwrapUnavailableReason } from "../../support/bwrap";
+import { shortTemporaryDirectory } from "../../support/short-temporary-directory";
 
 const directories: string[] = [];
 const unavailable = bwrapUnavailableReason();

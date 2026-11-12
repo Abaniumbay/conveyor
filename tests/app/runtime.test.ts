@@ -8,6 +8,8 @@ import { loadConfig } from "../../src/config/load";
 import type { StageConfig } from "../../src/config/schema";
 import { resolveFilesystemPath } from "../../src/core/paths";
 import { ConveyorStore } from "../../src/db/store";
+import type { CheckRunResult, Harness } from "../../src/harness/types";
+import { codexProfile } from "../../src/plugins/codex/profile";
 import type { RunEnvelope } from "../../src/runner/result";
 
 const directories: string[] = [];
@@ -293,6 +295,87 @@ repositories:
         message: "Deploy script completed: Deployment completed.",
       },
     ]);
+    store.close();
+  });
+
+  test("runs legacy producers and checks on the runner's harness, and says so when it has none", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-runtime-harness-"));
+    directories.push(root);
+    const repository = path.join(root, "repository");
+    await mkdir(repository);
+    await writeFile(path.join(root, "agent.md"), "Work.");
+    await writeFile(path.join(root, "config.yml"), `
+settings:
+  database: ${root}/db.sqlite
+  logs: ${root}/logs
+  workspaces: ${root}/workspaces
+  artifacts: ${root}/artifacts
+web: {}
+sources:
+  github: { type: github }
+runners:
+  codex: { type: codex, command: codex }
+agents:
+  worker: { runner: codex, instructions: ./agent.md, tools: [source.get_issue] }
+  checker: { runner: codex, instructions: ./agent.md, workspaceAccess: read-only, tools: [source.get_issue] }
+checks:
+  verify: { verifier: checker }
+labels:
+  enrollment: conveyor
+  stageTemplate: "conveyor:{stage}"
+  states: { done: "conveyor:done", blocked: "conveyor:blocked" }
+  metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" }
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - { id: implementation, run: { agent: worker }, concurrency: 1, exitCheck: verify }
+repositories:
+  repo: { source: github, address: owner/repo, folder: ${repository}, pipeline: default }
+`);
+    const config = await loadConfig(path.join(root, "config.yml"));
+    const store = await ConveyorStore.open(config.settings.database);
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: repository, configHash: config.hash });
+    store.upsertIssue({
+      id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://github.com/owner/repo/issues/1", title: "Feature",
+      body: "Requirements", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    const issue = store.getIssue("issue")!;
+    const envelope: RunEnvelope = {
+      stageResult: { outcome: "success", status: "done", summary: "Implemented", reason: null, metrics: {} },
+      sessionId: null, usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+      cost: { amount: 0, currency: "USD", source: "unavailable" }, durationMs: 1, exitCode: 0, artifacts: [], stderr: "",
+    };
+    const checked: CheckRunResult = {
+      decision: "pass", status: "ready", reason: null, evidence: [], requiredFixes: [], criteria: [],
+      sessionId: null, usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, durationMs: 1, exitCode: 0, stderr: "",
+    };
+    const calls: string[] = [];
+    const base: Harness = { id: "codex", capabilities: { sessionResume: true }, profile: codexProfile, run: async () => { throw new Error("agent turns are not legacy runs"); } };
+    const runtimeWith = (harness: Harness) => new ConfiguredStageRuntime(
+      config, store,
+      { issue, repository: { id: "repo", address: "owner/repo", folder: repository, baseBranch: "main" }, workspace: { path: repository, branch: "conveyor/1" }, sourceGuidance: "" },
+      { async create() { return { configuration: { command: "bun", args: [] }, async close() {} }; } },
+      { async run() {} },
+      undefined,
+      { harnesses: { codex: harness } },
+    );
+    const stage = config.pipelines.default!.stages[0]! as StageConfig;
+    const context = { issue: issue as unknown as Record<string, unknown>, workspace: repository, stageId: stage.id, attempt: 1, feedback: null };
+
+    const capable = runtimeWith({
+      ...base,
+      runEphemeral: async (input) => { calls.push(`produce ${input.sandbox}`); return envelope; },
+      check: async (input) => { calls.push(`check ${input.sandbox}`); return checked; },
+    });
+    expect(await capable.runProducer(stage, context)).toEqual(envelope);
+    expect(await capable.runCheck("verify", "exit", { ...context, producerResult: envelope })).toMatchObject({ decision: "pass" });
+    expect(calls).toEqual(["produce workspace-write", "check read-only"]);
+
+    const incapable = runtimeWith(base);
+    await expect(incapable.runProducer(stage, context)).rejects.toThrow("no harness runs legacy stages for runner type codex");
+    await expect(incapable.runCheck("verify", "exit", { ...context, producerResult: envelope })).rejects.toThrow("no harness runs legacy checks for runner type codex");
     store.close();
   });
 });

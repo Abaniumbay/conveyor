@@ -16,7 +16,7 @@ import { z } from "zod";
 
 import type { ConversationStore, RunLogStore } from "../db/ports";
 import type { StoredQuestion } from "../db/store";
-import type { Harness } from "../harness/types";
+import type { Harness, HarnessProfile, HarnessRunInput } from "../harness/types";
 import { agentEgressFor } from "../isolation/agent-egress";
 import { probeAgentMcpServers, type AgentMcpProbeOptions, type McpServerSpec } from "../isolation/mcp-probe";
 import { protectedServiceLocations, resolveToolchainPaths } from "../isolation/toolchain-paths";
@@ -180,7 +180,7 @@ async function runWithCorrection(
     const sessionId = (error as { sessionId?: unknown } | null)?.sessionId;
     if (!isInvalidResult(error) || typeof sessionId !== "string" || args.deps.signal?.aborted) throw error;
     const runner = args.deps.config.runners[args.deps.config.agents[agentId]?.runner ?? ""];
-    if (!runner || (runner.type !== "codex" && runner.type !== "claude-code") || !args.deps.harnesses?.[runner.type]?.capabilities.sessionResume) throw error;
+    if (!runner || runner.type === "json-process" || !args.deps.harnesses?.[runner.type]?.capabilities.sessionResume) throw error;
     return await runAgent(args, agentId, answered, { message: (error as Error).message, sessionId }, runIds);
   }
 }
@@ -231,7 +231,7 @@ async function runAgent(
   const agent = deps.config.agents[agentId];
   if (!agent) throw new Error(`unknown agent: ${agentId}`);
   const runner = deps.config.runners[agent.runner];
-  if (!runner || (runner.type !== "codex" && runner.type !== "claude-code")) {
+  if (!runner || runner.type === "json-process") {
     throw new Error(`agent ${agentId} must use a Codex or Claude Code runner`);
   }
   const harness: Harness | undefined = deps.harnesses?.[runner.type];
@@ -287,25 +287,13 @@ async function runAgent(
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
         ...(Object.keys(agent.env ?? {}).length > 0 ? { env: agent.env } : {}),
-        ...(runner.type === "codex"
-          ? {
-              sandbox: agent.workspaceAccess === "read-only" ? ("read-only" as const) : runner.sandbox,
-              automaticApprovals: runner.automaticApprovals,
-              ...egressFor(deps, runner),
-              ...(await codexAccess(agent, workspace.path)),
-              temporaryDirectory: workspaceScratchPath(workspace.path),
-              ...(await codexExtensions(agent, workspace.path)),
-            }
-          : {
-              sandbox: agent.workspaceAccess === "workspace-write" ? ("workspace-write" as const) : ("read-only" as const),
-              automaticApprovals: false,
-              ...(agent.shell === false ? { shell: false as const } : {}),
-              ...(runner.configDir ? { env: { ...(agent.env ?? {}), CLAUDE_CONFIG_DIR: runner.configDir } } : {}),
-              ...egressFor(deps, runner),
-              ...(await codexAccess(agent, workspace.path)),
-              temporaryDirectory: workspaceScratchPath(workspace.path),
-              ...withoutCodexConfig(await codexExtensions(agent, workspace.path)),
-            }),
+        ...harnessSettings(harness.profile, runner, agent),
+        ...egressFor(deps, runner),
+        ...(await codexAccess(agent, workspace.path)),
+        temporaryDirectory: workspaceScratchPath(workspace.path),
+        ...(harness.profile.extraSettings
+          ? await codexExtensions(agent, workspace.path)
+          : withoutCodexConfig(await codexExtensions(agent, workspace.path))),
         ...toolchainFor(deps),
         mcp: lease.configuration,
         interruptGraceMs: deps.config.settings.interruptGraceMs,
@@ -527,6 +515,31 @@ async function probeConfiguredMcpServers(
 }
 
 /** Claude Code takes the MCP servers; Codex settings do not apply to it. */
+/**
+ * The sandbox mode, approvals, shell and config directory a run starts with, as the harness's profile
+ * declares them: from the runner's settings or from the agent's access alone.
+ */
+function harnessSettings(
+  profile: HarnessProfile,
+  runner: { sandbox?: HarnessRunInput["sandbox"]; automaticApprovals?: boolean; configDir?: string | undefined },
+  agent: { workspaceAccess: string; shell?: boolean; env?: Record<string, string> },
+): Pick<HarnessRunInput, "sandbox" | "automaticApprovals" | "shell" | "env"> {
+  const fromRunner = profile.sandbox === "runner" && runner.sandbox !== undefined && runner.automaticApprovals !== undefined
+    ? { sandbox: runner.sandbox, automaticApprovals: runner.automaticApprovals }
+    : null;
+  const configDirectory = profile.configDirectoryVariable && runner.configDir
+    ? { [profile.configDirectoryVariable]: runner.configDir }
+    : null;
+  return {
+    sandbox: fromRunner
+      ? (agent.workspaceAccess === "read-only" ? "read-only" : fromRunner.sandbox)
+      : (agent.workspaceAccess === "workspace-write" ? "workspace-write" : "read-only"),
+    automaticApprovals: fromRunner ? fromRunner.automaticApprovals : false,
+    ...(profile.optionalShell && agent.shell === false ? { shell: false as const } : {}),
+    ...(configDirectory ? { env: { ...(agent.env ?? {}), ...configDirectory } } : {}),
+  };
+}
+
 function withoutCodexConfig<T extends { config?: unknown }>(extensions: T): Omit<T, "config"> {
   const { config: _config, ...rest } = extensions;
   return rest;

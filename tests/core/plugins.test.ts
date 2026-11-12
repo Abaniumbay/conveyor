@@ -7,6 +7,7 @@ import type { ConveyorConfig } from "../../src/config/load";
 import { EventBus } from "../../src/events/bus";
 import { pluginContext, PluginRegistry, type CiPluginOptions, type Plugin, type PresentationModule, type PresentationPlugin } from "../../src/core/plugins";
 import type { Harness } from "../../src/harness/types";
+import { codexProfile } from "../../src/plugins/codex/profile";
 import type { DashboardReads } from "../../src/web/server";
 import { z } from "zod";
 
@@ -17,7 +18,7 @@ const config = (sections: Partial<Pick<ConveyorConfig, "codeHosts" | "sources">>
   ({ codeHosts: {}, sources: {}, ...sections }) as unknown as ConveyorConfig;
 
 const host = (name: string) => ({ name }) as unknown as CodeHost;
-const harness = (id: string) => ({ id, capabilities: { sessionResume: false }, run: async () => { throw new Error("unused"); } }) as Harness;
+const harness = (id: string): Harness => ({ id, capabilities: { sessionResume: false }, profile: codexProfile, run: async () => { throw new Error("unused"); } });
 
 describe("PluginRegistry", () => {
   test("builds a CI provider from the plugin of the configured type", () => {

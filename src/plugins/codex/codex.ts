@@ -3,24 +3,22 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
-import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
-import { cleanupSanitizedHome, prepareCodexEnvironment, serviceCodexHome, syncCodexHome } from "../isolation/environment";
-import { acquireScratch, assertNoHostTmpWritableRoots, type ScratchDirectory } from "../isolation/scratch";
-import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
-import { log } from "../log/logger";
+import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
+import { cleanupSanitizedHome, prepareCodexEnvironment, serviceCodexHome, syncCodexHome } from "../../isolation/environment";
+import { acquireScratch, assertNoHostTmpWritableRoots, type ScratchDirectory } from "../../isolation/scratch";
+import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch, type EgressInput, type RunNetwork } from "../../isolation/run-network";
+import { log } from "../../log/logger";
 import {
   EMPTY_USAGE,
   UNAVAILABLE_COST,
   producerResultSchema,
   type RunEnvelope,
-} from "./result";
-import { writeOutputSchema } from "./output-schemas";
-import { sandboxSetupError } from "./sandbox-failure";
+} from "../../runner/result";
+import { writeOutputSchema } from "../../runner/output-schemas";
+import { sandboxSetupError } from "../../runner/sandbox-failure";
+import type { HarnessMcpConfiguration } from "../../harness/types";
 
-export interface CodexMcpConfiguration {
-  command: string;
-  args: string[];
-}
+export type CodexMcpConfiguration = HarnessMcpConfiguration;
 
 export interface CodexRunInput {
   command: string;

@@ -10,16 +10,17 @@ import { existsSync } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
-import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
-import { prepareAgentEnvironment } from "../isolation/environment";
-import { claudeLaunch, type RunNetwork } from "../isolation/run-network";
-import { agentFilesystemPlan, agentLaunchCommand, verifyAgentWrapper, type AgentFilesystemOptions } from "../isolation/sandbox";
-import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
-import { log } from "../log/logger";
-import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type Artifact, type RunEnvelope } from "./result";
-import type { HarnessRunInput } from "../harness/types";
-import { sandboxSetupError } from "./sandbox-failure";
-import { OUTPUT_SCHEMAS } from "./output-schemas";
+import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
+import { prepareAgentEnvironment } from "../../isolation/environment";
+import { claudeLaunch, type RunNetwork } from "../../isolation/run-network";
+import { agentFilesystemPlan, agentLaunchCommand, verifyAgentWrapper, type AgentFilesystemOptions } from "../../isolation/sandbox";
+import { acquireScratch, assertNoHostTmpWritableRoots } from "../../isolation/scratch";
+import { log } from "../../log/logger";
+import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type Artifact, type RunEnvelope } from "../../runner/result";
+import type { HarnessRunInput } from "../../harness/types";
+import { sandboxSetupError } from "../../runner/sandbox-failure";
+import { OUTPUT_SCHEMAS } from "../../runner/output-schemas";
+import { claudeCodeProfile } from "./profile";
 
 export interface ClaudeCodeRunInput extends HarnessRunInput {
   /** Continue this session with `--resume` instead of starting a new one. */
@@ -242,7 +243,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
   try {
     const environment = await prepareAgentEnvironment({
       artifactsDirectory, workspace, overrides: input.env,
-      controlPlane: ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+      controlPlane: claudeCodeProfile.controlPlaneEnvironment,
     });
     // prepareAgentEnvironment creates this home before config setup, so record it for early-failure teardown.
     const preparedHome = resolveFilesystemPath(environment.HOME!);

@@ -4,11 +4,11 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { resolveFilesystemPath } from "../../src/core/paths";
-import { runCodex } from "../../src/runner/codex";
-import { runCodexCheck } from "../../src/runner/codex-check";
-import { runCodexSteering } from "../../src/runner/codex-steering";
-import { bwrapUnavailableReason } from "../support/bwrap";
+import { resolveFilesystemPath } from "../../../src/core/paths";
+import { runCodex } from "../../../src/plugins/codex/codex";
+import { runCodexCheck } from "../../../src/plugins/codex/codex-check";
+import { runCodexSteering } from "../../../src/plugins/codex/codex-steering";
+import { bwrapUnavailableReason } from "../../support/bwrap";
 
 const directories: string[] = [];
 const saved = { ...process.env };

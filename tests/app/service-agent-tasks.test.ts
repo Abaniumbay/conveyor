@@ -9,6 +9,7 @@ import { loadConfig } from "../../src/config/load";
 import { ReviewFindings } from "../../src/db/review-findings";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
+import { codexProfile } from "../../src/plugins/codex/profile";
 import { ConsoleSink, log } from "../../src/log/logger";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import type { HarnessResumeInput } from "../../src/tasks/context";
@@ -152,6 +153,7 @@ repositories:
   const harness: Harness = {
     id: "fake",
     get capabilities() { return { sessionResume }; },
+    profile: codexProfile,
     async run(input): Promise<RunEnvelope> {
       calls.push(input);
       if ((options.waitForRelease && calls.length === 1) || options.waitForRun === calls.length) {

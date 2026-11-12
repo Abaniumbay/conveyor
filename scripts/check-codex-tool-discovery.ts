@@ -6,7 +6,7 @@ import path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { createConveyorMcpServer, type RunMcpContext } from "../src/mcp/server";
-import { runCodex } from "../src/runner/codex";
+import { runCodex } from "../src/plugins/codex/codex";
 import { prompt } from "../src/tasks/agent-support";
 
 async function main() {

@@ -4,8 +4,8 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { runCodexSteering } from "../../src/runner/codex-steering";
-import { bwrapUnavailableReason } from "../support/bwrap";
+import { runCodexSteering } from "../../../src/plugins/codex/codex-steering";
+import { bwrapUnavailableReason } from "../../support/bwrap";
 
 const temporaryDirectories: string[] = [];
 

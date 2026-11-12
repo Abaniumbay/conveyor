@@ -1,5 +1,1 @@
-[
-  "implementation-import src/app/runtime.ts -> src/runner/codex-check.ts",
-  "implementation-import src/app/runtime.ts -> src/runner/codex.ts",
-  "implementation-import src/app/service.ts -> src/runner/codex-steering.ts"
-]
+[]

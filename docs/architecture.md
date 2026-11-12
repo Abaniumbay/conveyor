@@ -86,7 +86,7 @@ the rule new code follows; the current state is tracked by the boundary test.
 | Item source | `ItemReader`, `ItemComments`, `ItemSections`, `ItemRelations`, `ItemMarkers`, `ItemTitles`, `ItemMetadata` (together `ItemTracker`, what item tasks receive) and `IssueSourceAdapter` (`src/source/types.ts`); `ItemLifecycle`, `ItemSourceAdmin`, `WebhookAdmin`, `StatusComments`, `SourceCache` and `ActorPermissions`, which together with `ItemTracker` make the `ItemSourceClient` the service holds (`src/source/client.ts`, `src/source/trust.ts`); the call meter and the reason each request is made (`src/source/calls.ts`); and the webhook receiver (`src/core/plugins.ts`). Conveyor's trust policy (`RepositoryActorTrust`) and the status comment's Markdown are core | GitHub Issues |
 | Code host | `CodeHost` (`src/codehost/types.ts`) | GitHub pull requests |
 | CI | `CiProvider` (`src/app/ci-provider.ts`) | GitHub Actions |
-| Agent harness | `Harness` (`src/harness/types.ts`) | Codex, Claude Code |
+| Agent harness | `Harness` and its `HarnessProfile` (`src/harness/types.ts`); legacy checks and the Operator are optional harness runs | Codex (also legacy stages, checks and the Operator), Claude Code |
 | Presentation | `DashboardSources` (`src/app/dashboard-sources.ts`) in, `DashboardReads` (`src/web/server.ts`) out; the other web routes take `WebSources` (`src/app/web-sources.ts`) and the control socket, release coordinator and operator MCP take `ControlSources` (`src/app/control-sources.ts`), all assembled by the composition root (`src/cli/commands/serve.ts`) | The web dashboard |
 | Storage | Per-domain store ports (`src/db/ports.ts`): items, journal, evidence, events, run logs, conversations, provider cache, webhook deliveries, accounts, reports; `ConveyorStore` implements them all | SQLite |
 
@@ -99,7 +99,14 @@ the rule new code follows; the current state is tracked by the boundary test.
   only place that registers them. Plugins of one provider share a client through the plugin
   context, never by importing each other. Each item source, code host and CI plugin owns its
   configuration schema: the core schema knows only an entry's `type`, and loading the configuration
-  validates the rest with the plugin's schema.
+  validates the rest with the plugin's schema. A harness plugin (`src/plugins/codex/`,
+  `src/plugins/claude-code/`) holds its runner and declares a `HarnessProfile`: where a run's
+  sandbox mode and approvals come from, whether an agent may withhold the shell, which variable
+  names the runner's config directory, whether it takes extra settings, its control-plane hosts
+  and credential variables. The core prepares runs from the profile and reaches legacy producers,
+  legacy checks and the Operator through the harness, never by importing a runner. Each plugin
+  picks its own launch (Codex's shell policy arguments, Claude Code's shell prefix) from
+  `src/isolation/`.
 - **Events:** plugins report what they observe as events; the core compares them with what it
   knows, records the change, and emits its own events, which other modules (the dashboard among
   them) consume. Writes stay direct calls through ports, and every write is recorded as an event.
@@ -235,13 +242,13 @@ src/
 ├── core/         issue projection, scheduling, transitions, and the plugin contract and registry
 ├── db/           all SQLite: migrations, the store and its domain ports, the execution journal, the event log, review and gate records, advisory CI watches, report queries
 ├── engine/       stage executor, stage context and routing, finding types, remaining-work summary
-├── harness/      neutral agent-harness contract
+├── harness/      neutral agent-harness contract and harness profile
 ├── isolation/    agent environment, network sandbox, egress proxies
 ├── log/          service logging (redaction, rotation) and the log reader
 ├── mcp/          run-scoped MCP context and stdio server
-├── plugins/      plugin implementations: github/{shared,items,code,ci}, codex, claude-code, dashboard (view models and live feed); index.ts lists them
+├── plugins/      plugin implementations: github/{shared,items,code,ci}, codex and claude-code (runners and profiles), dashboard (view models and live feed); index.ts lists them
 ├── release/      installed-release layout, verified staging, backups and switch history
-├── runner/       Codex, Claude Code, legacy verifier, steering, and strict JSON-process runners
+├── runner/       run envelope, output schemas, sandbox-failure detection and the strict JSON-process runner
 ├── source/       item source ports and the client the service holds, call metering, the actor trust policy, the status comment, the managed-section codec, item types and fields
 ├── tasks/        task contract, registry, groups, plan compiler, legacy compiler
 ├── web/          authentication, HTTP/SSE server, the live dashboard model's shape and patches, Preact components, styles, and the browser application (app/)

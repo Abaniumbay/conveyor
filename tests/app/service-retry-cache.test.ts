@@ -8,6 +8,7 @@ import type { ConveyorConfig } from "../../src/config/load";
 import { configSchema } from "../../src/config/schema";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
+import { codexProfile } from "../../src/plugins/codex/profile";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import { GitHubAdapter, type GitHubIssue, type GitHubTransport, type GitHubTransportRequest } from "../../src/plugins/github/shared/adapter";
 import { GitHubReadCache } from "../../src/plugins/github/shared/read-cache";
@@ -204,6 +205,7 @@ describe("ConveyorService retry with a held GitHub listing", () => {
     const harness: Harness = {
       id: "fake",
       get capabilities() { return { sessionResume: true }; },
+      profile: codexProfile,
       async run(input): Promise<RunEnvelope> {
         calls.push(input);
         return {
@@ -286,6 +288,7 @@ describe("ConveyorService retry with a held GitHub listing", () => {
     const harness: Harness = {
       id: "fake",
       get capabilities() { return { sessionResume: true }; },
+      profile: codexProfile,
       async run(input): Promise<RunEnvelope> {
         calls.push(input);
         return {

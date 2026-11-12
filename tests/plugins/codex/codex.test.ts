@@ -3,9 +3,9 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { resolveFilesystemPath } from "../../src/core/paths";
-import { CodexRunnerError, runCodex } from "../../src/runner/codex";
-import { bwrapUnavailableReason } from "../support/bwrap";
+import { resolveFilesystemPath } from "../../../src/core/paths";
+import { CodexRunnerError, runCodex } from "../../../src/plugins/codex/codex";
+import { bwrapUnavailableReason } from "../../support/bwrap";
 
 const temporaryDirectories: string[] = [];
 const unavailable = bwrapUnavailableReason();
