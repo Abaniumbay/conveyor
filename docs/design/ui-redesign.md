@@ -171,7 +171,7 @@ Conveyor *is* a production line, so the dashboard reads like the control board o
 
 Owner request (2026-10-01): waiting must be visible. Today a parked item shows only "Activity: implementation · ready"; its wait reason is shown on the card only when the item stopped, and in the dialog as "Source note".
 
-Any pending task produces the same record: the pending message, `pending_since`, `wake_at` and `deadline_at` on the stage cursor and execution (`src/engine/journal.ts`). Show it generically, with no special case per kind of wait (CI, dependency, mergeability, a timed retry or backoff, an external webhook):
+Any pending task produces the same record: the pending message, `pending_since`, `wake_at` and `deadline_at` on the stage cursor and execution (`src/db/journal.ts`). Show it generically, with no special case per kind of wait (CI, dependency, mergeability, a timed retry or backoff, an external webhook):
 
 - **View model:** `waiting: { reason, since, nextCheckAt, deadline } | null` for every parked item, built from the journal (`pendingMessage`, cursor times). The infrastructure retry backoff ("will retry in …") uses the same shape.
 - **Card:** an amber andon and one line: the reason in plain words, then "for 12 min · next check 14:53 · gives up 22:48". Times are local; "gives up" is omitted when there is no deadline.

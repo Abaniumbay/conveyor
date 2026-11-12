@@ -1,7 +1,7 @@
 import type { LabelConfiguration } from "./issue-state";
 import { evaluateIssueState } from "./issue-state";
-import type { ConveyorStore, RepositoryRecord } from "../db/store";
-import { ItemTodos } from "../engine/todos";
+import type { ConversationStore, EvidenceStore, ItemStore, JournalStore, RunLogStore } from "../db/ports";
+import type { RepositoryRecord } from "../db/store";
 import { log } from "../log/logger";
 import { isIssueGone } from "../source/types";
 import type { IssueSourceAdapter, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../source/types";
@@ -11,7 +11,7 @@ export interface RepositoryTrust {
 }
 
 export interface ReconcileRepositoryInput {
-  store: ConveyorStore;
+  store: ItemStore & JournalStore & EvidenceStore & RunLogStore & ConversationStore;
   configHash: string;
   repository: Omit<RepositoryRecord, "configHash">;
   stages: readonly string[];
@@ -104,11 +104,11 @@ function textWarning(field: "title" | "body", actor: SourceEventActor | null, un
   return `Ignored untrusted ${field} edit${actorName(actor)}; keeping the accepted ${field}.`;
 }
 
-function rowFingerprint(row: ReturnType<ConveyorStore["getIssue"]> | undefined): string {
+function rowFingerprint(row: ReturnType<ItemStore["getIssue"]> | undefined): string {
   return row ? JSON.stringify([row.id, row.title, row.body, row.acceptedTextAt ?? null, row.sourceUpdatedAt, row.sourceState, row.labels, row.warning]) : "";
 }
 
-async function acceptedSnapshot(input: ReconcileRepositoryInput, sourceIssue: SourceIssue, prior: ReturnType<ConveyorStore["getIssue"]> | undefined, enrolled: boolean): Promise<{
+async function acceptedSnapshot(input: ReconcileRepositoryInput, sourceIssue: SourceIssue, prior: ReturnType<ItemStore["getIssue"]> | undefined, enrolled: boolean): Promise<{
   title: string;
   body: string;
   acceptedTextAt: string | null;
@@ -345,7 +345,7 @@ export async function reconcileRepository(
     // A process can stop after the source labels advance but before its local transition commits.
     // Reconciliation observes that durable source checkpoint and completes the idempotent closeout.
     if (eligible && movedForward(input.stages, current?.projectedStage ?? null, projected.stage, projected.state)) {
-      new ItemTodos(input.store.sqlite()).closeOut(issueId);
+      input.store.todos().closeOut(issueId);
     }
 
     if (!visible) {

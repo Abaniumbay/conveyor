@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import path from "node:path";
 
 import { GitHubIssueGoneError, GitHubTransportError } from "../../src/plugins/github/shared/adapter";
-import { ItemTodos } from "../../src/engine/todos";
+import { ItemTodos } from "../../src/db/todos";
 import { WorkspaceManager } from "../../src/workspace/manager";
 import { createWorkspace } from "../../src/workspace/lifecycle";
 import { deliveryWorld, git, type DeliveryWorld } from "../support/delivery-world";

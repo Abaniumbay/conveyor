@@ -18,7 +18,7 @@ import type { ChangeDelivery, ChangeRequest, CodeHost } from "../../src/codehost
 import { loadConfig } from "../../src/config/load";
 import { DEFAULT_CI_TYPE } from "../../src/core/plugins";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
-import { CriterionApprovals, criterionTextHash } from "../../src/engine/review-records";
+import { CriterionApprovals, criterionTextHash } from "../../src/db/review-records";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import { parseManagedSections, upsertManagedSection } from "../../src/plugins/github/shared/managed-sections";

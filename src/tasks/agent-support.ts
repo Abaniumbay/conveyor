@@ -2,7 +2,7 @@
 // and conversation messages. One implementation, so both paths read and write the same way.
 
 import type { ConveyorConfig } from "../config/load";
-import type { ConveyorStore } from "../db/store";
+import type { ConversationStore, RunLogStore } from "../db/ports";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../runner/result";
 import { conveyorToolGuidance } from "../mcp/guidance";
 
@@ -104,7 +104,7 @@ export function agentActor(config: Pick<ConveyorConfig, "agents">, agentId: stri
 
 /** Starts a producer run record and returns its id. */
 export function startRun(
-  store: ConveyorStore,
+  store: RunLogStore,
   input: { issueId: string; stageId: string; kind: string; configHash: string },
 ): string {
   const id = crypto.randomUUID();
@@ -121,7 +121,7 @@ export function startRun(
   return id;
 }
 
-export function finishRun(store: ConveyorStore, runId: string, status: string, result: RunEnvelope): void {
+export function finishRun(store: RunLogStore, runId: string, status: string, result: RunEnvelope): void {
   store.finishRun(runId, {
     status,
     exitCode: result.exitCode,
@@ -138,7 +138,7 @@ export function finishRun(store: ConveyorStore, runId: string, status: string, r
 }
 
 export function conveyorMessage(
-  store: ConveyorStore,
+  store: ConversationStore,
   issueId: string,
   stageId: string,
   runId: string | null,
@@ -160,7 +160,7 @@ const millions = (tokens: number) => `${Number((tokens / 1_000_000).toFixed(1))}
 
 /** Posts a warning when a finished agent run passed the token budget. A warning only: hands-off runs are never stopped for it. */
 export function warnOnTokenUsage(
-  store: ConveyorStore,
+  store: ConversationStore,
   config: Pick<ConveyorConfig, "agents" | "settings">,
   issueId: string,
   stageId: string,
@@ -176,7 +176,7 @@ export function warnOnTokenUsage(
 }
 
 export function agentMessage(
-  store: ConveyorStore,
+  store: ConversationStore,
   config: Pick<ConveyorConfig, "agents">,
   issueId: string,
   stageId: string,
@@ -198,7 +198,7 @@ export function agentMessage(
 }
 
 /** The shared conversation as the prompt context shows it. */
-export function conversationForPrompt(store: ConveyorStore, issueId: string) {
+export function conversationForPrompt(store: ConversationStore, issueId: string) {
   return store.listConversationMessages(issueId, 100).map((message) => ({
     actor: message.actorName,
     title: message.actorTitle,
@@ -212,7 +212,7 @@ export function conversationForPrompt(store: ConveyorStore, issueId: string) {
  * and the item's conversation gets one Conveyor note per server, however often it was observed.
  */
 export function reportMcpFailures(
-  store: ConveyorStore,
+  store: RunLogStore & ConversationStore,
   args: { issueId: string; stageId: string; runId: string; agentId: string; failures: readonly { server: string; detail: string }[] },
 ): void {
   const seen = new Set<string>();

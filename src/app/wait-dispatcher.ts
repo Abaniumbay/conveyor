@@ -3,7 +3,7 @@
 
 import { isEventOf, type StoredEvent } from "../events/catalogue";
 import { changeTopic, ciTopic, issueTopic } from "../events/topics";
-import type { ExecutionStore } from "../engine/journal";
+import type { ExecutionStore } from "../db/journal";
 
 /** Pull request actions that change what a wait on the pull request decides. */
 const CHANGE_ACTIONS = new Set(["synchronize", "closed", "reopened", "edited", "ready_for_review", "converted_to_draft"]);

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { ExecutionStore, type StageCursor } from "../../src/engine/journal";
+import { ExecutionStore, type StageCursor } from "../../src/db/journal";
 
 const directories: string[] = [];
 

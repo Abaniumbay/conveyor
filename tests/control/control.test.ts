@@ -10,7 +10,7 @@ import { runCli } from "../../src/cli/main";
 import type { ConveyorConfig } from "../../src/config/load";
 import { createControlHandler, serveControlSocket } from "../../src/control/server";
 import { ConveyorStore } from "../../src/db/store";
-import { ReviewFindings } from "../../src/engine/review-findings";
+import { ReviewFindings } from "../../src/db/review-findings";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
@@ -252,7 +252,7 @@ describe("finding report", () => {
     const { buildFindingReport } = await import("../../src/app/finding-report");
     const result = await cli("report", "findings", "--json");
     expect(result.code).toBe(EXIT.ok);
-    expect(JSON.parse(result.out)).toEqual(JSON.parse(JSON.stringify(buildFindingReport(store.sqlite()))));
+    expect(JSON.parse(result.out)).toEqual(JSON.parse(JSON.stringify(buildFindingReport(store))));
     expect(JSON.parse(result.out)).toMatchObject({ total: 3, reviewRounds: 2, byType: { bug: 2, docs: 1 } });
   });
 

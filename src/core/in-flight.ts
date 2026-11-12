@@ -1,4 +1,5 @@
-import type { ConveyorStore, StoredIssue } from "../db/store";
+import type { ItemStore, JournalStore } from "../db/ports";
+import type { StoredIssue } from "../db/store";
 
 export interface InFlightInterval {
   limit: number;
@@ -23,7 +24,7 @@ export function inFlightInterval(
  * A pending source transition already owns its destination so a crash cannot over-admit work.
  */
 export function inFlightHolders(input: {
-  store: ConveyorStore;
+  store: ItemStore & JournalStore;
   repositoryId: string;
   stages: readonly { id: string }[];
   interval: InFlightInterval;
@@ -64,7 +65,7 @@ export function inFlightWaitReason(repositoryId: string, holders: readonly { sou
  * Returns the waiting reason when the repository is full, otherwise null.
  */
 export function inFlightAdmission(input: {
-  store: ConveyorStore;
+  store: ItemStore & JournalStore;
   repositoryId: string;
   stages: readonly { id: string }[];
   interval: InFlightInterval;

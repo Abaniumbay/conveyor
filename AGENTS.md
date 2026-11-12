@@ -50,10 +50,10 @@ Run these from the repository root.
 | Path | Contents |
 | --- | --- |
 | `src/app/` | The service (`service.ts`), issue execution, CI provider, retention, reports. |
-| `src/engine/` | Stage executor, execution journal (epochs, cursors), review findings, manual gates. |
-| `src/events/` | Event catalogue (`catalogue.ts`), the append-only event log (`log.ts`), the in-process bus (`bus.ts`), actor and correlation context. |
+| `src/engine/` | Stage executor, stage context and routing, finding types. |
+| `src/events/` | Event catalogue (`catalogue.ts`), the in-process bus (`bus.ts`), sinks, actor and correlation context. |
 | `src/tasks/` | Task contract (`contract.ts`), every task group (`item.ts`, `change.ts`, `agent.ts`, …), the registry (`catalogue.ts`), the plan compiler, MCP dispatch. |
-| `src/db/` | `migrations.ts` (schema) and `store.ts` (all SQL). |
+| `src/db/` | All SQLite: `migrations.ts` (schema), `store.ts` (`ConveyorStore`), `ports.ts` (the per-domain store ports), the record classes the store hands out (`journal.ts` with epochs and cursors, `event-log.ts`, `review-findings.ts`, `review-records.ts`, `review-threads.ts`, `manual-gates.ts`, `todos.ts`, `advisory-ci.ts`), the report queries (`reports.ts`) and backups (`backup.ts`). |
 | `src/config/` | `schema.ts` (zod schemas), loader, packaged defaults, migration. |
 | `src/core/plugins.ts` | The plugin contract and registry: code host, CI and harness plugins by configuration `type`. |
 | `src/plugins/` | Plugin implementations, one folder per provider and one per role inside it: `github/{shared,items,code,ci}`, `codex/`, `claude-code/`. `index.ts` is the list the composition root registers. |
@@ -68,7 +68,7 @@ Run these from the repository root.
 | `examples/config/` | Packaged default configuration (`builtin:`), including the default agent instructions. |
 | `docs/` | User and operator documentation. `tasks.md`, `cli.md`, `events.md` and `public-surface.txt` are generated; never edit them by hand. |
 
-Some files are very large: `src/app/service.ts` (~6,000 lines), `src/db/store.ts` (~3,100),
+Some files are very large: `src/app/service.ts` (~6,000 lines), `src/db/store.ts` (~3,400),
 `src/web/render.tsx` (~1,800), `src/web/server.ts` (~1,500) and `src/web/app/behaviour.ts`
 (~1,000). Never read them whole. Find the symbol you need (code index or `rg -n "methodName" src`) and read a
 narrow range around it.
@@ -82,7 +82,7 @@ blocking review finding.
    GitHub and keeps a local projection. Never treat the local projection as the source of truth
    for something GitHub owns.
 2. **Stage epochs fence everything.** Every stage, state or enrollment change bumps the item's
-   stage epoch (`ExecutionStore.onStageChange` in `src/engine/journal.ts`). Journal and context writes take the expected
+   stage epoch (`ExecutionStore.onStageChange` in `src/db/journal.ts`). Journal and context writes take the expected
    epoch and fail with `StaleEpochError` when it moved. Change an item's projection only through
    `store.setIssueProjection`; never write `projected_stage` / `projected_state` with your own SQL.
    One deliberate exception: while a step is parked on an agent's question, switching the state
@@ -129,10 +129,12 @@ sends work back.
 1. Append a new object to the end of the array in `src/db/migrations.ts` with the next
    `version` number. **Never edit an existing migration**; production databases have already run
    it.
-2. Put the SQL for the new data in `src/db/store.ts` methods. Do not add SQL anywhere else. The
-   engine records in `src/engine/` and the reports in `src/app/` still run their own queries through
-   `store.sqlite()`; those are listed violations of rule 9 that are being moved into `src/db`, not a
-   pattern to copy.
+2. Put the SQL for the new data in `src/db`: a `store.ts` method, or the record class in `src/db`
+   that owns the table (reached through its `ConveyorStore` accessor, such as `store.findings()` or
+   `store.todos()`). Read-only report queries go in `src/db/reports.ts`; the report is assembled in
+   `src/app`. Do not add SQL anywhere else, and never call `store.sqlite()` outside `src/db`. A new
+   store method belongs to one domain port in `src/db/ports.ts` (`tests/db/ports.test.ts` fails
+   until it does); a consumer takes the ports it uses rather than the whole `ConveyorStore`.
 3. Update the expected version in `tests/db/store.test.ts` (`expect(store.schemaVersion()).toBe(N)`).
 4. A new query that sorts or filters a large table needs an index in the same migration.
 5. A new write that changes state follows the event recipe below.
@@ -145,9 +147,9 @@ event sinks can react to it and the change can be traced.
 1. Declare the event in `src/events/catalogue.ts` with its group, a one-line description and a
    strict zod payload. Payloads carry identifiers and states only: never secrets, tokens,
    passwords, hashes or user-written text.
-2. Append it from the store or engine method that makes the change
-   (`this.#events.append(...)` in `src/db/store.ts`, `eventLog(database).append(...)` in
-   `src/engine/`), inside the same transaction as the write. Append only when something actually
+2. Append it from the store or record-class method that makes the change
+   (`this.#events.append(...)` in `src/db/store.ts`, `eventLog(database).append(...)` in a record
+   class in `src/db/`), inside the same transaction as the write. Append only when something actually
    changed. Never append from a caller of that method.
 3. React to an event by subscribing to the service's `EventBus`; never publish to it directly.
    Subscribers run after the transaction committed, in order.

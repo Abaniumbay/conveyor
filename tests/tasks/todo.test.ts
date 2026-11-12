@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { ItemTodos, summarizeTodos } from "../../src/engine/todos";
+import { ItemTodos, summarizeTodos } from "../../src/db/todos";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";

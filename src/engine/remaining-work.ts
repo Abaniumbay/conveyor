@@ -1,4 +1,4 @@
-import type { StageCursor } from "./journal";
+import type { StageCursor } from "../db/journal";
 
 /** Synthetic cursor task for a stage-level approval that happens before actions. */
 export const ENTRY_APPROVAL_TASK_ID = "entry-approval";

@@ -1,5 +1,6 @@
 import webpush from "web-push";
-import type { ConveyorStore, PushEvent, PushSubscription } from "../db/store";
+import type { AccountStore } from "../db/ports";
+import type { PushEvent, PushSubscription } from "../db/store";
 
 export interface PushConfiguration {
   publicKey: string;
@@ -27,7 +28,7 @@ export function pushConfiguration(
 }
 
 export async function deliverPushEvents(
-  store: ConveyorStore,
+  store: AccountStore,
   resolveTarget: (issueId: string) => Promise<string | null> | string | null,
   configuration: PushConfiguration | null,
   send: PushSender = (subscription, payload) => webpush.sendNotification(subscription, payload),

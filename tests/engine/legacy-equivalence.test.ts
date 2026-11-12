@@ -18,7 +18,7 @@ import {
   type StageExecutionResult,
 } from "../../src/core/pipeline";
 import { PipelineEngine } from "./reference-engine";
-import { ExecutionStore } from "../../src/engine/journal";
+import { ExecutionStore } from "../../src/db/journal";
 import { StageExecutor } from "../../src/engine/stage-executor";
 import type { RunEnvelope } from "../../src/runner/result";
 import type { TaskContext } from "../../src/tasks/context";

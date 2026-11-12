@@ -6,8 +6,8 @@
 import { z } from "zod";
 
 import type { CodeHost } from "../codehost/types";
-import { DEFAULT_FINDING_TYPE, FINDING_TYPES, ReviewFindings, type Finding } from "../engine/review-findings";
-import { ReviewThreads, threadIsOpen } from "../engine/review-threads";
+import { DEFAULT_FINDING_TYPE, FINDING_TYPES, type Finding } from "../db/review-findings";
+import { threadIsOpen } from "../db/review-threads";
 import type { ChangeContext } from "./context";
 import { fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
@@ -38,7 +38,7 @@ const resolveInput = z.object({
 const listInput = z.object({ state: z.enum(["open", "resolved", "dismissed", "withdrawn"]).optional() }).strict();
 const dismissInput = z.object({ findingId: z.string().min(1), reason: z.string().trim().min(1).max(2000) }).strict();
 
-const findingsOf = (deps: Deps) => new ReviewFindings(deps.store.sqlite());
+const findingsOf = (deps: Deps) => deps.store.findings();
 
 function actorOf(name: string, args: { actor?: string; deps: Deps }): string {
   const actor = args.actor ?? args.deps.run?.actor?.id;
@@ -122,7 +122,7 @@ export async function importNativeReview(deps: Deps, changeId: string, headSha: 
     const input = { address: deps.repository.address, id: changeId, extraTrustedLogins: repository.extraTrustedLogins };
     const [artifacts, states] = await Promise.all([host.listReviewArtifacts(input), host.listReviewThreadStates(input)]);
     const at = (deps.clock?.() ?? new Date()).toISOString();
-    const record = new ReviewThreads(deps.store.sqlite()).record(deps.issueId, headSha, states, at);
+    const record = deps.store.reviewThreads().record(deps.issueId, headSha, states, at);
     // A resolved thread with an unanswered counted comment is open again for the agent.
     const reopened = new Set(record.threads.filter((thread) => thread.resolved && threadIsOpen(thread)).map((thread) => thread.providerKey));
     findingsOf(deps).importNative(deps.issueId, artifacts.map((artifact) => reopened.has(artifact.providerKey) ? { ...artifact, resolved: false } : artifact), headSha, at);

@@ -4,7 +4,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 
-import { eventLog } from "../events/log";
+import { eventLog } from "./event-log";
 
 export interface CriterionApproval {
   criterionId: string;

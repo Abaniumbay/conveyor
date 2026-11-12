@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { CriterionApprovals, criterionTextHash, isCriterionApprovedAt } from "../../src/engine/review-records";
+import { CriterionApprovals, criterionTextHash, isCriterionApprovedAt } from "../../src/db/review-records";
 
 const directories: string[] = [];
 afterEach(async () => {

@@ -14,7 +14,7 @@ import { boundLog, boundSnapshotLogs, ciFailureFingerprint, classifyRuns, ciAnno
 import type { CiChange, CiProvider } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
 import { changeTopic, ciTopic } from "../events/topics";
-import type { CiGateObservation } from "../engine/journal";
+import type { CiGateObservation } from "../db/journal";
 import type { ChangeContext, CiContext } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";

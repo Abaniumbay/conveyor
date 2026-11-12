@@ -7,11 +7,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { AdvisoryCiWatches } from "../../src/engine/advisory-ci";
-import { ManualGateApprovals } from "../../src/engine/manual-gates";
-import { CriterionApprovals } from "../../src/engine/review-records";
-import { ReviewFindings } from "../../src/engine/review-findings";
-import { ItemTodos } from "../../src/engine/todos";
+import { AdvisoryCiWatches } from "../../src/db/advisory-ci";
+import { ManualGateApprovals } from "../../src/db/manual-gates";
+import { CriterionApprovals } from "../../src/db/review-records";
+import { ReviewFindings } from "../../src/db/review-findings";
+import { ItemTodos } from "../../src/db/todos";
 import type { EventType, StoredEvent } from "../../src/events/catalogue";
 
 const directories: string[] = [];

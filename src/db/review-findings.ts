@@ -7,10 +7,10 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 
 import type { FINDING_CHANGES } from "../events/catalogue";
-import { eventLog } from "../events/log";
-import { DEFAULT_FINDING_TYPE, isFindingType, type FindingType } from "./finding-types";
+import { eventLog } from "./event-log";
+import { DEFAULT_FINDING_TYPE, isFindingType, type FindingType } from "../engine/finding-types";
 
-export { DEFAULT_FINDING_TYPE, FINDING_TYPES, type FindingType } from "./finding-types";
+export { DEFAULT_FINDING_TYPE, FINDING_TYPES, type FindingType } from "../engine/finding-types";
 
 type FindingChange = (typeof FINDING_CHANGES)[number];
 

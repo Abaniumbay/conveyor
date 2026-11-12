@@ -4,7 +4,7 @@
 import type { Database } from "bun:sqlite";
 
 import { boundSnapshotLogs } from "../app/ci-gate";
-import { eventLog, type EventLog } from "../events/log";
+import { eventLog, type EventLog } from "./event-log";
 import type { WaitFor, WaitKind } from "../events/topics";
 import type { Feedback, TaskContext, TaskExecutionRecord } from "../tasks/context";
 

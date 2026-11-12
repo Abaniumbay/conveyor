@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { CommandBus } from "../../src/commands/bus";
 import type { CommandName } from "../../src/commands/registry";
 import { migrations } from "../../src/db/migrations";
-import { eventLog } from "../../src/events/log";
+import { eventLog } from "../../src/db/event-log";
 import { OPERATOR_TOOLS } from "../../src/operator-mcp/registry";
 import type { OperatorFacade } from "../../src/operator-mcp/tool";
 

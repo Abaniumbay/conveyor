@@ -4,8 +4,8 @@
 import { buildReport } from "./reports";
 import { isLightweightRepositoryStage } from "./stage-capacity";
 import type { ConveyorConfig } from "../config/load";
-import type { ConveyorStore, StoredIssue } from "../db/store";
-import { ReviewFindings } from "../engine/review-findings";
+import type { ConversationStore, EvidenceStore, ItemStore, JournalStore, ReportStore, RunLogStore } from "../db/ports";
+import type { StoredIssue } from "../db/store";
 import type { GitHubCallSummary } from "../plugins/github/shared/call-meter";
 import { publicRepositoryTrustPolicy } from "../plugins/github/shared/trust";
 import { concise, displayName } from "../tasks/agent-support";
@@ -92,7 +92,7 @@ export interface RepositorySummaries {
 }
 
 export interface BuildRepositorySummariesInput {
-  store: ConveyorStore;
+  store: ItemStore & JournalStore & EvidenceStore & RunLogStore & ConversationStore & ReportStore;
   config: ConveyorConfig;
   /** The board already loaded these rows; reuse them instead of issuing another list query. */
   issues?: readonly StoredIssue[];
@@ -108,14 +108,6 @@ export interface BuildRepositorySummariesInput {
   now?: Date;
 }
 
-interface DeliveryRow {
-  issue_id: string;
-  repository_id: string;
-  source_number: number;
-  title: string;
-  delivered_at: string;
-}
-
 /** Webhook sync needs a GitHub source that configures its webhook and a public URL to deliver to. */
 function itemSyncOf(source: ConveyorConfig["sources"][string] | undefined, config: ConveyorConfig): "webhook" | "polling" {
   return source?.type === "github" && source.autoConfigureWebhook && config.web.publicUrl ? "webhook" : "polling";
@@ -129,22 +121,7 @@ const NEEDS_YOU_STATES = new Set(["needs-input", "needs-intervention"]);
 const isDone = (issue: StoredIssue) => DONE_STATES.has(issue.projectedState ?? "");
 const isActiveWork = (issue: StoredIssue) => !isDone(issue) && !INACTIVE_STATES.has(issue.projectedState ?? "");
 
-function deliveryRows(store: ConveyorStore): DeliveryRow[] {
-  return store.sqlite().query(`
-    SELECT i.id AS issue_id, i.repository_id, i.source_number, i.title,
-           MAX(st.created_at) AS delivered_at
-    FROM stage_transitions st
-    JOIN issues i ON i.id = st.issue_id
-    WHERE st.status = 'completed'
-      AND st.kind = 'advance'
-      AND st.from_stage IS NOT NULL
-      AND st.from_stage = st.to_stage
-    GROUP BY i.id, i.repository_id, i.source_number, i.title
-    ORDER BY delivered_at DESC, i.source_number DESC
-  `).all() as DeliveryRow[];
-}
-
-function stateFor(issue: StoredIssue, activeIssueIds: ReadonlySet<string>, questionIssueIds: ReadonlySet<string>, store: ConveyorStore): RepositoryItemState {
+function stateFor(issue: StoredIssue, activeIssueIds: ReadonlySet<string>, questionIssueIds: ReadonlySet<string>, store: JournalStore): RepositoryItemState {
   if (activeIssueIds.has(issue.id)) return "Running";
   if (questionIssueIds.has(issue.id) || NEEDS_YOU_STATES.has(issue.projectedState ?? "")) return "Needs you";
   if (BLOCKED_STATES.has(issue.projectedState ?? "")) return "Blocked";
@@ -177,11 +154,11 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
     if (issue.projectedState === "unlisted") continue;
     issuesByRepository.set(issue.repositoryId, [...(issuesByRepository.get(issue.repositoryId) ?? []), issue]);
   }
-  const recordedDeliveries = deliveryRows(store);
+  const recordedDeliveries = store.reports().deliveries();
   const reportByRepository = new Map(
     buildReport({ store, config, period: "30d", repository: null, now }).byRepository.map((report) => [report.id, report]),
   );
-  const reviewFindings = new ReviewFindings(store.sqlite());
+  const reviewFindings = store.findings();
 
   const repositories = Object.entries(config.repositories).map(([id, repository], index) => {
     const issues = issuesByRepository.get(id) ?? [];

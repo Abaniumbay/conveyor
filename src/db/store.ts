@@ -4,12 +4,20 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type { Indicator, StoredIndicator } from "../app/indicators";
-import { ExecutionStore } from "../engine/journal";
 import type { Observation } from "../events/catalogue";
-import { eventLog, type EventLog } from "../events/log";
 import { EventThrottle } from "../events/throttle";
 import type { GitHubMirrorStorage } from "../plugins/github/shared/read-cache";
+import { AdvisoryCiWatches, type AdvisoryCiOptions } from "./advisory-ci";
+import { vacuumInto } from "./backup";
+import { eventLog, type EventLog } from "./event-log";
+import { ExecutionStore } from "./journal";
+import { ManualGateApprovals } from "./manual-gates";
 import { migrations } from "./migrations";
+import { ReportQueries } from "./reports";
+import { ReviewFindings } from "./review-findings";
+import { CriterionApprovals } from "./review-records";
+import { ReviewThreads } from "./review-threads";
+import { ItemTodos } from "./todos";
 
 export interface RepositoryRecord {
   id: string;
@@ -379,6 +387,12 @@ export class ConveyorStore {
   readonly #database: Database;
   readonly #executions: ExecutionStore;
   readonly #events: EventLog;
+  readonly #findings: ReviewFindings;
+  readonly #criterionApprovals: CriterionApprovals;
+  readonly #reviewThreads: ReviewThreads;
+  readonly #manualGates: ManualGateApprovals;
+  readonly #todos: ItemTodos;
+  readonly #reports: ReportQueries;
   /** Transcript lines are many: they are recorded as at most one `run.progressed` per run and second. */
   readonly #runProgress: EventThrottle;
 
@@ -386,6 +400,12 @@ export class ConveyorStore {
     this.#database = database;
     this.#executions = new ExecutionStore(database);
     this.#events = eventLog(database);
+    this.#findings = new ReviewFindings(database);
+    this.#criterionApprovals = new CriterionApprovals(database);
+    this.#reviewThreads = new ReviewThreads(database);
+    this.#manualGates = new ManualGateApprovals(database);
+    this.#todos = new ItemTodos(database);
+    this.#reports = new ReportQueries(database);
     this.#runProgress = new EventThrottle(1_000, (runId) => {
       const owner = this.#database.query("SELECT issue_id FROM runs WHERE id = ?").get(runId) as { issue_id: string | null } | null;
       this.#events.append("run.progressed", { runId }, { issueId: owner?.issue_id ?? null });
@@ -428,7 +448,60 @@ export class ConveyorStore {
     return this.#events;
   }
 
-  /** The underlying database, shared with ExecutionStore. */
+  /** Durable review findings, imported native reviews and their history. */
+  findings(): ReviewFindings {
+    return this.#findings;
+  }
+
+  /** Reviewer approvals of acceptance criteria. */
+  criterionApprovals(): CriterionApprovals {
+    return this.#criterionApprovals;
+  }
+
+  /** The recorded review-thread evidence of each item's change. */
+  reviewThreads(): ReviewThreads {
+    return this.#reviewThreads;
+  }
+
+  /** Manual gate approvals and board approval requirements. */
+  manualGates(): ManualGateApprovals {
+    return this.#manualGates;
+  }
+
+  /** Each item's agent todo list. */
+  todos(): ItemTodos {
+    return this.#todos;
+  }
+
+  /** The read-only queries behind the reports. */
+  reports(): ReportQueries {
+    return this.#reports;
+  }
+
+  /**
+   * Advisory CI watches over this database. Each call makes a new poller with its own options;
+   * the service keeps one, since the poller remembers whether a poll is under way.
+   */
+  advisoryWatches(options: AdvisoryCiOptions): AdvisoryCiWatches {
+    return new AdvisoryCiWatches(this.#database, this.#executions, options);
+  }
+
+  /** Runs `work` in one transaction (a savepoint inside another), committing when it returns and rolling back when it throws. */
+  transaction<T>(work: () => T): T {
+    return this.#database.transaction(work)();
+  }
+
+  /** The database file's path. */
+  filename(): string {
+    return this.#database.filename;
+  }
+
+  /** Writes a consistent copy of the database to `target`, safe while it is in use. */
+  backupTo(target: string): void {
+    vacuumInto(this.#database, target);
+  }
+
+  /** The underlying database, shared with the record classes in src/db. */
   sqlite(): Database {
     return this.#database;
   }

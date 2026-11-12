@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-import { eventLog } from "../events/log";
+import { eventLog } from "./event-log";
 
 export interface ManualGateApproval {
   issueId: string;
