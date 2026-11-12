@@ -19,7 +19,17 @@ describe("docs/events.md", () => {
       "demo.changed": { group: "Demo", description: "Something changed.", payload: z.object({ id: z.string(), state: z.enum(["a", "b"]), at: z.string().nullable() }).strict() },
     });
     expect(text).toContain("### Demo");
-    expect(text).toContain('| `demo.changed` | Something changed. | `id`: string<br>`state`: `"a"` \\| `"b"`<br>`at`: string \\| null |');
+    expect(text).toContain('| `demo.changed` | fact | Something changed. | `id`: string<br>`state`: `"a"` \\| `"b"`<br>`at`: string \\| null |');
+  });
+
+  test("names each event's class and marks content-bearing types", () => {
+    const payload = z.object({}).strict();
+    const text = renderEventDocs({
+      "demo.seen": { group: "Demo", description: "A plugin saw it.", payload, class: "ingest", content: true },
+      "demo.ticked": { group: "Demo", description: "A timer fired.", payload, class: "trace" },
+    });
+    expect(text).toContain("| `demo.seen` | ingest, content | A plugin saw it. | - |");
+    expect(text).toContain("| `demo.ticked` | trace | A timer fired. | - |");
   });
 
   test("describes command correlation as scoped to its item", () => {

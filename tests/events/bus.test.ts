@@ -8,7 +8,7 @@ afterEach(() => log.configure({ sinks: [new ConsoleSink()] }));
 
 describe("EventBus", () => {
   const event = (type: StoredEvent["type"]): StoredEvent => ({
-    seq: 1, type, occurredAt: "2026-10-17T00:00:00Z", repositoryId: null, issueId: null, actor: { kind: "system", id: null }, correlationId: null,
+    seq: 1, type, class: "fact", source: "core", causationSeq: null, occurredAt: "2026-10-17T00:00:00Z", repositoryId: null, issueId: null, actor: { kind: "system", id: null }, correlationId: null,
     payload: {} as StoredEvent["payload"],
   });
 

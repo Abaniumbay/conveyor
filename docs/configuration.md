@@ -230,7 +230,9 @@ reference is not on this configured board and does not look elsewhere.
 
 Every change Conveyor makes is recorded in its event log ([events.md](events.md) lists them). The
 dashboard updates live from it, `conveyor events` prints it, and event sinks deliver it outside
-Conveyor, for example to an analyzer or a log shipper.
+Conveyor, for example to an analyzer or a log shipper. Each event has a class: `fact` (a change of
+Conveyor's own state), `ingest` (what a plugin observed, such as a webhook delivery) or `trace` (what
+the service is doing: timers firing and scheduling decisions). Traces are kept for a day.
 
 ```yaml
 settings:
@@ -238,6 +240,8 @@ settings:
     retention: 30d          # how long the log keeps events (default 30d); cleanup prunes older ones
     sinks:                  # default none
       - { type: jsonl, path: /var/log/conveyor/events.jsonl }
+      # classes: [fact, ingest]   # which classes it receives (default: no traces)
+      # includeContent: false     # whether events that may carry user-written text are delivered
     fallback:               # how long a wait for a webhook event sleeps when none comes
       default: 15m          # any event wait without its own value
       ci: 5m                # waiting for CI (ci.passed, ci.settled, advisory CI watches)
@@ -313,6 +317,10 @@ the Setup section: every issue, every enrolled item's provenance and author perm
 relationships, pull request heads and CI, and a ping of the webhook.
 
 A `jsonl` sink appends each event as one JSON line, rotated with the `settings.logging` size rules.
+It receives the classes in `classes` (`fact` and `ingest` unless set; add `trace` to see the
+service's own activity). Event types that may carry user-written text are marked *content* in
+[events.md](events.md); a sink receives them only with `includeContent: true`. The events a sink
+does not select are passed over, not held back.
 Each sink keeps its own position in the database: it receives every event at least once and in
 order, resumes after a restart where it stopped, and retries a failed delivery with backoff (up to a
 minute) without slowing Conveyor down. A new sink starts with the events the log still holds. When

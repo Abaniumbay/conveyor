@@ -8,6 +8,7 @@ import { ManualGateApprovals } from "../../src/engine/manual-gates";
 import { ReviewFindings } from "../../src/engine/review-findings";
 import { CriterionApprovals } from "../../src/engine/review-records";
 import { ItemTodos } from "../../src/engine/todos";
+import { UNDO_EVENT_CLASSES } from "../support/schema-rollback";
 
 const temporaryDirectories: string[] = [];
 // Version 48 dropped this table; a database simulated at a version between 19 and 32 still has it,
@@ -48,7 +49,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(48);
+    expect(store.schemaVersion()).toBe(49);
 
     store.close();
   });
@@ -61,6 +62,7 @@ describe("ConveyorStore", () => {
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository", configHash: "config-hash" });
     store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Title", body: "Body", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-20T00:00:00.000Z" });
     store.sqlite().exec(`
+      ${UNDO_EVENT_CLASSES}
       ALTER TABLE findings DROP COLUMN criterion_ids_json;
       ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP TABLE pending_purges; DROP TABLE purged_generations;
       DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DELETE FROM schema_migrations WHERE version >= 41;
@@ -97,6 +99,7 @@ describe("ConveyorStore", () => {
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository", configHash: "config-hash" });
     store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Title", body: "Body", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-16T00:00:00.000Z" });
     store.sqlite().exec(`
+      ${UNDO_EVENT_CLASSES}
       ${LEGACY_MANUAL_GATE_REQUIREMENTS}
       DROP TABLE ci_gate_observations;
       DROP TABLE ci_failure_windows;

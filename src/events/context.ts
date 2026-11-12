@@ -22,6 +22,17 @@ export interface EventContext {
 
 const SYSTEM: EventContext = { actor: { kind: "system", id: null }, correlationId: null };
 const storage = new AsyncLocalStorage<EventContext>();
+const causes = new AsyncLocalStorage<number>();
+
+/** Runs `work` as a reaction to the event `seq`: the events it appends, now or later, name it as their cause. */
+export function withCausation<T>(seq: number, work: () => T): T {
+  return causes.run(seq, work);
+}
+
+/** The event the running work reacts to, or null. */
+export function currentCausation(): number | null {
+  return causes.getStore() ?? null;
+}
 
 /** Runs `work` so that the events it appends, directly or asynchronously, carry `context`. */
 export function withEventContext<T>(context: Partial<EventContext> & { actor: EventActor }, work: () => T): T {

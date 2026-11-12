@@ -215,6 +215,29 @@ describe("scheduling", () => {
     await service.close();
   });
 
+  test("a pass that starts an item records a scheduler trace caused by the event that scheduled it", async () => {
+    const { service, store } = await setup({ drained: false });
+    store.events().append("item.requeued", { reason: "retry" }, { issueId: ISSUE });
+    await service.eventsSettled();
+    const requeued = store.events().read({ type: "item.requeued" })[0]!;
+    const decisions = store.events().read({ type: "scheduler.decided" });
+    expect(decisions[0]).toMatchObject({ class: "trace", source: "core", payload: { started: 1 }, causationSeq: requeued.seq });
+    await service.close();
+  });
+
+  test("passes with an unchanged outcome record no further scheduler traces", async () => {
+    const { service, store } = await setup({ drained: false });
+    store.events().append("item.requeued", { reason: "retry" }, { issueId: ISSUE });
+    await service.eventsSettled();
+    const before = store.events().read({ type: "scheduler.decided" }).length;
+    store.events().append("command.accepted", { command: "backlog.move" });
+    await service.eventsSettled();
+    store.events().append("command.accepted", { command: "backlog.move" });
+    await service.eventsSettled();
+    expect(store.events().read({ type: "scheduler.decided" }).length - before).toBeLessThanOrEqual(1);
+    await service.close();
+  });
+
   test("a parked entry approval does not take a runner before approval, including after restart", async () => {
     const first = await setup({ drained: false, entryApproval: true });
     first.park(1, ENTRY_APPROVAL_TASK_ID, "actions");

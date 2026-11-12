@@ -263,7 +263,7 @@ Agent transcripts are not in the service log: use conveyor item logs &lt;item>.
 
 Print the event log (every recorded change), optionally following it.
 
-Reads the database directly, so it works whether or not the service is running. Payloads carry identifiers and states, never secrets or user-written text.
+Reads the database directly, so it works whether or not the service is running. Every line shows the event's class; reactions show the event that caused them (cause=&lt;seq>), and plugin observations their source. Payloads carry identifiers and states, never secrets; user-written text appears only in event types that declare it. Traces are kept for a day.
 
 | Option | Description |
 | --- | --- |
@@ -271,6 +271,8 @@ Reads the database directly, so it works whether or not the service is running. 
 | `--issue <item>` | only events about this item, e.g. conveyor:90 |
 | `--type <type>` | only this event type, or a group ending in a dot, e.g. item. |
 | `--correlation <id>` | only the events one command caused |
+| `--class <classes>` | only these classes, comma-separated: fact (Conveyor's changes), ingest (what a plugin observed), trace (the service's own activity) |
+| `--caused-by <seq>` | only the events that the event with this sequence number caused, directly or through other reactions |
 | `--since <duration>` | only events from this long ago, e.g. 30m, 1h, 7d |
 | `--lines <n>` | print at most the last n matching events (default 200; 0 for all) |
 

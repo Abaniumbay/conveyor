@@ -8,6 +8,7 @@ import path from "node:path";
 
 import { restoreDirectoryAccess } from "../core/directory-access";
 import type { ConveyorStore } from "../db/store";
+import { TRACE_RETENTION_MS } from "../events/log";
 
 export interface RetentionPolicy {
   /** Run events older than this are deleted; null keeps them. */
@@ -164,9 +165,15 @@ export async function applyRetention(input: {
       if (!dryRun) await rm(directory, { recursive: true, force: true });
     }
   }
+  // Traces show recent activity: kept for a day even when the event log keeps everything else longer.
+  const tracesBefore = new Date(now.getTime() - TRACE_RETENTION_MS).toISOString();
   if (input.eventsMs !== undefined && input.eventsMs !== null) {
     const before = new Date(now.getTime() - input.eventsMs).toISOString();
-    report.eventLog.events = dryRun ? input.store.events().countBefore(before) : input.store.events().prune(before);
+    report.eventLog.events = dryRun
+      ? input.store.events().countBefore(before)
+      : input.store.events().prune(before, before > tracesBefore ? before : tracesBefore);
+  } else if (!dryRun) {
+    report.eventLog.events = input.store.events().prune("", tracesBefore);
   }
   if (input.webhookDeliveriesMs !== undefined && input.webhookDeliveriesMs !== null) {
     const before = new Date(now.getTime() - input.webhookDeliveriesMs).toISOString();

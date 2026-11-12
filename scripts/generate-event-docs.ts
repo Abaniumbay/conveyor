@@ -15,13 +15,16 @@ Each event has:
 
 - \`seq\`: its position in the log, increasing.
 - \`type\`: one of the types below.
+- \`class\`: \`fact\` (a change of Conveyor's own state, recorded with the change), \`ingest\` (what a plugin observed at a provider, such as a webhook delivery) or \`trace\` (what the service is doing: a timer firing, a scheduling decision; fire and forget, kept for a day).
+- \`source\`: \`core\`, or the plugin that reported the event (\`github\`).
+- \`causationSeq\`: the event this one was a reaction to, when a subscriber recorded it; \`conveyor events --caused-by <seq>\` follows the chain.
 - \`occurredAt\`: when it was recorded (ISO 8601).
 - \`repositoryId\` and \`issueId\`: the configured repository and item it concerns, when it concerns one.
 - \`actor\`: who caused it: \`user\` (a dashboard account), \`cli\`, \`agent\` (an agent run), \`webhook\` (a GitHub delivery) or \`system\` (Conveyor itself).
 - \`correlationId\`: shared by events for the item a command names; commands without an item share it with every event they cause.
-- \`payload\`: the fields listed below. Payloads carry identifiers and states, never secrets and never user-written text; read the text from the dashboard or the source.
+- \`payload\`: the fields listed below. Payloads carry identifiers and states, never secrets. Only an event type marked *content* may carry user-written text, and sinks leave those out unless they ask for them.
 
-\`conveyor events\` prints the log, and event sinks deliver it elsewhere ([configuration.md](configuration.md#events)). The log keeps events for \`settings.events.retention\` (30 days by default).
+\`conveyor events\` prints the log, and event sinks deliver it elsewhere ([configuration.md](configuration.md#events)); a sink receives facts and observations unless it selects other classes. The log keeps events for \`settings.events.retention\` (30 days by default) and traces for a day.
 
 `;
 
@@ -45,15 +48,17 @@ function fields(payload: z.ZodType): string {
   return entries.length === 0 ? "-" : entries.map(([name, field]) => `\`${name}\`: ${describeType(field)}`).join("<br>");
 }
 
-export function renderEventDocs(catalogue: Record<string, { group: string; description: string; payload: z.ZodType }> = EVENT_CATALOGUE): string {
-  const groups = new Map<string, Array<[string, { description: string; payload: z.ZodType }]>>();
+interface DocumentedEvent { group: string; description: string; payload: z.ZodType; class?: string; content?: boolean }
+
+export function renderEventDocs(catalogue: Record<string, DocumentedEvent> = EVENT_CATALOGUE): string {
+  const groups = new Map<string, Array<[string, DocumentedEvent]>>();
   for (const [type, definition] of Object.entries(catalogue)) groups.set(definition.group, [...(groups.get(definition.group) ?? []), [type, definition]]);
   const sections = [INTRO + "## Event catalogue\n"];
   for (const [group, definitions] of groups) {
     const rows = definitions
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([type, definition]) => `| \`${type}\` | ${definition.description.replaceAll("|", "\\|")} | ${fields(definition.payload)} |`);
-    sections.push([`### ${group}`, "", "| Event | Meaning | Payload |", "| --- | --- | --- |", ...rows, ""].join("\n"));
+      .map(([type, definition]) => `| \`${type}\` | ${definition.class ?? "fact"}${definition.content ? ", content" : ""} | ${definition.description.replaceAll("|", "\\|")} | ${fields(definition.payload)} |`);
+    sections.push([`### ${group}`, "", "| Event | Class | Meaning | Payload |", "| --- | --- | --- | --- |", ...rows, ""].join("\n"));
   }
   return sections.join("\n");
 }
