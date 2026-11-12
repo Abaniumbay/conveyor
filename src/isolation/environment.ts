@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants, existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -36,9 +36,19 @@ export const CODEX_CONTROL_PLANE: readonly string[] = ["CODEX_HOME"];
 
 /** The only parent variables an agent run may start from. */
 const INHERITED = [
-  "HOME", "USER", "LOGNAME", "PATH", "SHELL", "TERM", "COLORTERM", "LANG", "LC_ALL", "TMPDIR",
+  "HOME", "USER", "LOGNAME", "PATH", "TERM", "COLORTERM", "LANG", "LC_ALL", "TMPDIR",
   "CODEX_HOME", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
 ] as const;
+
+/**
+ * The absolute path of the bash Conveyor gives every agent as `SHELL`: the first `bash` on `searchPath`
+ * (default: the service's own PATH), else a standard location. Undefined when there is none.
+ */
+export function resolveBash(searchPath: string | undefined = process.env.PATH): string | undefined {
+  const found = Bun.which("bash", { PATH: searchPath ?? "" });
+  if (found) return path.resolve(found);
+  return ["/bin/bash", "/usr/bin/bash"].find((candidate) => existsSync(candidate));
+}
 
 function stripUserinfo(value: string): string {
   return value.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, "$1");
@@ -233,6 +243,8 @@ export async function prepareAgentEnvironment(options: {
   const artifactsDirectory = resolveFilesystemPath(options.artifactsDirectory);
   const workspace = resolveFilesystemPath(options.workspace);
   const parent = options.parent ?? process.env;
+  const bash = resolveBash(options.overrides?.PATH ?? parent.PATH);
+  if (!bash) throw new Error("bash is required to run agents and was not found; install it (for example: sudo apt install bash)");
   const base: Environment = {};
   for (const name of [...INHERITED, ...options.controlPlane]) base[name] = parent[name];
   Object.assign(base, options.overrides);
@@ -241,7 +253,10 @@ export async function prepareAgentEnvironment(options: {
     runId: path.basename(artifactsDirectory),
     gitUser: await readGitUser(workspace, parent),
   });
-  return sanitizedAgentEnvironment({ ...base, HOME: parent.HOME }, { home, controlPlane: options.controlPlane });
+  const env = sanitizedAgentEnvironment({ ...base, HOME: parent.HOME }, { home, controlPlane: options.controlPlane });
+  // Conveyor declares the shell agents run commands with; the operator's login shell never reaches them.
+  env.SHELL = bash;
+  return env;
 }
 
 /** The service's own Codex home: an explicit override, the inherited variable, or `~/.codex`. */

@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises
 import net from "node:net";
 import path from "node:path";
 
+import { resolveBash } from "../../src/isolation/environment";
 import { runClaudeCode } from "../../src/runner/claude-code";
 import { CLAUDE_CONTROL_PLANE_HOSTS, writeClaudeShellPrefix } from "../../src/isolation/run-network";
 import { bwrapUnavailableReason } from "../support/bwrap";
@@ -164,7 +165,7 @@ describe("Claude Code control-plane defaults", () => {
   });
 
   describe("calling convention: one command string argument", () => {
-    const zsh = Bun.which("zsh");
+    const bash = resolveBash()!;
     const writePrefix = async (dataEnv: Record<string, string> = {}) => {
       const directory = await shortTemporaryDirectory("conveyor-pf-");
       directories.push(directory);
@@ -176,25 +177,18 @@ describe("Claude Code control-plane defaults", () => {
 
     test("runs the string with $SHELL -c and returns its exit code", async () => {
       const { prefix } = await writePrefix();
-      const result = call(prefix, 'printf "%s" "$0"; exit 7', { SHELL: "/bin/bash" });
-      expect(text(result.stdout)).toBe("/bin/bash");
+      const result = call(prefix, 'printf "%s" "$0"; exit 7', { SHELL: bash });
+      expect(text(result.stdout)).toBe(bash);
       expect(result.exitCode).toBe(7);
     });
 
-    test("falls back to /bin/sh -c when SHELL is unset", async () => {
-      const { prefix } = await writePrefix();
-      const result = call(prefix, 'printf "%s" "$0"; exit 3', {});
-      expect(text(result.stdout)).toBe("/bin/sh");
-      expect(result.exitCode).toBe(3);
-    });
-
-    test.skipIf(!zsh && !process.env.CI)("runs a Claude-style zsh string and writes the cwd file", async () => {
+    test("runs a Claude-style string with bash and writes the cwd file", async () => {
       const { prefix, directory } = await writePrefix();
       const snapshot = path.join(directory, "snapshot.sh");
       const cwdFile = path.join(directory, "cwd");
       await writeFile(snapshot, "# snapshot\n");
       const commandString = `source ${snapshot} 2>/dev/null || true && { shopt -u extglob || setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL; } >/dev/null 2>&1 || true && eval 'echo ok' < /dev/null && pwd -P >| ${cwdFile}`;
-      const result = call(prefix, commandString, { SHELL: zsh ?? "/usr/bin/zsh" });
+      const result = call(prefix, commandString, { SHELL: bash });
       expect(text(result.stdout).trim()).toBe("ok");
       expect(result.exitCode).toBe(0);
       expect((await readFile(cwdFile, "utf8")).trim()).toBe(process.cwd());
@@ -203,7 +197,7 @@ describe("Claude Code control-plane defaults", () => {
     test("removes the harness variables and sets the data-plane proxy variables", async () => {
       const { prefix } = await writePrefix({ HTTPS_PROXY: "http://127.0.0.1:3128" });
       const result = call(prefix, 'printf "%s|%s|%s|%s" "${CLAUDE_CONFIG_DIR-unset}" "${CLAUDE_CODE_OAUTH_TOKEN-unset}" "${ANTHROPIC_API_KEY-unset}" "$HTTPS_PROXY"', {
-        SHELL: "/bin/sh", CLAUDE_CONFIG_DIR: "/x", CLAUDE_CODE_OAUTH_TOKEN: "t", ANTHROPIC_API_KEY: "k", HTTPS_PROXY: "http://conveyor:secret@127.0.0.1:1",
+        SHELL: bash, CLAUDE_CONFIG_DIR: "/x", CLAUDE_CODE_OAUTH_TOKEN: "t", ANTHROPIC_API_KEY: "k", HTTPS_PROXY: "http://conveyor:secret@127.0.0.1:1",
       });
       expect(text(result.stdout)).toBe("unset|unset|unset|http://127.0.0.1:3128");
     });
@@ -213,7 +207,7 @@ describe("Claude Code control-plane defaults", () => {
       const server = path.join(directory, "mcp-server");
       await writeFile(server, '#!/bin/sh\nprintf "server:%s" "$1"\n');
       await chmod(server, 0o755);
-      const result = call(prefix, `${server} playwright`, { SHELL: "/bin/sh" });
+      const result = call(prefix, `${server} playwright`, { SHELL: bash });
       expect(text(result.stdout)).toBe("server:playwright");
       expect(result.exitCode).toBe(0);
     });

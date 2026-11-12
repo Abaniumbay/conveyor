@@ -5,10 +5,11 @@ import path from "node:path";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
-import { claudeCodeChecks, judgeLiveOutput, liveArguments, liveHosts, liveModeNote, livePrompt, loadCheckConfig, runLiveClaudeCheck, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
+import { claudeCodeChecks, judgeLiveOutput, liveCommand, liveArguments, liveHosts, liveModeNote, livePrompt, loadCheckConfig, runLiveClaudeCheck, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
+import { resolveBash } from "../../src/isolation/environment";
 
 describe("restoreSteps", () => {
   test("uses an empty task-scoped cache for every ecosystem", () => {
@@ -94,9 +95,9 @@ describe("claudeCodeChecks calling convention", () => {
 describe("live Claude Code check", () => {
   const hosts = { allowed: "registry.fake.test", refused: "api.github.com" };
   const events = (allowedError: boolean, refusedError: boolean) => [
-    { type: "assistant", message: { content: [{ type: "tool_use", id: "a", name: "Bash", input: { command: `curl https://${hosts.allowed}` } }] } },
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "a", name: "Bash", input: { command: liveCommand(hosts.allowed) } }] } },
     { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "a", is_error: allowedError }] } },
-    { type: "assistant", message: { content: [{ type: "tool_use", id: "b", name: "Bash", input: { command: `curl https://${hosts.refused}` } }] } },
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "b", name: "Bash", input: { command: liveCommand(hosts.refused) } }] } },
     { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b", is_error: refusedError }] } },
   ].map((event) => JSON.stringify(event)).join("\n");
 
@@ -114,6 +115,17 @@ describe("live Claude Code check", () => {
     expect(judgeLiveOutput("", hosts).problems).toHaveLength(2);
   });
 
+  test("ignores commands the CLI changed from the ones it was asked to run", () => {
+    const call = (id: string, command: string, isError: boolean) => [
+      { type: "assistant", message: { content: [{ type: "tool_use", id, name: "Bash", input: { command } }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, is_error: isError }] } },
+    ];
+    const swapped = [...call("a", `echo ${hosts.allowed}`, false), ...call("b", `echo ${hosts.refused}; exit 1`, true)].map((event) => JSON.stringify(event)).join("\n");
+    const verdict = judgeLiveOutput(swapped, hosts);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.problems).toHaveLength(2);
+  });
+
   const unavailableLive = bwrapUnavailableReason();
   test.skipIf(unavailableLive !== undefined)("starts the CLI binary in the run's namespace and fails when the refused command is not refused", async () => {
     const directory = await shortTemporaryDirectory("egress-live-", { socketPath: "artifacts/live-x/artifacts/net/control.sock", visibleInSandbox: true });
@@ -126,9 +138,11 @@ const prompt = await new Response(Bun.stdin.stream()).text();
 const out = (event) => console.log(JSON.stringify(event));
 const probe = (host) => 'bun -e \'const s=require("node:net").connect(Number(new URL(process.env.HTTPS_PROXY).port),"127.0.0.1");let r="";s.on("data",c=>{r+=c;process.exit(r.split(" ")[1]==="200"?0:1)});s.write("CONNECT ${"$"}{host}:443 HTTP/1.1\\r\\nHost: ${"$"}{host}:443\\r\\n\\r\\n")\'';
 let id = 0;
-for (const host of ["registry.fake.test", "api.github.com"]) {
+for (const line of prompt.split("\n").filter((line) => /^[12]\. /.test(line))) {
+  const command = line.slice(3);
+  const host = new URL(command.slice(command.indexOf("https://"))).hostname;
   const key = String(id++);
-  out({ type: "assistant", message: { content: [{ type: "tool_use", id: key, name: "Bash", input: { command: "curl https://" + host } }] } });
+  out({ type: "assistant", message: { content: [{ type: "tool_use", id: key, name: "Bash", input: { command } }] } });
   const result = Bun.spawnSync([process.env.CLAUDE_CODE_SHELL_PREFIX, probe(host).replaceAll("${"$"}{host}", host)], { env: process.env });
   out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: key, is_error: result.exitCode !== 0 }] } });
 }
@@ -142,10 +156,10 @@ if (!prompt.includes("registry.fake.test") || !process.argv.includes("Bash")) pr
       const workspace = path.join(directory, "workspace");
       await mkdir(workspace);
       const egress = { httpsHosts: ["registry.fake.test"], resolve: async () => ["203.0.113.1"], dial: () => net.connect(port, "127.0.0.1") };
-      const result = await runLiveClaudeCheck({ cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "" }, egress, hosts: { allowed: "registry.fake.test", refused: "api.github.com" } });
+      const result = await runLiveClaudeCheck({ cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "", SHELL: resolveBash()! }, egress, hosts: { allowed: "registry.fake.test", refused: "api.github.com" } });
       expect(result.problems).toEqual([]);
       expect(result.passed).toBe(true);
-      const permissive = await runLiveClaudeCheck({ cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "" }, egress: { ...egress, httpsHosts: ["registry.fake.test", "api.github.com"] }, hosts: { allowed: "registry.fake.test", refused: "api.github.com" } });
+      const permissive = await runLiveClaudeCheck({ cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "", SHELL: resolveBash()! }, egress: { ...egress, httpsHosts: ["registry.fake.test", "api.github.com"] }, hosts: { allowed: "registry.fake.test", refused: "api.github.com" } });
       expect(permissive.passed).toBe(false);
     } finally {
       for (const server of servers) server.close();

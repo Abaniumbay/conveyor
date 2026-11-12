@@ -215,6 +215,9 @@ export async function doctorReport(
   const git = tool("git", "git", "install Git (for example: sudo apt install git)", find);
   checks.push(git ?? { name: "git", status: "ok", detail: (await execute(["git", "--version"])).output });
 
+  const bash = tool("bash", "bash", "install bash (for example: sudo apt install bash); Conveyor runs every agent's commands with it", find);
+  if (bash) checks.push(bash);
+
   const gh = tool("github cli", "gh", "install the GitHub CLI: https://cli.github.com", find);
   if (gh) checks.push(gh);
   else {

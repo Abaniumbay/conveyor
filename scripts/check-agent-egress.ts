@@ -26,7 +26,7 @@ import { loadConfig, type ConveyorConfig } from "../src/config/load";
 import { parseLoopbackTcp } from "../src/isolation/egress-policy";
 import { startEgressProxy } from "../src/isolation/egress-proxy";
 import { agentEgressFor } from "../src/isolation/agent-egress";
-import { sanitizedAgentEnvironment } from "../src/isolation/environment";
+import { resolveBash, sanitizedAgentEnvironment } from "../src/isolation/environment";
 import { CLAUDE_CONTROL_PLANE_HOSTS, claudeLaunch } from "../src/isolation/run-network";
 import { startTcpRelay } from "../src/isolation/tcp-relay";
 import { sandboxCommand } from "../src/isolation/sandbox";
@@ -224,7 +224,7 @@ export function liveHosts(options: { httpsHosts: readonly string[]; controlPlane
   return refused ? { allowed, refused } : undefined;
 }
 
-const liveCommand = (host: string): string => `${CURL} https://${host}`;
+export const liveCommand = (host: string): string => `${CURL} https://${host}`;
 
 /** The prompt for the real CLI: two `Bash` calls, one per host, reported verbatim. */
 export function livePrompt(hosts: LiveHosts): string {
@@ -253,8 +253,9 @@ export function judgeLiveOutput(output: string, hosts: LiveHosts): LiveVerdict {
     }
   }
   const problems: string[] = [];
+  // Only the exact commands the prompt asked for count: a modified command proves nothing about the connection.
   const outcome = (host: string): boolean | undefined => {
-    const found = [...calls].find(([, command]) => command.includes(host));
+    const found = [...calls].find(([, command]) => command.trim() === liveCommand(host));
     return found ? errored.get(found[0]) : undefined;
   };
   const allowed = outcome(hosts.allowed);
@@ -348,7 +349,9 @@ async function main(): Promise<number> {
     if (clone.exitCode !== 0) throw new Error(`git clone failed: ${clone.stderr.toString()}`);
     const privateHome = path.join(scratch, "home");
     await mkdir(privateHome, { recursive: true });
-    const base = sanitizedAgentEnvironment(process.env, { home: privateHome, controlPlane: [] });
+    const bash = resolveBash();
+    if (!bash) throw new Error("bash is required to run agents and was not found");
+    const base = { ...sanitizedAgentEnvironment(process.env, { home: privateHome, controlPlane: [] }), SHELL: bash };
 
     const localServices = (repository.agentEgress.localServices ?? []).map((service): LocalServiceEntry & { name: string } =>
       service.socket !== undefined ? { name: service.name, endpoint: service.endpoint, socket: service.socket } : { name: service.name, endpoint: service.endpoint, tcp: service.tcp ?? "" },

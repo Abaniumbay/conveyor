@@ -33,6 +33,7 @@ Upgrades replace only the first. Uninstalling keeps the second and third.
 
 - Linux on x64 or arm64 with glibc (Alpine and other musl systems are not supported).
 - Git, and the [GitHub CLI](https://cli.github.com/) authenticated for the managed repositories.
+- `bash`: Conveyor sets every agent's `SHELL` to it, whatever your login shell is, so agents build bash command strings on any host. `conveyor doctor` reports a missing bash.
 - `bwrap` (bubblewrap), with unprivileged user namespaces allowed, for agent isolation.
 - For the packaged default configuration, both Codex and Claude Code installed for `conveyor
   doctor` to pass. Sign in to both before running packaged agents. Codex performs refinement;
@@ -177,8 +178,8 @@ reports that the process reaches its control-plane host (`controlPlaneHosts` on 
 Anthropic's hosts) and no other, that its commands reach only `httpsHosts`, and that `api.github.com`
 and direct IP connections are refused. Commands are launched as `"$CLAUDE_CODE_SHELL_PREFIX" '<command string>'`,
 the way Claude Code runs them: the prefix is the path of one per-run wrapper script, never a command line,
-and it receives exactly one argument, a command string, which it runs with Claude Code's `$SHELL -c`
-(`/bin/sh` when unset). Claude Code launches MCP servers the same way.
+and it receives exactly one argument, a command string, which it runs with `$SHELL -c`; Conveyor
+sets `SHELL` to bash for every agent run. Claude Code launches MCP servers the same way.
 
 Those probes do not start the real CLI, and the output says so. **Before turning on `agentEgress` for
 Claude Code agents, run the check with `--live`:**
