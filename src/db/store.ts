@@ -2002,7 +2002,7 @@ export class ConveyorStore {
   /** The id of the item's current stop: its latest completed transition, when that one is a stop. */
   currentStopId(issueId: string): string | null {
     const row = this.#database
-      .query("SELECT id, kind FROM stage_transitions WHERE issue_id = ? AND status = 'completed' ORDER BY created_at DESC, id DESC LIMIT 1")
+      .query("SELECT id, kind FROM stage_transitions WHERE issue_id = ? AND status = 'completed' ORDER BY created_at DESC, rowid DESC LIMIT 1")
       .get(issueId) as { id: string; kind: string } | null;
     return row?.kind === "stopped" ? row.id : null;
   }

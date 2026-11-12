@@ -140,6 +140,21 @@ describe("operator.recordStopSummary", () => {
     expect(store.currentStopSummary(ITEM)).toBe("second");
   });
 
+  test("the current stop is the latest transition even when ids sort in the opposite order", async () => {
+    const { store, call } = await world();
+    const add = (id: string, kind: string) => {
+      store.beginStageTransition({ id, issueId: ITEM, fromStage: "implementation", toStage: "implementation", kind, sourceMutationId: null, detail: { reason: "red", requiredFixes: [], resultStatus: null } });
+      store.completeStageTransition(id);
+    };
+    add("zzzz", "stopped");
+    add("mmmm", "resumed");
+    expect(store.currentStopId(ITEM)).toBeNull();
+    add("aaaa", "stopped");
+    expect(store.currentStopId(ITEM)).toBe("aaaa");
+    await call({ itemId: ITEM, stopId: "aaaa" }, { itemId: ITEM, stopId: "aaaa", summary: "new" });
+    expect(store.currentStopSummary(ITEM)).toBe("new");
+  });
+
   test("leaves the item's stage, state, labels and stop reason unchanged", async () => {
     const { store, transition, call } = await world();
     store.setIssueProjection(ITEM, { stage: "implementation", state: "blocked", warning: "red" });
