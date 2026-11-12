@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { cleanupSanitizedHome, prepareSanitizedHome, sanitizedAgentEnvironment, syncCodexHome } from "../../src/isolation/environment";
+import { cleanupSanitizedHome, prepareAgentEnvironment, prepareSanitizedHome, resolveBash, sanitizedAgentEnvironment, syncCodexHome } from "../../src/isolation/environment";
 
 const directories: string[] = [];
 async function temporary(): Promise<string> {
@@ -203,5 +203,31 @@ describe("syncCodexHome", () => {
     expect(await readFile(path.join(serviceHome, "auth.json"), "utf8")).toBe('{"tokens":"new"}');
     expect(await readFile(path.join(serviceHome, "sessions", "2026", "rollout-abc.jsonl"), "utf8")).toBe("{}\n");
     expect(existsSync(path.join(serviceHome, "sessions", "2026", "rollout-link.jsonl"))).toBe(false);
+  });
+});
+
+describe("the agent's shell", () => {
+  const prepare = async (parent: Record<string, string>) => {
+    const artifacts = path.join(await temporary(), "run-1");
+    const workspace = await temporary();
+    return prepareAgentEnvironment({ artifactsDirectory: artifacts, workspace, parent: { HOME: "/home/real", ...parent }, controlPlane: [] });
+  };
+
+  test("is Conveyor's resolved absolute bash when the parent's SHELL is another shell", async () => {
+    const env = await prepare({ PATH: process.env.PATH ?? "", SHELL: "/opt/login-shell" });
+    expect(env.SHELL).toBe(resolveBash(process.env.PATH));
+    expect(path.isAbsolute(env.SHELL!)).toBe(true);
+    expect(path.basename(env.SHELL!)).toBe("bash");
+  });
+
+  test("is Conveyor's resolved bash when the parent has no SHELL", async () => {
+    const env = await prepare({ PATH: process.env.PATH ?? "" });
+    expect(env.SHELL).toBe(resolveBash(process.env.PATH));
+  });
+
+  test("a run's own SHELL override does not replace it", async () => {
+    const artifacts = path.join(await temporary(), "run-1");
+    const env = await prepareAgentEnvironment({ artifactsDirectory: artifacts, workspace: await temporary(), parent: { HOME: "/h", PATH: process.env.PATH ?? "" }, overrides: { SHELL: "/opt/login-shell" }, controlPlane: [] });
+    expect(env.SHELL).toBe(resolveBash(process.env.PATH));
   });
 });

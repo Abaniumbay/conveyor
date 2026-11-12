@@ -6,5 +6,7 @@ test("operations guide shows how to run the egress check against an installed ho
   const operations = await readFile(path.join(import.meta.dir, "../../docs/operations.md"), "utf8");
 
   expect(operations).toContain("scripts/check-agent-egress.ts <repository-id> --config ~/.conveyor/config/conveyor.yaml --home ~/.conveyor --runner <runner-id>");
-  expect(operations).toContain('"$CLAUDE_CODE_SHELL_PREFIX" <command>');
+  expect(operations).toContain('"$CLAUDE_CODE_SHELL_PREFIX" \'<command string>\'');
+  expect(operations).toMatch(/--runner <runner-id> --live/);
+  expect(operations).toMatch(/before turning on `agentEgress` for\s+Claude Code agents/i);
 });

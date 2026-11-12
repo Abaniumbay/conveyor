@@ -1,4 +1,4 @@
-import type { StoredEvent } from "../../events/catalogue";
+import { EVENT_CLASSES, type EventClass, type StoredEvent } from "../../events/catalogue";
 import type { EventQuery } from "../../events/log";
 import { ConveyorStore } from "../../db/store";
 import { CliError, EXIT, parseDuration } from "../args";
@@ -6,12 +6,24 @@ import { loadCommandConfig, stringOption, type Command } from "../command";
 
 const FOLLOW_POLL_MS = 500;
 
-/** One event as a line: sequence, time, type, item, actor, correlation and payload. */
-function formatEvent(event: StoredEvent, items: Map<string, string>): string {
+/** One event as a line: sequence, time, class, type, item, actor, source, cause, correlation and payload. */
+export function formatEvent(event: StoredEvent, items: Map<string, string>): string {
   const item = event.issueId ? (items.get(event.issueId) ?? event.issueId) : (event.repositoryId ?? "-");
   const actor = event.actor.id ? `${event.actor.kind}:${event.actor.id}` : event.actor.kind;
+  const source = event.source === "core" ? "" : ` source=${event.source}`;
+  const cause = event.causationSeq === null ? "" : ` cause=${event.causationSeq}`;
   const correlation = event.correlationId ? ` correlation=${event.correlationId}` : "";
-  return `${event.seq} ${event.occurredAt} ${event.type} ${item} ${actor}${correlation} ${JSON.stringify(event.payload)}`;
+  return `${event.seq} ${event.occurredAt} ${event.class} ${event.type} ${item} ${actor}${source}${cause}${correlation} ${JSON.stringify(event.payload)}`;
+}
+
+/** The classes a `--class` list names. */
+export function parseClasses(value: string): EventClass[] {
+  const classes = value.split(",").map((name) => name.trim()).filter(Boolean);
+  const unknown = classes.filter((name) => !(EVENT_CLASSES as readonly string[]).includes(name));
+  if (classes.length === 0 || unknown.length > 0) {
+    throw new CliError(`--class takes a comma-separated list of ${EVENT_CLASSES.join(", ")}${unknown.length > 0 ? `; unknown: ${unknown.join(", ")}` : ""}`, EXIT.usage);
+  }
+  return classes as EventClass[];
 }
 
 export const events: Command = {
@@ -22,10 +34,12 @@ export const events: Command = {
     issue: { type: "string", value: "<item>", description: "only events about this item, e.g. conveyor:90" },
     type: { type: "string", value: "<type>", description: "only this event type, or a group ending in a dot, e.g. item." },
     correlation: { type: "string", value: "<id>", description: "only the events one command caused" },
+    class: { type: "string", value: "<classes>", description: "only these classes, comma-separated: fact (Conveyor's changes), ingest (what a plugin observed), trace (the service's own activity)" },
+    "caused-by": { type: "string", value: "<seq>", description: "only the events that the event with this sequence number caused, directly or through other reactions" },
     since: { type: "string", value: "<duration>", description: "only events from this long ago, e.g. 30m, 1h, 7d" },
     lines: { type: "string", value: "<n>", description: "print at most the last n matching events (default 200; 0 for all)" },
   },
-  details: "Reads the database directly, so it works whether or not the service is running. Payloads carry identifiers and states, never secrets or user-written text.",
+  details: "Reads the database directly, so it works whether or not the service is running. Every line shows the event's class; reactions show the event that caused them (cause=<seq>), and plugin observations their source. Payloads carry identifiers and states, never secrets; user-written text appears only in event types that declare it. Traces are kept for a day.",
   async run(context) {
     const config = await loadCommandConfig(context, null);
     const store = await ConveyorStore.open(config.settings.database, { migrateExisting: false });
@@ -44,7 +58,12 @@ export const events: Command = {
       const since = stringOption(context, "since");
       const type = stringOption(context, "type");
       const correlation = stringOption(context, "correlation");
+      const classes = stringOption(context, "class");
+      const causedBy = stringOption(context, "caused-by");
+      if (causedBy !== undefined && !/^\d+$/.test(causedBy)) throw new CliError("--caused-by takes an event sequence number", EXIT.usage);
       const query: EventQuery = {
+        ...(classes !== undefined ? { classes: parseClasses(classes) } : {}),
+        ...(causedBy !== undefined ? { causedBy: Number(causedBy) } : {}),
         ...(issueId !== undefined ? { issueId } : {}),
         ...(type !== undefined ? { type } : {}),
         ...(correlation !== undefined ? { correlationId: correlation } : {}),

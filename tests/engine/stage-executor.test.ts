@@ -977,7 +977,7 @@ describe("pending exit gate", () => {
       wake: (issueId) => { if (h.journal.wakeNow(issueId)) woken.push(issueId); },
     });
     const delivery: StoredEvent = {
-      seq: 1, type: "github.changeUpdated", occurredAt: h.now().toISOString(), repositoryId: "repo-1", issueId: null,
+      seq: 1, type: "github.changeUpdated", class: "ingest", source: "github", causationSeq: null, occurredAt: h.now().toISOString(), repositoryId: "repo-1", issueId: null,
       actor: { kind: "webhook", id: "delivery-1" }, correlationId: null,
       payload: { repository: "owner/sample", number: 5, action: "closed", headSha: "def456", merged: true },
     };

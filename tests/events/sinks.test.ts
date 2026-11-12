@@ -6,7 +6,7 @@ import path from "node:path";
 import { ConveyorStore } from "../../src/db/store";
 import { EventBus } from "../../src/events/bus";
 import type { StoredEvent } from "../../src/events/catalogue";
-import { JsonlEventSink, SinkRunner, type EventSink } from "../../src/events/sinks";
+import { JsonlEventSink, SinkRunner, type EventSink, type SinkSelection } from "../../src/events/sinks";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 
 const directories: string[] = [];
@@ -132,6 +132,59 @@ describe("SinkRunner", () => {
     await runner.idle();
     expect(records.find((record) => record.message === "Event sink missed events that retention already removed")).toMatchObject({ missed: oldest + 1 });
     expect(sink.received).toEqual(store.events().read().map((event) => event.seq));
+    await runner.stop();
+    store.close();
+  });
+});
+
+describe("sink selection", () => {
+  /** A sink that records the types it receives; without a selection it relies on the default. */
+  const selecting = (selection?: SinkSelection) => {
+    const received: string[] = [];
+    const sink: EventSink = {
+      name: `selecting-${selection?.classes.join("-") ?? "default"}`,
+      ...(selection ? { selection } : {}),
+      async deliver(events) { received.push(...events.map((event) => event.type)); },
+    };
+    return Object.assign(sink, { received });
+  };
+
+  test("a sink receives facts and observations but not traces by default", async () => {
+    const { store, bus, change } = await world();
+    change();
+    store.events().trace("timer.fired", { timer: "reconcile" });
+    const sink = selecting();
+    const runner = new SinkRunner(store.events(), sink);
+    runner.start(bus);
+    await runner.idle();
+    expect(sink.received).toContain("item.discovered");
+    expect(sink.received).not.toContain("timer.fired");
+    await runner.stop();
+    store.close();
+  });
+
+  test("a sink that selects traces receives them", async () => {
+    const { store, bus, change } = await world();
+    change();
+    store.events().trace("timer.fired", { timer: "reconcile" });
+    const sink = selecting({ classes: ["trace"], content: false });
+    const runner = new SinkRunner(store.events(), sink);
+    runner.start(bus);
+    await runner.idle();
+    expect(sink.received).toEqual(["timer.fired"]);
+    await runner.stop();
+    store.close();
+  });
+
+  test("the cursor moves past events the sink does not select", async () => {
+    const { store, bus } = await world();
+    store.events().trace("timer.fired", { timer: "wake" });
+    const sink = selecting();
+    const runner = new SinkRunner(store.events(), sink);
+    runner.start(bus);
+    await runner.idle();
+    expect(sink.received).not.toContain("timer.fired");
+    expect(store.events().consumerCursor(sink.name)).toBe(store.events().latestSeq());
     await runner.stop();
     store.close();
   });

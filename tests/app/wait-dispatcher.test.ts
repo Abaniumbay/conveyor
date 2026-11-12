@@ -8,7 +8,7 @@ const SHA = "0123456789abcdef0123456789abcdef01234567";
 
 function event(type: StoredEvent["type"], payload: unknown, scope: { repositoryId?: string; issueId?: string } = {}): StoredEvent {
   return {
-    seq: 1, type, occurredAt: "2026-10-17T00:00:00Z", repositoryId: scope.repositoryId ?? "app", issueId: scope.issueId ?? null,
+    seq: 1, type, class: "ingest", source: "github", causationSeq: null, occurredAt: "2026-10-17T00:00:00Z", repositoryId: scope.repositoryId ?? "app", issueId: scope.issueId ?? null,
     actor: { kind: "webhook", id: "d1" }, correlationId: null, payload: payload as StoredEvent["payload"],
   };
 }

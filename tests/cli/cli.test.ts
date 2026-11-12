@@ -685,6 +685,21 @@ describe("conveyor doctor", () => {
     });
   });
 
+  test("fails with an install fix when bash cannot be found", async () => {
+    const home = await initialisedHome();
+    const checks = await doctorChecks(home, path.join(home, "config/conveyor.yaml"), async () => false, undefined, undefined, {
+      ...runtime(true),
+      findTool: (command) => command === "gh" || command === "bash" ? null : `/usr/bin/${command}`,
+    });
+
+    expect(find(checks, "bash")).toEqual({
+      name: "bash",
+      status: "fail",
+      detail: "bash is not on PATH",
+      fix: expect.stringContaining("install bash"),
+    });
+  });
+
   test("names a Codex command that cannot be resolved for confined launch and says how to fix it", async () => {
     const home = await initialisedHome();
     const root = await temporary();

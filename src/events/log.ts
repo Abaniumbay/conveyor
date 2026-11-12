@@ -5,12 +5,14 @@ import type { Database, SQLQueryBindings } from "bun:sqlite";
 
 import { log } from "../log/logger";
 import type { EventBus } from "./bus";
-import { EVENT_CATALOGUE, type EventPayload, type EventType, type StoredEvent } from "./catalogue";
-import { eventContextForIssue } from "./context";
+import { EVENT_CATALOGUE, type EventClass, type EventPayload, type EventType, type StoredEvent } from "./catalogue";
+import { currentCausation, eventContextForIssue } from "./context";
 
 export interface EventScope {
   repositoryId?: string | null;
   issueId?: string | null;
+  /** The plugin that reported an `ingest` event; `core` otherwise. */
+  source?: string;
 }
 
 export interface EventQuery {
@@ -19,13 +21,23 @@ export interface EventQuery {
   /** An event type, or a prefix ending in a dot such as `item.`. */
   type?: string;
   correlationId?: string;
+  /** Only events of these classes; every class when omitted. */
+  classes?: readonly EventClass[];
+  /** Only the events that `seq` caused, directly or through other reactions. */
+  causedBy?: number;
   since?: string;
   limit?: number;
 }
 
+/** How long trace events are kept: they show recent activity, not history. */
+export const TRACE_RETENTION_MS = 24 * 60 * 60_000;
+
 interface EventRow {
   seq: number;
   type: string;
+  class: string;
+  source: string;
+  causation_seq: number | null;
   occurred_at: string;
   repository_id: string | null;
   issue_id: string | null;
@@ -38,6 +50,9 @@ interface EventRow {
 const toEvent = (row: EventRow): StoredEvent => ({
   seq: row.seq,
   type: row.type as EventType,
+  class: row.class as EventClass,
+  source: row.source,
+  causationSeq: row.causation_seq,
   occurredAt: row.occurred_at,
   repositoryId: row.repository_id,
   issueId: row.issue_id,
@@ -75,19 +90,32 @@ export class EventLog {
     this.#published = this.latestSeq();
   }
 
-  /** Appends one event; inside a transaction it is kept or rolled back with the change it records. */
+  /**
+   * Appends one event; inside a transaction it is kept or rolled back with the change it records.
+   * Work that reacts to an event (a bus subscriber and what it starts) records that event as the cause.
+   */
   append<T extends EventType>(type: T, payload: EventPayload<T>, scope: EventScope = {}): void {
-    const parsed = EVENT_CATALOGUE[type].payload.parse(payload);
+    const definition = EVENT_CATALOGUE[type];
+    const parsed = definition.payload.parse(payload);
     const issueId = scope.issueId ?? null;
     const { actor, correlationId } = eventContextForIssue(issueId);
     this.database
       .query(
-        `INSERT INTO events(type, occurred_at, repository_id, issue_id, actor_kind, actor_id, correlation_id, payload_json)
-         VALUES (?, ?, COALESCE(?, (SELECT repository_id FROM issues WHERE id = ?)), ?, ?, ?, ?, ?)`,
+        `INSERT INTO events(type, class, source, causation_seq, occurred_at, repository_id, issue_id, actor_kind, actor_id, correlation_id, payload_json)
+         VALUES (?, ?, ?, ?, ?, COALESCE(?, (SELECT repository_id FROM issues WHERE id = ?)), ?, ?, ?, ?, ?)`,
       )
-      .run(type, new Date().toISOString(), scope.repositoryId ?? null, issueId, issueId, actor.kind, actor.id, correlationId, JSON.stringify(parsed));
+      .run(
+        type, definition.class, scope.source ?? "core", currentCausation(), new Date().toISOString(),
+        scope.repositoryId ?? null, issueId, issueId, actor.kind, actor.id, correlationId, JSON.stringify(parsed),
+      );
     // bun:sqlite transactions are synchronous, so this runs after the enclosing one committed or rolled back.
     if (this.#bus) queueMicrotask(() => void this.drain());
+  }
+
+  /** Records a trace: what the service is doing, recorded outside any change, kept for a day. */
+  trace<T extends EventType>(type: T, payload: EventPayload<T>, scope: EventScope = {}): void {
+    if (EVENT_CATALOGUE[type].class !== "trace") throw new Error(`${type} is not a trace event`);
+    this.append(type, payload, scope);
   }
 
   latestSeq(): number {
@@ -109,10 +137,23 @@ export class EventLog {
       else { clauses.push("type = ?"); values.push(query.type); }
     }
     if (query.correlationId !== undefined) { clauses.push("correlation_id = ?"); values.push(query.correlationId); }
+    if (query.classes !== undefined) {
+      clauses.push(`class IN (${query.classes.map(() => "?").join(", ") || "NULL"})`);
+      values.push(...query.classes);
+    }
     if (query.since !== undefined) { clauses.push("occurred_at >= ?"); values.push(query.since); }
+    let chain = "";
+    if (query.causedBy !== undefined) {
+      chain = `WITH RECURSIVE chain(seq) AS (
+          SELECT seq FROM events WHERE causation_seq = ?
+          UNION SELECT events.seq FROM events JOIN chain ON events.causation_seq = chain.seq
+        ) `;
+      values.unshift(query.causedBy);
+      clauses.push("seq IN (SELECT seq FROM chain)");
+    }
     values.push(Math.min(Math.max(query.limit ?? 500, 1), 5_000));
     const rows = this.database
-      .query(`SELECT * FROM events WHERE ${clauses.join(" AND ")} ORDER BY seq LIMIT ?`)
+      .query(`${chain}SELECT * FROM events WHERE ${clauses.join(" AND ")} ORDER BY seq LIMIT ?`)
       .all(...values) as EventRow[];
     return rows.map(toEvent);
   }
@@ -123,9 +164,11 @@ export class EventLog {
     return row.count;
   }
 
-  /** Deletes events that occurred before `before`; returns how many. */
-  prune(before: string): number {
-    return this.database.query("DELETE FROM events WHERE occurred_at < ?").run(before).changes;
+  /** Deletes events that occurred before `before`, and traces older than `tracesBefore`; returns how many. */
+  prune(before: string, tracesBefore: string = before): number {
+    const facts = this.database.query("DELETE FROM events WHERE occurred_at < ?").run(before).changes;
+    const traces = this.database.query("DELETE FROM events WHERE class = 'trace' AND occurred_at < ?").run(tracesBefore).changes;
+    return facts + traces;
   }
 
   /** The last event a durable consumer processed, or null when it has never run. */

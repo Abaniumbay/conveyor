@@ -7,6 +7,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { configSchema } from "../../src/config/schema";
 import { ConveyorStore } from "../../src/db/store";
+import { UNDO_EVENT_CLASSES } from "../support/schema-rollback";
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
@@ -49,7 +50,7 @@ test("a database upgraded from the paused_by_conveyor marker drops the column an
   store.setIssueProjection("staged", { stage: "implementation", state: "paused", warning: null });
   store.setIssueProjection("marked", { stage: null, state: "paused", warning: null });
   store.setIssueProjection("running", { stage: "implementation", state: "active", warning: null });
-  store.sqlite().exec("DROP TABLE pending_purges; DROP TABLE purged_generations; DROP TABLE pending_pause_relabels; ALTER TABLE issues ADD COLUMN paused_by_conveyor INTEGER NOT NULL DEFAULT 0; DELETE FROM schema_migrations WHERE version >= 46;");
+  store.sqlite().exec(UNDO_EVENT_CLASSES + " DROP TABLE pending_purges; DROP TABLE purged_generations; DROP TABLE pending_pause_relabels; ALTER TABLE issues ADD COLUMN paused_by_conveyor INTEGER NOT NULL DEFAULT 0; DELETE FROM schema_migrations WHERE version >= 46;");
   store.sqlite().query("UPDATE issues SET paused_by_conveyor = 1 WHERE id = 'marked'").run();
   store.close();
 

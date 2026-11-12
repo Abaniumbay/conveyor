@@ -235,6 +235,20 @@ describe("event settings", () => {
     expect(config.settings.events).toMatchObject({ retentionMs: 7 * 86_400_000, sinks: [{ type: "jsonl", path: "/var/log/conveyor/events.jsonl" }] });
   });
 
+  test("a sink receives facts and observations without content unless it selects otherwise", async () => {
+    const { config } = await load("", withEvents("    sinks: [{ type: jsonl, path: /var/log/conveyor/events.jsonl }]\n"));
+    expect(config.settings.events.sinks).toEqual([{ type: "jsonl", path: "/var/log/conveyor/events.jsonl", classes: ["fact", "ingest"], includeContent: false }]);
+  });
+
+  test("a sink may select traces and content", async () => {
+    const { config } = await load("", withEvents("    sinks: [{ type: jsonl, path: /var/log/conveyor/events.jsonl, classes: [trace], includeContent: true }]\n"));
+    expect(config.settings.events.sinks[0]).toMatchObject({ classes: ["trace"], includeContent: true });
+  });
+
+  test("an unknown event class is an error", async () => {
+    await expect(load("", withEvents("    sinks: [{ type: jsonl, path: /var/log/conveyor/events.jsonl, classes: [gossip] }]\n"))).rejects.toThrow(/classes/);
+  });
+
   test("fallbacks are configurable", async () => {
     const { config } = await load("", withEvents("    fallback: { ci: 2m, dependencies: 1h }\n"));
     expect(config.settings.events).toMatchObject({
