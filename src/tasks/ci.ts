@@ -200,7 +200,7 @@ const defined: TaskDefinition<unknown, unknown, Deps> = {
 const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
   name: "ci.passed",
   kind: "check",
-  description: "Passes when every CI run of the change head passed. Pending during the settle window (default 30 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; reruns a cancelled run once per head without failing the gate; stops blocked when that rerun was used or impossible; fails with focused logs when a run failed. A second consecutive matching diagnosed failure stops for intervention.",
+  description: "Passes when every CI run of the change head passed. Pending during the settle window (default 30 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; reruns a cancelled run once per head without failing the gate; stops blocked when that rerun was used or impossible; fails with focused logs when a run failed. A second consecutive matching diagnosed failure on a different head stops for intervention; the same head observed again never counts as a repeat.",
   reads: ["change", "ci", "repository", "run"],
   writes: [],
   invalidates: [],
@@ -235,13 +235,15 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
         evidence: report.sections,
         changeUrl: change.url,
       }) : null;
-      if (fingerprint !== null && observation?.previous?.outcome === "failed" && observation.previous.fingerprint === fingerprint) {
+      if (fingerprint !== null && observation?.previous?.outcome === "failed" && observation.previous.fingerprint === fingerprint
+        && observation.previous.headSha !== snapshot.headSha) {
         return fail(repeatedCiFailureReason(observation.previous, observation.observation), {
           route: { stop: "needs-intervention" },
           details: { requiredFixes: report.requiredFixes, evidence: [...observation.previous.evidence, ...observation.observation.evidence] },
         });
       }
-      return fail(report.reason, { route: { retry: true }, details: { requiredFixes: report.requiredFixes, evidence: report.sections } });
+      // No route of its own: the gate's configured `onFail` (normally a return to implementation) decides.
+      return fail(report.reason, { details: { requiredFixes: report.requiredFixes, evidence: report.sections } });
     }
     if (cancelledOnly) return blocked(cancelledReason(ordinaryFailures, reran, sha));
     if (failed.length > 0) throw new InfrastructureError(describeNeverStartedCi(failed));

@@ -155,3 +155,16 @@ test("an issue closed after the owner was asked resumes cleanup, finishes the it
   expect(w.service.dashboard("csrf").needsYou.some((card) => card.number === 1)).toBe(false);
   expect(w.store.listStageTransitions("issue").filter((transition) => transition.kind === "stopped")).toHaveLength(stoppedBefore);
 });
+
+test("a required-CI failure returns to implementation once and the item passes the gate on the new head", async () => {
+  world = await deliveryWorld({ ciFailsFirstHead: "not ok 1 - feature fails" });
+  const w = world;
+  await w.drive();
+
+  expect(w.agentRuns.filter((stage) => stage === "implementation")).toEqual(["implementation", "implementation"]);
+  expect(w.store.getStageState("issue")?.status).toBe("done");
+  expect(w.store.listStageTransitions("issue").filter((transition) => transition.kind === "stopped")).toEqual([]);
+  expect(w.labelWrites.flat()).not.toContain("conveyor:needs-intervention");
+  expect(w.store.executions().getContext("issue")!.context.checkpoints.ciPassed?.sha).toBe(w.host.headSha);
+  expect([...new Set(w.executed)]).toContain("review");
+});
