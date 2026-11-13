@@ -5,6 +5,40 @@ hold everything, or place content in other files with tags written where the con
 entrypoint therefore shows the whole shape of the configuration and where every section comes from.
 Each value has exactly one source.
 
+Contents:
+
+- [Tags](#tags)
+- [Secrets](#secrets)
+- [Packaged defaults](#packaged-defaults)
+- [Defaults that come from the home](#defaults-that-come-from-the-home)
+- [Migrating from pipelines](#migrating-from-pipelines)
+- [Logging and retention](#logging-and-retention)
+- [Periodic Operator checks](#periodic-operator-checks)
+- [Operator board boundary](#operator-board-boundary)
+- [Events](#events)
+  - [How Conveyor reads GitHub](#how-conveyor-reads-github)
+  - [Webhook health](#webhook-health)
+- [Operator scripts](#operator-scripts)
+- [Refinement outputs (issue type, fields, Refinement section)](#refinement-outputs-issue-type-fields-refinement-section)
+- [Configuration directories (deprecated)](#configuration-directories-deprecated)
+- [Validating](#validating)
+- [GitHub outages](#github-outages)
+- [Temporary script failures](#temporary-script-failures)
+- [Follow-up acknowledgement](#follow-up-acknowledgement)
+- [Settings and run environments](#settings-and-run-environments)
+- [Reference](#reference)
+  - [Repository concurrency](#repository-concurrency)
+  - [Repository in-progress limit](#repository-in-progress-limit)
+  - [Installation stages, overrides and skip](#installation-stages-overrides-and-skip)
+  - [Manual exit-gate approval](#manual-exit-gate-approval)
+  - [Manual stage-entry approval](#manual-stage-entry-approval)
+  - [Merge recovery](#merge-recovery)
+  - [Legacy configuration (deprecated, still supported)](#legacy-configuration-deprecated-still-supported)
+  - [Agents](#agents)
+  - [Harnesses](#harnesses)
+  - [Canonical role names and plugins](#canonical-role-names-and-plugins)
+  - [CI providers](#ci-providers)
+
 ```yaml
 # conveyor.yaml
 settings:
@@ -464,7 +498,16 @@ stage: adding it to your stage list does not alter the packaged built-in stages.
 
 ## Settings and run environments
 
-Every level of the configuration may hold a `settings` block with the same keys and meaning: the root `settings`, a repository's, a native stage's, a harness entry's and an agent's. A run inherits them down its hierarchy. Keys outside `settings` say what a thing is (`type`, `command`, `model`, `harness`, `instructions`); keys inside are inherited. A harness adds its own keys to the `settings` of its entry and its agents (see [Canonical role names and agent settings](#canonical-role-names-and-agent-settings)).
+Every level of the configuration may hold a `settings` block with the same keys and meaning: the root `settings`, a repository's, a native stage's, a harness entry's and an agent's. A run inherits them down its hierarchy. Keys outside `settings` say what a thing is (`type`, `command`, `model`, `harness`, `instructions`); keys inside are inherited. A harness adds its own keys to the `settings` of its entry and its agents (see [Agent settings](#agent-settings) and [Harnesses](#harnesses)). The root `settings` also hold the installation's own keys (`runners`, `database`, `retries` and the others in the [Reference](#reference)), which no other level has.
+
+| Level | Where | Its `settings.environment` reaches |
+| --- | --- | --- |
+| Root | `settings` | Every agent and script run. |
+| Repository | `repositories.<id>.settings` | The repository's agent and script runs. |
+| Stage | `settings` on a native stage in the `stages` list | The stage's agent and script runs. |
+| Harness entry | `harnesses.<id>.settings` | The harness program of every agent on that harness, never its commands; not scripts. |
+| Agent | `agents.<id>.settings` | That agent and its commands. |
+| Script step | `with: { settings: { environment } }` on a `script.run` step | That script. |
 
 `settings.environment` is a map from variable name to value. A value is used as written (`~/` expands to the service account's home, `!secret` is resolved, numbers and booleans become text); an empty value takes the service's own value of that variable when the run starts, and a variable the service does not have is not set. An agent run starts from the levels in this order, the last definition of a name winning: root, repository, stage, harness, agent.
 
@@ -843,15 +886,149 @@ transient code-host error uses infrastructure retry handling.
 
 Existing configurations keep loading. A stage with `run: { agent | runner + script | sourceAction }`, `enterCheck`, `exitCheck`, `feedbackCycles`, `failurePolicies`, `failureState` and `afterSuccess`, together with the `checks:` section (a deterministic script plus an AI verifier agent), `sources`, `codeHosts`, `runners`, `workspaceAccess` and a top-level `labels`, is compiled by the compatibility compiler into a task plan (`legacy.produce`, `legacy.enterCheck`, `legacy.exitCheck`, `legacy.afterSuccess`, `legacy.succeeded`) with the same behaviour as before and runs through the same durable executor. A legacy stage cannot be mixed with `actions` / `exit-gate` in one stage, and legacy stages still need `successStatuses` and `failureStatuses`. Legacy `process` stage scripts have no recovery mode, so they stay behind the legacy adapter until each is classified `replay-safe` or `reconcile`. The legacy shape and the AI verifier will be removed once every repository is migrated; do not write new configuration in it.
 
-### Canonical role names and agent settings
+### Agents
 
-An agent's `network: true` turns on live web search. For a `workspace-write` agent it also gives the agent's own commands the network, so it can install dependencies and run the repository's checks before pushing. Codex's `read-only` mode has no network for commands, so a read-only agent gets web search only. A `workspace-write` agent can always write its worktree's git metadata, which a linked worktree keeps under the main repository's `.git`, outside the sandbox. `writableRoots` (absolute or `~/` paths) adds directories outside the worktree, typically package caches; the ones that do not exist on the machine are skipped.
+An agent is a named entry under `agents`. Keys outside its `settings` say what it is; its `settings` are inherited like every other level's (see [Settings and run environments](#settings-and-run-environments)).
 
-A Claude Code agent runs in the same empty-root Bubblewrap filesystem plan as Codex, with only its run paths, runtime files, and declared access mounted. With `access: workspace-write` it also gets writable binds for its worktree, the worktree's git metadata and its `writableRoots`, plus the Edit and Write tools in `acceptEdits` mode, which accepts edits inside the worktree and refuses the rest; such an agent needs `network: true`, because without `agentEgress` the Claude CLI's own API calls need the network, so its commands cannot be kept off it. `network: true` also gives a Claude Code agent WebFetch and WebSearch; under `agentEgress` those tools stay off unless `network: true` and then reach only the runner's `controlPlaneHosts`. In a repository with `agentEgress` the Claude Code process runs in the same network namespace as Codex: it reaches its model API through a token-protected proxy limited to the `claude-code` runner's `controlPlaneHosts` (default `api.anthropic.com`, `console.anthropic.com`, `platform.claude.com`, `claude.ai`), and its `Bash` commands, through `CLAUDE_CODE_SHELL_PREFIX`, reach only `httpsHosts`.
+| Key | Meaning |
+| --- | --- |
+| `harness` | The harness entry that runs it (`codex`, `claude-code`, `pi` or your own entry's name). |
+| `instructions` | The agent's instruction file (`builtin:` or a path). |
+| `model`, `effort` | The model and reasoning effort (`low` to `max`, or `ultra`) passed to the harness. pi takes `effort` as `--thinking` (`ultra` as `max`). |
+| `access` | `workspace-write` (default), `read-only`, or `confined` (the Operator's). |
+| `network` | `true` turns on live web search, and for a `workspace-write` agent gives its commands the network. |
+| `shell` | Default `true`. `false` withholds the shell (Claude Code and pi only). |
+| `writableRoots` | Directories outside the worktree the agent may write, typically package caches (absolute or `~/` paths; missing ones are skipped). |
+| `mcpServers` | MCP servers beside Conveyor's own (see [MCP servers](#mcp-servers)). |
+| `settings` | `environment` and the harness's own keys (see [Agent settings](#agent-settings)). |
+| `tasks` | The exact grant of Conveyor's tools, as camelCase task names; default every grantable tool. |
 
-A pi agent (runner `type: pi`) runs in the same filesystem plan, which is pi's only sandbox. Install pi with its official installer (`curl https://pi.dev/install.sh | sh`) or with npm (`npm install -g @earendil-works/pi-coding-agent`, which needs Node.js 22.19 or newer) and log it in as the service account (`pi auth login <provider>`), or give it a provider API key in the harness entry's `settings.environment` (such as `ANTHROPIC_API_KEY:`, an empty value taking the service's), which the pi process receives and its commands never do. The runner's `credentialVariables` (a list of service variable names) is the deprecated way to do the same; it still works, with a warning. `provider` is passed as `--provider` with the agent's `model` (pi needs both), or becomes pi's default provider for an agent without one. `configDir` is the service's pi agent directory (default `~/.pi/agent`); each run gets a private copy of its `auth.json` and `models.json` with Conveyor's own settings and MCP servers, and the operator's other pi settings, extensions, skills and MCP servers are not used. A repository's own `.pi/` configuration is never loaded; its `AGENTS.md` is. pi's tools follow the agent's access (`read`, `grep`, `find`, `ls` and `bash`, plus `edit` and `write` for `workspace-write`); `shell: false` withholds `bash`, and a `workspace-write` pi agent needs `network: true`, as for Claude Code. An agent's `effort` becomes pi's `--thinking` (`ultra` as `max`). pi agents run `agent.run` stages only (no legacy stages, legacy checks or the Operator) and take no settings besides `environment`. For the official installer, `command: pi` may name its launcher (`~/.pi/agent/bin/pi`, directly or through a link on `PATH`): Conveyor reads `~/.pi/agent/install/current-version` as the launcher does (a name of letters, digits, `.`, `_`, `+` and `-`, neither `.` nor `..`), runs that release's `node_modules/.bin/pi` itself, with the Node the installer brought (`$XDG_DATA_HOME/pi-node/current/bin/node`, default `~/.local/share/pi-node`) when it is there and `node` on `PATH` otherwise, and mounts only that release directory and that Node, never the launcher or the rest of `~/.pi/agent`, which holds the login. `conveyor doctor` checks that the runner's `pi` is pi's npm package or the installer's current release, and that its Node.js is found.
+#### Access, network and shell
 
-In a repository with `agentEgress`, the pi process runs in the same network namespace as Codex and Claude Code: it reaches its model API through a token-protected proxy limited to the runner's `controlPlaneHosts`, and every bash command it runs and every MCP server it starts reaches only `httpsHosts`, without pi's agent directory (`PI_CODING_AGENT_DIR`) or the variables of the harness entry's `settings.environment`. pi prepends its `shellCommandPrefix` setting to each bash command; Conveyor's prefix sources a read-only file of the run that removes those variables and sets the data-plane proxy, and a command whose file cannot be read does not run. Without `controlPlaneHosts`, the runner's `provider` decides the hosts, taken from pi's provider definitions:
+- `network: true` turns on live web search. For a `workspace-write` agent it also gives the agent's own commands the network, so it can install dependencies and run the repository's checks before pushing. Codex's `read-only` mode has no network for commands, so a read-only Codex agent gets web search only.
+- A `workspace-write` agent can always write its worktree's git metadata, which a linked worktree keeps under the main repository's `.git`, outside the sandbox.
+- `shell` (default `true`) controls whether the agent has a shell. A refinement agent that only reads code and calls Conveyor's tools can run with `shell: false`. With it, a Claude Code agent is launched without `Bash` in both `--tools` and `--allowedTools`; it keeps `Read`, `Grep`, `Glob`, its MCP tools and, for a `workspace-write` agent, its edit tools. pi keeps `read`, `grep`, `find`, `ls` and, for `workspace-write`, `edit` and `write`. Codex reaches files only through its shell, so `shell: false` on a Codex agent fails `config check` and names the agent. The packaged agents do not set it.
+
+#### Agent settings
+
+An agent's `settings` hold `environment` and the keys of its harness. The harness plugin defines and validates those keys when the configuration loads; a harness that takes none refuses any key besides `environment`. A harness entry's `settings` hold the same keys as defaults for all its agents, each agent's own value winning.
+
+```yaml
+harnesses:
+  codex:
+    type: codex
+    settings:
+      model_auto_compact_token_limit: 80000   # every Codex agent
+
+agents:
+  kaveh:
+    harness: codex
+    settings:
+      environment: { NUGET_PACKAGES: ~/.nuget/packages }
+      model_auto_compact_token_limit: 120000  # this agent wins
+```
+
+| Harness | Harness keys in `settings` |
+| --- | --- |
+| Codex | Extra Codex settings, passed as `-c key=value` (dotted Codex config keys), such as `model_auto_compact_token_limit` to compact a long session's context before it grows expensive. Keys Conveyor derives from the agent's other fields are refused: `sandbox_mode`, `sandbox_workspace_write.*`, `mcp_servers.*`, `model_reasoning_effort`, `web_search`, `approvals_reviewer`. |
+| Claude Code | None. |
+| pi | None. |
+
+Deprecated names, which still work with a warning from `config check`, `doctor` and the service log:
+
+| Deprecated | Use instead |
+| --- | --- |
+| agent `env` | agent `settings.environment` (no longer filtered) |
+| agent `harnessSettings` | the harness keys of the agent's `settings` (an agent may not set both) |
+| agent `codexConfig` | the harness keys of the agent's `settings` |
+| pi runner `credentialVariables` | the harness entry's `settings.environment`, the names with empty values |
+
+#### MCP servers
+
+`mcpServers` gives the agent MCP servers beside Conveyor's own, such as a code index that answers symbol and reference queries instead of whole-file reads.
+
+- `{workspace}` in a server's `args` becomes the run's worktree, and `~/` in its `env` values is expanded. A server's `env` belongs to that server; it is not part of the run's `settings.environment`.
+- The servers are optional: one that fails to start does not fail the run.
+- A server runs outside the agent's sandbox, so `enabledTools` should limit it to what the agent's access allows; for a read-only agent, lookups only.
+- `gitExclude` lists files the server writes inside the worktree. Conveyor adds them to the repository's local git exclude before the agent runs, so they are never committed and never make a deploy see uncommitted changes.
+- Tool names: Claude Code allows `mcp__<server>__<tool>`; pi names its tools the same way, with characters other than letters, digits and `_` replaced by `_`. pi refuses a value in a server's `env` that starts with `!` or contains `${`, because pi would expand it.
+
+#### What an agent run sees
+
+Every Codex, Claude Code and pi run gets the same empty-root Bubblewrap filesystem plan, with and without `agentEgress` (egress changes network access only). Bubblewrap must establish every mount before an agent command starts, otherwise the run fails closed.
+
+- **Mounted:** the worktree, the narrow linked-Git metadata and shared-object paths that worktree needs, the run's private `HOME` and scratch directory, its artifacts, `writableRoots`, `agentToolchainPaths` (read-only), resolved runtime files and resolver/CA files. For a standalone Codex release, the release root (`<root>/bin/<name>` beside a regular `<root>/codex-package.json`) is mounted read-only as a whole; `~/.codex`, other releases, `auth.json` and sessions stay hidden.
+- **A private, writable `/tmp`:** a tmpfs inside the run's namespace, writable even in read-only runs, for tools that ignore `TMPDIR`. The host `/tmp` and other runs' files are never visible through it, and its contents vanish with the run.
+- **Never visible:** the Conveyor home, configuration, database, other repositories, sibling worktrees, other runs' artifacts, and the service account's credential roots.
+- **`HOME`** is a directory of the run's own, empty apart from a minimal `.gitconfig`. A `workspace-write` Codex run can write it.
+- **`TMPDIR`** is a directory of the run's own, deleted when the run ends. It is created under the service's temporary directory, so set `TMPDIR` in the service's environment to keep agent scratch on a disk of your choice; on many systems the default `/tmp` is held in memory.
+
+#### Toolchains and caches
+
+Toolchains find their package caches through `HOME`, so on their own they would start every run with an empty cache and download everything again. Point them at a shared cache listed in `writableRoots` through the agent's `settings.environment`, for example `NUGET_PACKAGES: ~/.nuget/packages`, `PUB_CACHE: ~/.pub-cache`, `GRADLE_USER_HOME: ~/.gradle` or `npm_config_cache: ~/.npm`.
+
+A repository makes extra SDK and toolchain directories readable with `agentToolchainPaths`:
+
+```yaml
+repositories:
+  my-app:
+    agentToolchainPaths:
+      paths: [/opt/flutter, /opt/android-sdk]
+```
+
+- Each entry must be an absolute path (no other keys are accepted). Conveyor resolves symbolic links first and mounts the real directory **read-only** in every Codex, Claude Code and pi run, even a `workspace-write` one.
+- `writableRoots` keeps its separate meaning as write-cache directories; a path listed in both is refused.
+- A path that equals, lies inside, or is an ancestor of the Conveyor home, configuration location, database, logs, worktrees, artifacts, any repository checkout, the runner config directories or the service account's credential roots is rejected when the configuration loads and again before each run, because mounting it would expose them.
+- A directory that is missing or cannot be mounted fails the run before any agent command starts. The setting works with and without `agentEgress`.
+
+### Harnesses
+
+A harness entry under `harnesses` names a harness plugin with its `type` (`codex`, `claude-code` or `pi`). The plugin defines and validates the entry's other keys and decides which agents it can run.
+
+| `type` | Entry keys | Login | Runs |
+| --- | --- | --- | --- |
+| `codex` | `command`, `sandbox`, `automaticApprovals`, `controlPlaneHosts`, `settings` | `codex login`, or `OPENAI_API_KEY` / `CODEX_API_KEY` in the entry's `settings.environment` | `agent.run`, legacy stages and checks, the Operator |
+| `claude-code` | `command`, `configDir`, `controlPlaneHosts`, `settings` | `claude login`, or `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` in the entry's `settings.environment` | `agent.run` |
+| `pi` | `command`, `configDir`, `provider`, `controlPlaneHosts`, `settings` (`credentialVariables` deprecated) | `pi auth login <provider>`, or the provider's key in the entry's `settings.environment` | `agent.run` |
+
+A variable in a harness entry's `settings.environment` reaches the harness program only, never its commands (see [Settings and run environments](#settings-and-run-environments)). Each run gets a private copy of a stored login; the service's login directory is never mounted. In a repository with `agentEgress`, the harness process reaches its model API through a token-protected proxy limited to the entry's `controlPlaneHosts`, and its commands reach only the repository's `httpsHosts` (see [operations.md](operations.md)).
+
+#### Codex
+
+- Conveyor's wrapper is Codex's only sandbox: Codex starts with its own sandbox disabled, and the agent's access is enforced by the mounts above.
+- `shell: false` is refused; Codex reaches files only through its shell.
+- A `read-only` Codex agent has no network for its commands; `network: true` gives it web search only.
+- Without `agentEgress` the network is unrestricted for Codex and its commands.
+
+#### Claude Code
+
+- With `access: workspace-write` the agent gets writable binds for its worktree, the worktree's git metadata and its `writableRoots`, plus the Edit and Write tools in `acceptEdits` mode, which accepts edits inside the worktree and refuses the rest.
+- A `workspace-write` Claude Code agent needs `network: true`: without `agentEgress` the Claude CLI's own API calls need the network, so its commands cannot be kept off it.
+- `network: true` also gives it WebFetch and WebSearch. Under `agentEgress` those tools stay off unless `network: true`, and then reach only the runner's `controlPlaneHosts`.
+- Under `agentEgress`, the default `controlPlaneHosts` are `api.anthropic.com`, `console.anthropic.com`, `platform.claude.com` and `claude.ai`, and its `Bash` commands reach only `httpsHosts` through `CLAUDE_CODE_SHELL_PREFIX`.
+
+#### pi
+
+Install pi with its official installer (`curl https://pi.dev/install.sh | sh`) or with npm (`npm install -g @earendil-works/pi-coding-agent`, which needs Node.js 22.19 or newer). Log it in as the service account (`pi auth login <provider>`), or give it a provider API key in the harness entry's `settings.environment`:
+
+```yaml
+harnesses:
+  pi:
+    type: pi
+    provider: anthropic
+    settings:
+      environment:
+        ANTHROPIC_API_KEY:     # the service's value; the pi process only, never its commands
+```
+
+- **Provider and model.** `provider` is passed as `--provider` with the agent's `model` (pi needs both), or becomes pi's default provider for an agent without one.
+- **Its own configuration.** `configDir` is the service's pi agent directory (default `~/.pi/agent`). Each run gets a private copy of its `auth.json` and `models.json` with Conveyor's own settings and MCP servers; the operator's other pi settings, extensions, skills and MCP servers are not used. A repository's own `.pi/` configuration is never loaded; its `AGENTS.md` is.
+- **Tools.** pi's tools follow the agent's access: `read`, `grep`, `find`, `ls` and `bash`, plus `edit` and `write` for `workspace-write`. `shell: false` withholds `bash`, and a `workspace-write` pi agent needs `network: true`, as for Claude Code.
+- **Stages.** pi agents run `agent.run` stages only (no legacy stages, legacy checks or the Operator) and take no harness keys in `settings`.
+- **The official installer.** `command: pi` may name the installer's launcher (`~/.pi/agent/bin/pi`, directly or through a link on `PATH`). Conveyor reads `~/.pi/agent/install/current-version` as the launcher does (a name of letters, digits, `.`, `_`, `+` and `-`, neither `.` nor `..`), runs that release's `node_modules/.bin/pi` itself with the Node the installer brought (`$XDG_DATA_HOME/pi-node/current/bin/node`, default `~/.local/share/pi-node`) when it is there and `node` on `PATH` otherwise, and mounts only that release directory and that Node, never the launcher or the rest of `~/.pi/agent`, which holds the login.
+- **Doctor.** `conveyor doctor` checks that the runner's `pi` is pi's npm package or the installer's current release, and that its Node.js is found.
+
+Under `agentEgress`, the pi process reaches its model API through the control-plane proxy, and every bash command it runs and every MCP server it starts reaches only `httpsHosts`, without pi's agent directory (`PI_CODING_AGENT_DIR`) or the variables of the harness entry's `settings.environment`. pi prepends its `shellCommandPrefix` setting to each bash command; Conveyor's prefix sources a read-only file of the run that removes those variables and sets the data-plane proxy, and a command whose file cannot be read does not run. Without `controlPlaneHosts`, the runner's `provider` decides the hosts, taken from pi's provider definitions:
 
 | `provider` | Default `controlPlaneHosts` |
 | --- | --- |
@@ -863,28 +1040,11 @@ In a repository with `agentEgress`, the pi process runs in the same network name
 
 Any other provider, such as `azure` (whose host is your resource) or a custom provider from `models.json`, needs `controlPlaneHosts`; a pi runner that an agent of a repository with `agentEgress` uses with neither fails configuration loading, naming the runner. `github-copilot` has no default either: pi refreshes a Copilot login's short-lived token at `api.github.com` and then calls the Copilot host of your plan, so a Copilot runner under `agentEgress` lists both in `controlPlaneHosts`. Only the pi process reaches them; its commands still reach only `httpsHosts`.
 
-An agent run does not see the service account's home: `HOME` is a directory of its own, empty apart from a minimal `.gitconfig`. Toolchains find their package caches through `HOME`, so on their own they would start every run with none and download everything again. The agent's `settings.environment` is how a toolchain is pointed at a shared cache listed in `writableRoots`: for example `NUGET_PACKAGES: ~/.nuget/packages`, `PUB_CACHE: ~/.pub-cache`, `GRADLE_USER_HOME: ~/.gradle` or `npm_config_cache: ~/.npm`. See [Settings and run environments](#settings-and-run-environments).
-
-A Codex or Claude Code run sees only its worktree, the narrow linked-Git metadata and shared-object paths that worktree needs, its private `HOME` and scratch directory, artifacts, configured writable roots, resolved runtime files (plus a standalone agent release root, `<root>/bin/<name>` beside a regular `<root>/codex-package.json`, mounted read-only as a whole; `~/.codex`, other releases, `auth.json` and sessions stay hidden), and resolver/CA files. It also gets a private, writable `/tmp` (a tmpfs inside the run's namespace, for tools that ignore `TMPDIR`, including read-only runs): the host `/tmp` and other runs' files are never visible through it, and its contents vanish with the run. It cannot read the configured Conveyor home, configuration, database, other repositories, sibling worktrees, other runs' artifacts, or the service account's credential roots. The same filesystem view applies with and without `agentEgress`; egress changes network access only. Bubblewrap must establish every mount before an agent command starts, otherwise the run fails closed.
-
-A repository can make extra SDK and toolchain directories readable with `agentToolchainPaths`:
-
-```yaml
-repositories:
-  my-app:
-    agentToolchainPaths:
-      paths: [/opt/flutter, /opt/android-sdk]
-```
-
-Each entry must be an absolute path (no other keys are accepted). Conveyor resolves symbolic links first, and mounts the real directory **read-only** in every Codex, Claude Code and pi run; the agent can read it but never write it, even when it runs `workspace-write`. `writableRoots` keeps its separate meaning as write-cache directories, and a path listed in both is refused. A path that equals, lies inside, or is an ancestor of the Conveyor home, configuration location, database, logs, worktrees, artifacts, any repository checkout, the runner config directories or the service account's credential roots is rejected when the configuration loads and again before each run, because mounting it would expose them. A directory that is missing or cannot be mounted fails the run before any agent command starts. The setting works with and without `agentEgress`.
-
-A `workspace-write` Codex run can write its own `HOME`, and gets a temporary directory of its own as `TMPDIR`, which Conveyor deletes when the run ends. It is created under the service's temporary directory, so set `TMPDIR` in the service's environment to keep agent scratch on a disk of your choice; on many systems the default `/tmp` is held in memory. A Claude Code agent also receives a private scratch directory that disappears with the run.
-
-`shell` (default `true`) controls whether the agent has a shell. With `shell: false`, a Claude Code agent is launched without `Bash` in both `--tools` and `--allowedTools`; it keeps `Read`, `Grep`, `Glob`, its MCP tools and, for a `workspace-write` agent, its edit tools. A refinement agent that only reads code and calls Conveyor's tools can run this way, for example `shell: false` on an agent whose runner is Claude Code. Codex reaches files only through its shell, so `shell: false` on a Codex agent fails `config check` and names the agent. The packaged agents do not set it. An agent's `settings` hold `environment` and the keys of its harness, which the harness plugin defines and validates when the configuration loads; a harness that takes none refuses any key besides `environment`. A harness entry's `settings` hold the same keys as defaults for all its agents, each agent's own value winning. Codex takes them as extra Codex settings, passed as `-c key=value`, for example `model_auto_compact_token_limit` to compact a long session's context before it grows expensive; keys must be dotted Codex config keys, and keys Conveyor derives from the agent's other fields (`sandbox_mode`, `sandbox_workspace_write.*`, `mcp_servers.*`, `model_reasoning_effort`, `web_search`, `approvals_reviewer`) are refused. Claude Code and pi take none. `harnessSettings` and the older `codexConfig` are deprecated names for the harness keys of an agent's `settings`: they still work, with a warning from `config check`, `doctor` and the service log; move the keys into `settings` (an agent may not set both). `mcpServers` gives the agent MCP servers beside Conveyor's own, such as a code index that answers symbol and reference queries instead of whole-file reads. `{workspace}` in a server's `args` becomes the run's worktree, `~/` in `env` values is expanded, and the servers are optional: one that fails to start does not fail the run. A server runs outside the agent's sandbox, so `enabledTools` should limit it to what the agent's access allows; for a read-only agent, lookups only. `gitExclude` lists files the server writes inside the worktree; Conveyor adds them to the repository's local git exclude before the agent runs, so they are never committed and never make a deploy see uncommitted changes. `mcpServers` works on Codex, Claude Code (whose allowed tools become `mcp__<server>__<tool>`) and pi (whose tools are named the same way, with characters other than letters, digits and `_` replaced by `_`; a value in a server's `env` that starts with `!` or contains `${` is refused, because pi would expand it).
+### Canonical role names and plugins
 
 The canonical configuration names the three provider roles and the harnesses: `providers.items` (issue trackers), `providers.code`, `providers.ci`, `harnesses`, agent `harness` and `access`, and repository `items` and `code`. The loader translates them to the older names (`sources`, `codeHosts`, `ci`, `runners`, `runner`, `workspaceAccess`, `source`, `codeHost`), which keep working. `labels` may sit on the item providers (all of them must carry an identical block, which a YAML alias gives you) or at the top level. Using the old and the new name for the same thing is an error, and equivalent documents produce the same configuration hash.
 
-Each provider entry's `type` names a plugin, and that plugin defines the entry's other settings: `webhookPath`, `autoConfigureWebhook` and `webhookSecret` belong to the `github` item source, `triggers` to the `github-actions` CI provider. The plugin validates the entry when the configuration loads, so a misspelled setting is an error naming the entry, and a `type` no plugin provides is an error that lists the types this build knows. Harnesses work the same way: a harness entry's `type` names a harness plugin (`codex`, `claude-code` or `pi`), which defines and validates its settings (`command`, `sandbox`, `automaticApprovals` and `controlPlaneHosts` for Codex; `command`, `configDir` and `controlPlaneHosts` for Claude Code; `command`, `configDir`, `provider`, `credentialVariables` (deprecated) and `controlPlaneHosts` for pi) and decides which agents it can run (access, network, `shell` and the harness keys of `settings`, as described above). Every harness entry may also hold `settings`, described in [Settings and run environments](#settings-and-run-environments). `json-process` is Conveyor's own script runner and takes no settings.
+Each provider entry's `type` names a plugin, and that plugin defines the entry's other settings: `webhookPath`, `autoConfigureWebhook` and `webhookSecret` belong to the `github` item source, `triggers` to the `github-actions` CI provider. The plugin validates the entry when the configuration loads, so a misspelled setting is an error naming the entry, and a `type` no plugin provides is an error that lists the types this build knows. Harness entries work the same way (see [Harnesses](#harnesses)). `json-process` is Conveyor's own script runner and takes no settings.
 
 The packaged defaults replace the Git-pinned `import` of earlier versions, which still loads with a deprecation warning; `conveyor config migrate` inlines it.
 
