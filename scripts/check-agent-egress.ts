@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Operator verification for agent egress enforcement (needs the real network; not part of `bun test`).
-// Usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--home <conveyor-home>] [--runner <claude-code-runner-id> [--live]]
+// Usage: bun scripts/check-agent-egress.ts <repository-id> --config <conveyor.yaml> [--home <conveyor-home>] [--runner <claude-code-runner-id> [--live]]
 //
 // Clones the repository locally, runs its dependency restore inside the network sandbox with an empty
 // task-scoped cache and only the repository's `agentEgress.httpsHosts` reachable, then proves that
@@ -344,7 +344,7 @@ async function main(): Promise<number> {
   const repositoryId = args[0];
   const configDirectory = args[args.indexOf("--config") + 1];
   if (!repositoryId || args.indexOf("--config") < 0 || !configDirectory) {
-    console.error("usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--home <conveyor-home>] [--runner <claude-code-runner-id> [--live]]");
+    console.error("usage: bun scripts/check-agent-egress.ts <repository-id> --config <conveyor.yaml> [--home <conveyor-home>] [--runner <claude-code-runner-id> [--live]]");
     return 2;
   }
   const live = args.includes("--live");
