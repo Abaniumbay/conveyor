@@ -1,10 +1,27 @@
 import { expect, test } from "bun:test";
+import { codexToolNameGuidance } from "../../src/plugins/codex/guidance";
 import { conveyorToolGuidance, prompt, reportMcpFailures } from "../../src/tasks/agent-support";
 
-test("handoff maps only the current grant, canonicalizing aliases and deduplicating", () => {
-  const text = prompt({}, "Implement the issue.", {
-    grantedTools: ["workspace.request_push", "workspace.push", "workspace.fetch", "agent.reportProgress"],
-  });
+const GRANT = ["workspace.request_push", "workspace.push", "workspace.fetch", "agent.reportProgress"];
+
+test("handoff names only the current grant, canonicalizing aliases and deduplicating", () => {
+  const text = prompt({}, "Implement the issue.", { grantedTools: GRANT });
+  expect(text).toContain("This run is granted: workspace.push, workspace.fetch, agent.reportProgress.");
+  expect(text).not.toContain("workspace.request_push");
+  expect(text).not.toContain("change.merge");
+  expect(text).toContain("An empty dotted-name search does not establish that tools are unavailable");
+  expect(text).toContain("Do not repeat a previous run's missing-tool claim");
+});
+
+test("handoff without a harness's own lines says nothing about Codex code execution", () => {
+  const text = prompt({}, "Implement the issue.", { grantedTools: GRANT });
+  expect(text).not.toContain("Codex");
+  expect(text).not.toContain("tools.mcp__conveyor__");
+  expect(text).not.toContain("ALL_TOOLS");
+});
+
+test("the harness's own lines map the canonical grant once", () => {
+  const text = prompt({}, "Implement the issue.", { grantedTools: GRANT, toolNameGuidance: codexToolNameGuidance });
   expect(text).toContain("workspace.push → tools.mcp__conveyor__workspace_push");
   expect(text).toContain("workspace.fetch → tools.mcp__conveyor__workspace_fetch");
   expect(text).toContain("agent.reportProgress → tools.mcp__conveyor__agent_reportProgress");

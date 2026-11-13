@@ -178,25 +178,33 @@ repositories:
         checks: [{ name: "Tests", conclusion: "success" }],
       }),
       {
-        async codex(input) {
-          producerInputs.push(input);
-          return producerResult;
-        },
-        async codexCheck(input) {
-          checkInputs.push(input);
-          return {
-            decision: "fail",
-            status: "needs-intervention",
-            reason: "The verification command could not start.",
-            evidence: ["Core tests did not execute."],
-            requiredFixes: ["Restore Dart to PATH."],
-            criteria: [],
-            sessionId: "check-thread",
-            usage: { inputTokens: 10, outputTokens: 3, cachedTokens: 1 },
-            durationMs: 25,
-            exitCode: 0,
-            stderr: "",
-          };
+        harnesses: {
+          codex: {
+            id: "codex",
+            capabilities: { sessionResume: true },
+            profile: codexProfile,
+            run: async () => { throw new Error("agent turns are not legacy runs"); },
+            async runEphemeral(input) {
+              producerInputs.push(input);
+              return producerResult;
+            },
+            async check(input) {
+              checkInputs.push(input);
+              return {
+                decision: "fail",
+                status: "needs-intervention",
+                reason: "The verification command could not start.",
+                evidence: ["Core tests did not execute."],
+                requiredFixes: ["Restore Dart to PATH."],
+                criteria: [],
+                sessionId: "check-thread",
+                usage: { inputTokens: 10, outputTokens: 3, cachedTokens: 1 },
+                durationMs: 25,
+                exitCode: 0,
+                stderr: "",
+              };
+            },
+          },
         },
         async jsonProcess() {
           return {
@@ -375,8 +383,8 @@ repositories:
     expect(calls).toEqual(["produce workspace-write", "check read-only"]);
 
     const incapable = runtimeWith(base);
-    await expect(incapable.runProducer(stage, context)).rejects.toThrow("no harness runs legacy stages for runner type codex");
-    await expect(incapable.runCheck("verify", "exit", { ...context, producerResult: envelope })).rejects.toThrow("no harness runs legacy checks for runner type codex");
+    await expect(incapable.runProducer(stage, context)).rejects.toThrow("agent worker runs on Codex, which cannot run legacy stages");
+    await expect(incapable.runCheck("verify", "exit", { ...context, producerResult: envelope })).rejects.toThrow("verifier checker runs on Codex, which cannot run legacy checks");
     store.close();
   });
 });

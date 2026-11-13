@@ -10,7 +10,7 @@ import type { DashboardSources } from "../app/dashboard-sources";
 import type { CodeHost } from "../codehost/types";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ConveyorConfig } from "../config/load";
-import type { HarnessRunnerConfig } from "../config/schema";
+import type { HarnessRunnerConfig, HarnessSettings } from "../config/schema";
 import type { EventBus } from "../events/bus";
 import type { Observation } from "../events/catalogue";
 import type { HarnessDoctorCheck, HarnessDoctorInput } from "../harness/doctor";
@@ -115,6 +115,11 @@ export interface HarnessPlugin {
   readonly configSchema: z.ZodType<HarnessRunnerConfig>;
   /** How the core prepares this harness's runs, and which agents it can run (checked when the configuration loads). */
   readonly profile: HarnessProfile;
+  /**
+   * Validates an agent's `harnessSettings` for this harness when the configuration loads; absent when
+   * the harness takes no settings, so an agent that sets any is refused.
+   */
+  readonly agentSettingsSchema?: z.ZodType<HarnessSettings>;
   /** Checks for `conveyor doctor` that a runner of this type can start; absent when there is nothing to check. */
   doctor?(input: HarnessDoctorInput): HarnessDoctorCheck;
   create(context: PluginContext): Harness;

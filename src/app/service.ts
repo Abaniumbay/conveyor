@@ -54,7 +54,7 @@ import { metadataLabels, QuestionAnswers } from "./question-answers";
 import { Admission } from "./admission";
 import { latestStopReason } from "./item-history";
 import { ItemPurges } from "./purge";
-import { McpGrants } from "./mcp-grants";
+import { McpGrants, type SteeringLeaseOptions } from "./mcp-grants";
 import { RepositorySync } from "./repository-sync";
 import { ItemRetries } from "./retry";
 import { Rollups } from "./rollups";
@@ -376,7 +376,7 @@ export class ConveyorService {
       harnesses: this.#harnesses,
       runSteering: implementations.steering,
       stopSummaryTimeoutMs: implementations.stopSummaryTimeoutMs ?? STOP_SUMMARY_TIMEOUT_MS,
-      lease: (runId, workspace, allowedTools, stopSummary) => this.steeringMcpLease(runId, workspace, allowedTools, stopSummary),
+      lease: (runId, workspace, allowedTools, options) => this.steeringMcpLease(runId, workspace, allowedTools, options),
       lastReconciledAt: () => this.#sync.lastReconciledAt,
       reconcileErrors: () => this.#sync.reconcileErrors,
       onboardingErrors: () => this.#sync.onboardingErrors,
@@ -1883,9 +1883,9 @@ export class ConveyorService {
     runId: string,
     workspace: string,
     allowedTools: readonly string[],
-    stopSummary?: { itemId: string; stopId: string },
+    options?: SteeringLeaseOptions,
   ): Promise<ScopedMcpLease> {
-    return this.#mcp.steeringLease(runId, workspace, allowedTools, stopSummary);
+    return this.#mcp.steeringLease(runId, workspace, allowedTools, options);
   }
 
   private sourceActions(context: RuntimeIssueContext): SourceActionHandler {

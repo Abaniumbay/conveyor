@@ -100,6 +100,41 @@ function completeProviders(data: ConveyorConfigData, plugins: readonly Plugin[])
   return errors;
 }
 
+/** The agents that set the deprecated `codexConfig` (the old name of `harnessSettings`). */
+function codexConfigAgents(document: ConfigurationDocument): string[] {
+  const agents = document.agents;
+  if (!isObject(agents)) return [];
+  return Object.entries(agents).filter(([, agent]) => isObject(agent) && "codexConfig" in agent).map(([name]) => name);
+}
+
+/**
+ * Validates each agent's `harnessSettings` with the settings schema of its runner's harness plugin, and
+ * applies its defaults. A harness that declares no schema takes no settings. An agent that used the
+ * deprecated `codexConfig` name is told about that key.
+ */
+function completeHarnessSettings(data: ConveyorConfigData, plugins: readonly Plugin[], aliased: ReadonlySet<string>): LocatedError[] {
+  const errors: LocatedError[] = [];
+  for (const [name, agent] of Object.entries(data.agents)) {
+    if (Object.keys(agent.harnessSettings).length === 0) continue;
+    const runner = data.runners[agent.runner];
+    // An unknown runner is reported with the other references; the JSON process takes no harness settings.
+    const plugin = runner ? plugins.find((candidate) => candidate.role === "harness" && candidate.type === runner.type) : undefined;
+    if (!plugin || plugin.role !== "harness") continue;
+    const field = aliased.has(name) ? "codexConfig" : "harnessSettings";
+    if (!plugin.agentSettingsSchema) {
+      errors.push({ path: ["agents", name], message: ` runs on ${plugin.profile.name}, which does not take ${field}` });
+      continue;
+    }
+    const parsed = plugin.agentSettingsSchema.safeParse(agent.harnessSettings);
+    if (!parsed.success) {
+      errors.push(...parsed.error.issues.map((issue) => ({ path: ["agents", name, field, ...issue.path.map(String)], message: `: ${issue.message}` })));
+      continue;
+    }
+    agent.harnessSettings = parsed.data;
+  }
+  return errors;
+}
+
 export { ConfigError };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -366,8 +401,6 @@ function crossReferenceErrors(config: ConveyorConfigData, plugins: readonly Plug
       error(["agents", name], "is read-only, so writableRoots does not apply");
     } else if (profile && !profile.optionalShell && !agent.shell) {
       error(["agents", name], `sets shell: false, but ${profile.name} reaches files only through its shell, so agent "${name}" cannot run without one`);
-    } else if (profile && !profile.extraSettings && Object.keys(agent.codexConfig).length > 0) {
-      error(["agents", name], `runs on ${profile.name}, which does not take codexConfig`);
     }
   }
   for (const [name, check] of Object.entries(config.checks)) {
@@ -753,6 +786,10 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
       `pipelines: and repository pipeline: are deprecated, used in ${[...deprecatedFiles].join(", ")}: declare stages: instead (\`conveyor config migrate --stages\` rewrites them)`,
     );
   }
+  const codexConfigUsers = codexConfigAgents(merged);
+  if (codexConfigUsers.length > 0) {
+    warnings.push(`agent codexConfig is deprecated, used by ${codexConfigUsers.join(", ")}: rename it to harnessSettings (same keys and values)`);
+  }
 
   // Repositories with a managed webhook are no longer read periodically; these settings did that.
   const events = (merged.settings as Record<string, unknown> | undefined)?.events as Record<string, unknown> | undefined;
@@ -798,6 +835,8 @@ export async function loadConfig(
   if (options.plugins) {
     const providerErrors = completeProviders(data, options.plugins);
     if (providerErrors.length > 0) throw new ConfigError(formatErrors("configuration is invalid:", providerErrors, locate));
+    const settingsErrors = completeHarnessSettings(data, options.plugins, new Set(codexConfigAgents(merged)));
+    if (settingsErrors.length > 0) throw new ConfigError(formatErrors("configuration is invalid:", settingsErrors, locate));
   }
   for (const [id, repository] of Object.entries(data.repositories)) {
     if (repository.ci.junit === undefined && repository.ci.mode !== "disabled") {

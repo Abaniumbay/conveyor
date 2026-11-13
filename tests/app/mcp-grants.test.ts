@@ -110,6 +110,20 @@ describe("an item-scoped grant", () => {
   });
 });
 
+describe("the run's tool guidance", () => {
+  test("carries the harness's own lines for the canonical grant, and none without them", async () => {
+    const { world, grants, contextOf } = await setup();
+    const guided = await grants.steeringLease("steer-1", world.root, ["operator.getBoard", "operator.getBoard"], {
+      toolNameGuidance: (names) => names.map((name) => `call ${name}`),
+    });
+    expect((await contextOf(guided.configuration.args)).context).toMatchObject({ harnessToolGuidance: ["call operator.getBoard"] });
+    await guided.close();
+    const plain = await grants.steeringLease("steer-2", world.root, ["operator.getBoard"]);
+    expect((await contextOf(plain.configuration.args)).context).toMatchObject({ harnessToolGuidance: [] });
+    await plain.close();
+  });
+});
+
 describe("a system-scoped grant", () => {
   test("names no item and gives its tools the run's Operator tools", async () => {
     const { world, grants, calls, contextOf } = await setup();

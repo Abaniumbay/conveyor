@@ -73,7 +73,7 @@ async function world(options: { sessionResume?: boolean; noWorkspace?: boolean; 
   } as unknown as ConveyorConfig;
 
   const calls: Call[] = [];
-  const leases: Array<{ runId: string; allowedTools: readonly string[]; closed: boolean }> = [];
+  const leases: Array<{ runId: string; allowedTools: readonly string[]; toolNameGuidance: unknown; closed: boolean }> = [];
   let behaviour: Behaviour = () => ({});
   const harness: Harness = {
     id: "fake",
@@ -92,8 +92,8 @@ async function world(options: { sessionResume?: boolean; noWorkspace?: boolean; 
     harnesses: { codex: harness },
     delivery: async () => ({ pullRequest: null, checks: [] }),
     mcp: {
-      create: async (input: { runId: string; allowedTools: readonly string[] }) => {
-        const lease = { runId: input.runId, allowedTools: input.allowedTools, closed: false };
+      create: async (input: { runId: string; allowedTools: readonly string[]; toolNameGuidance?: unknown }) => {
+        const lease = { runId: input.runId, allowedTools: input.allowedTools, toolNameGuidance: input.toolNameGuidance, closed: false };
         leases.push(lease);
         return { configuration: { command: "bun", args: ["mcp"] }, close: () => { lease.closed = true; } };
       },
@@ -323,7 +323,7 @@ describe("agent.run", () => {
     expect(call.prompt).toContain("Do not invent status names such as blocked-external");
     expect(call.mcp).toEqual({ command: "bun", args: ["mcp"] });
     expect(call.resumeSessionId).toBeUndefined();
-    expect(w.leases).toEqual([{ runId: expect.any(String), allowedTools: ["agent.reportProgress"], closed: true }]);
+    expect(w.leases).toEqual([{ runId: expect.any(String), allowedTools: ["agent.reportProgress"], toolNameGuidance: codexProfile.toolNameGuidance, closed: true }]);
     const runId = w.leases[0]!.runId;
     expect(outcome(result)).toEqual({ agentId: "kaveh", status: "done", summary: "Implemented", reason: null, sessionId: "sess-9", runId });
     expect(w.store.getRun(runId)).toMatchObject({ status: "succeeded", sessionId: "sess-9", kind: "producer", stageId: "implementation" });
@@ -378,13 +378,13 @@ describe("agent.run", () => {
     });
   });
 
-  test("an agent's codexConfig and MCP servers reach the harness, and their files are git-excluded first", async () => {
+  test("an agent's harnessSettings and MCP servers reach the harness, and their files are git-excluded first", async () => {
     const w = await world();
     const workspace = w.store.getActiveWorkspace("i1")!.path;
     await mkdir(workspace, { recursive: true });
     Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
     Object.assign(w.deps.config.agents.kaveh!, {
-      codexConfig: { model_auto_compact_token_limit: 80000 },
+      harnessSettings: { model_auto_compact_token_limit: 80000 },
       mcpServers: { serena: { command: "serena", args: ["start-mcp-server", "--project", "{workspace}"], env: { SERENA_HOME: "/s" }, startupTimeoutSec: 60, enabledTools: ["find_symbol"], gitExclude: [".serena/"] } },
     });
     expect((await w.run(false)).status).toBe("pass");
@@ -447,7 +447,7 @@ describe("agent.run", () => {
     expect(w.calls[0]!.mcpServers).toBeUndefined();
   });
 
-  test("a workspace-write Claude Code agent gets its worktree, roots and MCP servers, but no Codex settings", async () => {
+  test("a workspace-write Claude Code agent gets its worktree, roots and MCP servers", async () => {
     const w = await world();
     const workspace = w.store.getActiveWorkspace("i1")!.path;
     await mkdir(workspace, { recursive: true });
@@ -460,7 +460,6 @@ describe("agent.run", () => {
     config.runners.claude = { type: "claude-code", command: "claude" };
     config.agents.jamshid = {
       ...config.agents.kaveh as object, name: "Jamshid", runner: "claude", workspaceAccess: "workspace-write", network: true, writableRoots: [cache],
-      codexConfig: { model_auto_compact_token_limit: 1 },
       mcpServers: { serena: { command: "serena", args: ["--project", "{workspace}"], env: {}, enabledTools: ["find_symbol"], gitExclude: [".serena/"] } },
     };
     const harnesses = w.deps.harnesses as Record<string, unknown>;
@@ -473,7 +472,6 @@ describe("agent.run", () => {
       writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), `${workspace}.tmp`, cache],
       mcpServers: { serena: { command: "serena", args: ["--project", workspace], env: {}, enabledTools: ["find_symbol"] } },
     });
-    expect(w.calls[0]!.config).toBeUndefined();
     expect(await Bun.file(path.join(git, "info", "exclude")).text()).toContain(".serena/");
   });
 
@@ -515,6 +513,29 @@ describe("agent.run", () => {
     const section = (prompt: string) => /"handover": \{[\s\S]*?"worktree"/.exec(prompt)?.[0];
     expect(section(w.calls[0]!.prompt)).toBeDefined();
     expect(section(w.calls[1]!.prompt)).toBe(section(w.calls[0]!.prompt));
+  });
+
+  test("only a Codex agent is told how Codex code execution names Conveyor's tools", async () => {
+    const w = await world();
+    const config = w.deps.config as unknown as { runners: Record<string, unknown>; agents: Record<string, unknown> };
+    config.runners.claude = { type: "claude-code", command: "claude" };
+    config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude", workspaceAccess: "read-only" };
+    const harnesses = w.deps.harnesses as Record<string, unknown>;
+    harnesses["claude-code"] = { ...harnesses.codex as Harness, profile: claudeCodeProfile };
+    await w.run(false, { agent: "kaveh" });
+    await w.run(false, { agent: "jamshid" });
+    const [codex, claude] = [w.calls[0]!.prompt, w.calls[1]!.prompt];
+    expect(codex).toContain("This run is granted: agent.reportProgress.");
+    expect(codex).toContain("In Codex code execution, the callable names of these tools are normalized as follows:");
+    expect(codex).toContain("agent.reportProgress → tools.mcp__conveyor__agent_reportProgress");
+    expect(codex).toContain("ALL_TOOLS");
+    expect(claude).toContain("This run is granted: agent.reportProgress.");
+    expect(claude).not.toContain("Codex");
+    expect(claude).not.toContain("tools.mcp__conveyor__");
+    expect(claude).not.toContain("ALL_TOOLS");
+    // The run's MCP server explains the same to its agent.
+    expect(w.leases[0]!.toolNameGuidance).toBe(codexProfile.toolNameGuidance);
+    expect(w.leases[1]!.toolNameGuidance).toBeUndefined();
   });
 
   test("a read-only agent gets network (web search) but no writable roots", async () => {

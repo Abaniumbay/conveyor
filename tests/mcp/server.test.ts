@@ -56,9 +56,10 @@ const context: RunMcpContext = {
 async function connectedClient(
   control: ControlClient,
   allowedTools: string[] = context.allowedTools,
+  extra: Partial<RunMcpContext> = {},
 ): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const server = createConveyorMcpServer({ ...context, allowedTools }, control);
+  const server = createConveyorMcpServer({ ...context, ...extra, allowedTools }, control);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   clients.push(client);
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -76,11 +77,18 @@ function text(result: Awaited<ReturnType<Client["callTool"]>>): unknown {
 interface Seen { tool: string; input: unknown }
 
 describe("Conveyor MCP server", () => {
+  test("its instructions add the agent's harness's own tool-name lines from the run context", async () => {
+    const harnessToolGuidance = ["- item.get → tools.mcp__conveyor__item_get"];
+    const client = await connectedClient({ async call() { throw new Error("no call expected"); } }, ["item.get"], { harnessToolGuidance });
+    expect(client.getInstructions()).toContain("This run is granted: item.get.\nUse the native tool interface when it is exposed directly.\n- item.get → tools.mcp__conveyor__item_get\n");
+  });
+
   test("lists only the granted tools, under canonical camelCase names with registry descriptions and schemas", async () => {
     const client = await connectedClient({ async call() { throw new Error("no call expected"); } });
     const tools = await client.listTools();
-    expect(client.getInstructions()).toContain("conversation.get → tools.mcp__conveyor__conversation_get");
-    expect(client.getInstructions()).not.toContain("tools.mcp__conveyor__change_merge");
+    expect(client.getInstructions()).toContain("This run is granted: item.get, item.guidance, workspace.get, change.get, conversation.get, agent.reportProgress, agent.askQuestion.");
+    expect(client.getInstructions()).not.toContain("change.merge");
+    expect(client.getInstructions()).not.toContain("Codex");
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([...context.allowedTools].sort());
     const progress = tools.tools.find((tool) => tool.name === "agent.reportProgress")!;
     expect(progress.description).toContain("progress");

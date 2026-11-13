@@ -11,6 +11,7 @@ import type { ConveyorConfig } from "../config/load";
 import type { JournalStore } from "../db/ports";
 import { withEventContext } from "../events/context";
 import { log, type LogFields } from "../log/logger";
+import type { ToolNameGuidance } from "../mcp/guidance";
 import { INTERNAL, selfCommand } from "../self";
 import { withCallSource } from "../source/calls";
 import { canonicalToolName } from "../tasks/aliases";
@@ -18,6 +19,14 @@ import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskDeps, TaskStore } from "../tasks/deps";
 import { dispatchTool } from "../tasks/dispatch";
 import type { RuntimeIssueContext, ScopedMcpFactory, ScopedMcpLease } from "./runtime";
+
+/** What a steering or Operator grant is scoped to beyond its tools. */
+export interface SteeringLeaseOptions {
+  /** Set only for a stop-summary run: the one item and stop it may record a summary for. */
+  stopSummary?: { itemId: string; stopId: string } | undefined;
+  /** The run's harness's own lines for the tool guidance. */
+  toolNameGuidance?: ToolNameGuidance | undefined;
+}
 
 interface McpGrant {
   runId: string;
@@ -87,7 +96,7 @@ export class McpGrants {
   /** Creates item-scoped grants for a stage's agents. */
   factory(): ScopedMcpFactory {
     return {
-      create: async ({ runId, stageId, context, allowedTools, actor }) => {
+      create: async ({ runId, stageId, context, allowedTools, actor, toolNameGuidance }) => {
         const token = randomBytes(32).toString("base64url");
         this.#grants.set(token, {
           runId,
@@ -117,7 +126,7 @@ export class McpGrants {
           workspace: context.workspace,
           delivery: context.delivery ?? { pullRequest: null, checks: [] },
           sourceGuidance: context.sourceGuidance,
-        }, allowedTools);
+        }, allowedTools, toolNameGuidance);
       },
     };
   }
@@ -127,7 +136,7 @@ export class McpGrants {
     runId: string,
     workspace: string,
     allowedTools: readonly string[],
-    stopSummary?: { itemId: string; stopId: string },
+    { stopSummary, toolNameGuidance }: SteeringLeaseOptions = {},
   ): Promise<ScopedMcpLease> {
     const token = randomBytes(32).toString("base64url");
     this.#grants.set(token, {
@@ -160,7 +169,7 @@ export class McpGrants {
       workspace: { path: workspace, branch: "steering" },
       delivery: { pullRequest: null, checks: [] },
       sourceGuidance: "This is a system-scoped steering run. Only explicitly granted Operator diagnostic and control tools are available. Inspect before any control action.",
-    }, allowedTools);
+    }, allowedTools, toolNameGuidance);
   }
 
   /** An MCP tool call: a thin wrapper over the task dispatcher, which enforces the grant and journals mutations. */
@@ -178,8 +187,15 @@ export class McpGrants {
   }
 
   /** Writes the grant's private context file and returns the lease that removes both. */
-  async #lease(token: string, runId: string, scope: Record<string, unknown>, allowedTools: readonly string[]): Promise<ScopedMcpLease> {
+  async #lease(
+    token: string,
+    runId: string,
+    scope: Record<string, unknown>,
+    allowedTools: readonly string[],
+    toolNameGuidance: ToolNameGuidance | undefined,
+  ): Promise<ScopedMcpLease> {
     const { config } = this.#deps;
+    const names = [...new Set(allowedTools.map(canonicalToolName))];
     const directory = path.join(config.settings.artifacts, runId);
     await mkdir(directory, { recursive: true });
     const contextFile = path.join(directory, "mcp-context.json");
@@ -187,7 +203,9 @@ export class McpGrants {
     await writeFile(contextFile, JSON.stringify({
       ...scope,
       control: { url: `http://127.0.0.1:${port}/internal/mcp`, token },
-      allowedTools: [...new Set(allowedTools.map(canonicalToolName))],
+      allowedTools: names,
+      // The MCP server runs apart from the harness, so it gets the harness's guidance as text.
+      harnessToolGuidance: toolNameGuidance?.(names) ?? [],
     }), { mode: 0o600 });
     await chmod(contextFile, 0o600);
     return {

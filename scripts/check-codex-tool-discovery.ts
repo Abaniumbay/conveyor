@@ -7,6 +7,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
 import { createConveyorMcpServer, type RunMcpContext } from "../src/mcp/server";
 import { runCodex } from "../src/plugins/codex/codex";
+import { codexToolNameGuidance } from "../src/plugins/codex/guidance";
 import { prompt } from "../src/tasks/agent-support";
 
 async function main() {
@@ -41,6 +42,7 @@ async function main() {
     delivery: { pullRequest: null, checks: [] }, sourceGuidance: "Read-only fixture; no live board access.",
     control: { url: "http://127.0.0.1:1/unused", token: "fixture-only" },
     allowedTools: ["conversation.get"],
+    harnessToolGuidance: codexToolNameGuidance(["conversation.get"]),
   };
   await writeFile(path.join(root, "context.json"), JSON.stringify(context), { mode: 0o600 });
   console.log(`Checking Codex ${args[1]} against an isolated read-only Conveyor MCP fixture...`);
@@ -52,7 +54,7 @@ async function main() {
       mcp: { command: process.execPath, args: ["run", import.meta.path, "--mcp", root] },
       prompt: prompt({},
         "This is a tool discovery smoke check. First discover the Conveyor tools in the runtime registry, then call conversation.get with an empty object. Return success with status done only after the actual tool response contains the fixture message. Include that message in your summary. Do not run shell commands or inspect files; do not do any other work.",
-        { grantedTools: context.allowedTools }),
+        { grantedTools: context.allowedTools, toolNameGuidance: codexToolNameGuidance }),
     });
     const calls = (await readFile(path.join(root, "calls.jsonl"), "utf8").catch(() => ""))
       .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
