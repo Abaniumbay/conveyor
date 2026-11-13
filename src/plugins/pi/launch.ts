@@ -28,8 +28,7 @@ export const PI_PACKAGE = "@earendil-works/pi-coding-agent";
  * The hosts the pi process reaches for a provider when the runner names no `controlPlaneHosts`, from
  * pi 1.5.2's provider definitions: the provider's base URL and, for a subscription login, the host
  * that refreshes its token. A provider whose host depends on the account (Azure's resource, GitHub
- * Copilot's plan) has none, and neither has a provider whose login refreshes at a host no agent
- * sandbox may reach (GitHub Copilot refreshes at api.github.com).
+ * Copilot's plan) has none; its runner names its hosts in `controlPlaneHosts`.
  */
 export const PI_PROVIDER_CONTROL_PLANE_HOSTS: Readonly<Record<string, readonly string[]>> = {
   anthropic: ["api.anthropic.com", "platform.claude.com"],

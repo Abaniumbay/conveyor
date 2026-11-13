@@ -7,6 +7,10 @@ describe("validateHttpsHosts", () => {
     expect(validateHttpsHosts(["registry.npmjs.org", "github.com", "repo1.maven.org"])).toEqual([]);
   });
 
+  test("accepts any host the operator lists, a code host's API included", () => {
+    expect(validateHttpsHosts(["api.github.com", "uploads.github.com", "dev.azure.com"])).toEqual([]);
+  });
+
   test.each([
     ["*.npmjs.org", "wildcards are not allowed"],
     ["10.0.0.1", "IP literals are not allowed"],
@@ -22,8 +26,6 @@ describe("validateHttpsHosts", () => {
     ["127.1", "IP literals are not allowed"],
     ["1.2.3", "IP literals are not allowed"],
     ["0x7f.1", "IP literals are not allowed"],
-    ["api.github.com", "provider APIs are never reachable from agent sandboxes (D6)"],
-    ["uploads.github.com", "provider APIs are never reachable from agent sandboxes (D6)"],
   ])("rejects %p", (host, rule) => {
     expect(validateHttpsHosts(["ok.example.com", host])).toEqual([
       { index: 1, message: `agentEgress.httpsHosts[1] "${host}": ${rule}` },

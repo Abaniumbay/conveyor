@@ -473,9 +473,11 @@ describe("repository agentEgress", () => {
     await expect(
       load(NATIVE_PIPELINE + repository('    agentEgress: { httpsHosts: [a.example.com, b.example.com, "*.npmjs.org"] }\n')),
     ).rejects.toThrow('agentEgress.httpsHosts[2] "*.npmjs.org": wildcards are not allowed');
-    await expect(
-      load(NATIVE_PIPELINE + repository("    agentEgress: { httpsHosts: [api.github.com] }\n")),
-    ).rejects.toThrow("provider APIs are never reachable from agent sandboxes");
+  });
+
+  test("lets the operator list a code host's API", async () => {
+    const { config } = await load(NATIVE_PIPELINE + repository("    agentEgress: { httpsHosts: [api.github.com] }\n"));
+    expect(config.repositories.sample!.agentEgress?.httpsHosts).toEqual(["api.github.com"]);
   });
 
   test("rejects unknown keys", async () => {
@@ -579,7 +581,12 @@ runners:
     expect(config.runners.claude).toMatchObject({ type: "claude-code", controlPlaneHosts: ["api.anthropic.com", "model.example.test"] });
   });
 
-  test.each(["*.anthropic.com", "10.0.0.5", "api.github.com"])("rejects %p", async (host) => {
+  test("accepts a code host's API, for a harness whose login refreshes there", async () => {
+    const { config } = await load(runners("[api.github.com, api.githubcopilot.com]") + NATIVE_PIPELINE + repository());
+    expect(config.runners.claude).toMatchObject({ controlPlaneHosts: ["api.github.com", "api.githubcopilot.com"] });
+  });
+
+  test.each(["*.anthropic.com", "10.0.0.5"])("rejects %p", async (host) => {
     await expect(load(runners(`["${host}"]`) + NATIVE_PIPELINE + repository())).rejects.toThrow("controlPlaneHosts");
   });
 });
