@@ -1,4 +1,0 @@
----
-section: Added
----
-Agents can run on the pi coding agent (the npm package `@earendil-works/pi-coding-agent`) through a harness entry with `type: pi`: `command` (default `pi`), `configDir` (the service's pi agent directory, default `~/.pi/agent`), and an optional `provider`. A provider API key goes in the harness entry's `settings.environment`, which the pi process receives and its commands never do. A pi agent runs `agent.run` stages in the same Bubblewrap filesystem sandbox as Codex and Claude Code, with a private copy of pi's login, Conveyor's own pi settings and MCP servers, no project-local `.pi/` configuration, tools that follow its access and `shell`, and session resume after an answered question. A pi agent at a usage or rate limit hands the stage to the next listed agent, and an invalid result goes back to the same session once for correction. `conveyor doctor` checks that each pi runner's command is pi's npm package with Node.js on `PATH`.
