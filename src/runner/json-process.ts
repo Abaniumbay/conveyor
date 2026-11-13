@@ -5,7 +5,8 @@ export interface JsonProcessInput {
   command: string[];
   cwd: string;
   input: unknown;
-  env?: Record<string, string>;
+  /** The process's environment, exactly: nothing is inherited from the service. */
+  env: Record<string, string>;
   timeoutMs?: number;
   interruptGraceMs?: number;
   signal?: AbortSignal;
@@ -70,7 +71,7 @@ function resolveProcessInput(input: unknown): unknown {
 export async function runProcess(input: JsonProcessInput): Promise<ProcessOutput> {
   if (input.command.length === 0) throw new Error("runner command cannot be empty");
   const cwd = resolveFilesystemPath(input.cwd);
-  const environment = resolvePathEnvironment(input.env ? { ...process.env, ...input.env } : process.env);
+  const environment = resolvePathEnvironment(input.env);
   const startedAt = performance.now();
   const child = Bun.spawn(input.command, {
     cwd,

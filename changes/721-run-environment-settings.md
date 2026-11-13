@@ -11,4 +11,4 @@ What operators must check before upgrading:
 - **Reserved names are now errors.** `HOME`, `SHELL`, `TMPDIR`, any `CONVEYOR_*` name, and a harness's private directory (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`) may not be set at any level; `configDir` chooses a harness's directory.
 - **Proxy variables are passed as written.** The root default includes `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` from the service, now including any credentials in their URLs.
 
-Each agent run also gets `CONVEYOR_RUN_ID`, `CONVEYOR_REPOSITORY_ID`, `CONVEYOR_ITEM_ID`, `CONVEYOR_STAGE_ID` and `CONVEYOR_AGENT_ID`. Claude Code's commands now lose its own variables without `agentEgress` too. Script runs are unchanged for now.
+Each agent run also gets `CONVEYOR_RUN_ID`, `CONVEYOR_REPOSITORY_ID`, `CONVEYOR_ITEM_ID`, `CONVEYOR_STAGE_ID` and `CONVEYOR_AGENT_ID`. Claude Code's commands now lose its own variables without `agentEgress` too.

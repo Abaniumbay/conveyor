@@ -9,6 +9,10 @@ import {
   runProcess,
   runJsonProcess,
 } from "../../src/runner/json-process";
+import { defaultRunVariables } from "../../src/isolation/run-environment";
+
+/** A script run is given its environment; these tests give it the root default's. */
+const RUN_ENV = defaultRunVariables();
 
 const temporaryDirectories: string[] = [];
 
@@ -79,7 +83,7 @@ describe("runJsonProcess", () => {
       }));
     `);
 
-    const result = await runJsonProcess({
+    const result = await runJsonProcess({ env: RUN_ENV,
       command: [process.execPath, filename],
       cwd: path.dirname(filename),
       input: { issue: { id: "issue-12" } },
@@ -130,7 +134,7 @@ describe("runJsonProcess", () => {
     const result = await runJsonProcess({
       command: [process.execPath, filename],
       cwd: path.join(link, "workspace"),
-      env: { CACHE: path.join(link, "cache") },
+      env: { ...RUN_ENV, CACHE: path.join(link, "cache") },
       input: {
         workspace: { path: path.join(link, "workspace") },
         repository: { folder: path.join(link, "repository") },
@@ -158,7 +162,7 @@ describe("runJsonProcess", () => {
     `);
 
     await expect(
-      runJsonProcess({
+      runJsonProcess({ env: RUN_ENV,
         command: [process.execPath, filename],
         cwd: path.dirname(filename),
         input: {},
@@ -173,7 +177,7 @@ describe("runJsonProcess", () => {
     `);
 
     try {
-      await runJsonProcess({
+      await runJsonProcess({ env: RUN_ENV,
         command: [process.execPath, filename],
         cwd: path.dirname(filename),
         input: {},
@@ -193,7 +197,7 @@ describe("runJsonProcess", () => {
     `);
 
     await expect(
-      runJsonProcess({
+      runJsonProcess({ env: RUN_ENV,
         command: [process.execPath, filename],
         cwd: path.dirname(filename),
         input: {},
@@ -208,7 +212,7 @@ describe("runJsonProcess", () => {
     temporaryDirectories.push(directory);
     const pidFile = path.join(directory, "pid");
     const controller = new AbortController();
-    const execution = runProcess({
+    const execution = runProcess({ env: RUN_ENV,
       command: ["sh", "-c", `echo $$ > ${pidFile}; sleep 2`],
       cwd: directory,
       input: {},
@@ -229,7 +233,7 @@ describe("runJsonProcess", () => {
     temporaryDirectories.push(directory);
     const pidFile = path.join(directory, "child-pid");
     const controller = new AbortController();
-    const execution = runProcess({
+    const execution = runProcess({ env: RUN_ENV,
       command: ["sh", "-c", `sleep 2 & echo $! > ${pidFile}; wait`],
       cwd: directory,
       input: {},
@@ -251,7 +255,7 @@ describe("runJsonProcess", () => {
     const pidFile = path.join(directory, "child-pid");
     const controller = new AbortController();
     const graceMs = 50;
-    const execution = runProcess({
+    const execution = runProcess({ env: RUN_ENV,
       command: ["sh", "-c", `(trap '' TERM; sleep 2) & echo $! > ${pidFile}; exit 0`],
       cwd: directory,
       input: {},
@@ -274,7 +278,7 @@ describe("runJsonProcess", () => {
     temporaryDirectories.push(directory);
     const pidFile = path.join(directory, "child-pid");
     const controller = new AbortController();
-    const execution = runProcess({
+    const execution = runProcess({ env: RUN_ENV,
       command: ["sh", "-c", `sleep 2 2>/dev/null & echo $! > ${pidFile}; exit 0`],
       cwd: directory,
       input: {},
@@ -296,7 +300,7 @@ describe("runJsonProcess", () => {
     const directory = await mkdtemp(path.join(tmpdir(), "conveyor-runner-timeout-child-"));
     temporaryDirectories.push(directory);
     const pidFile = path.join(directory, "child-pid");
-    const execution = runProcess({
+    const execution = runProcess({ env: RUN_ENV,
       command: ["sh", "-c", `sleep 2 & echo $! > ${pidFile}; wait`],
       cwd: directory,
       input: {},
@@ -318,7 +322,7 @@ describe("runJsonProcess", () => {
     temporaryDirectories.push(directory);
     const pidFile = path.join(directory, "child-pid");
     const controller = new AbortController();
-    const execution = runProcess({
+    const execution = runProcess({ env: RUN_ENV,
       command: ["sh", "-c", `setsid sh -c 'sleep 0.1' & echo $! > ${pidFile}; exit 0`],
       cwd: directory,
       input: {},
@@ -350,7 +354,7 @@ describe("runJsonProcess", () => {
       }) as typeof process.kill,
     });
     try {
-      const execution = runProcess({
+      const execution = runProcess({ env: RUN_ENV,
         command: ["sh", "-c", `echo $$ > ${pidFile}; exec sleep 2`],
         cwd: directory,
         input: {},
@@ -376,7 +380,7 @@ describe("runJsonProcess", () => {
     temporaryDirectories.push(directory);
     const pidFile = path.join(directory, "child-pid");
     const controller = new AbortController();
-    const execution = runProcess({
+    const execution = runProcess({ env: RUN_ENV,
       command: ["sh", "-c", `(trap '' TERM; sleep 2) >/dev/null & echo $! > ${pidFile}; exit 0`],
       cwd: directory,
       input: {},
@@ -406,7 +410,7 @@ describe("runJsonProcess", () => {
       }));
     `);
 
-    const result = await runJsonProcess({
+    const result = await runJsonProcess({ env: RUN_ENV,
       command: [process.execPath, filename],
       cwd: path.dirname(filename),
       input: {},
@@ -435,7 +439,7 @@ describe("runJsonProcess", () => {
       }));
     `);
 
-    const result = await runJsonProcess({
+    const result = await runJsonProcess({ env: RUN_ENV,
       command: [process.execPath, filename],
       cwd: path.dirname(filename),
       input: {},

@@ -1,4 +1,4 @@
-import { agentRunVariables } from "../config/run-environment";
+import { agentRunVariables, scriptRunVariables } from "../config/run-environment";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -113,11 +113,13 @@ async function evidenceScript(
   interpreter: readonly string[] | undefined,
   cwd: string,
   input: unknown,
+  env: Record<string, string>,
 ): Promise<unknown> {
   const { stdout } = await runProcess({
     command: scriptCommand(script, interpreter),
     cwd,
     input,
+    env,
   });
   try {
     return JSON.parse(stdout) as unknown;
@@ -253,6 +255,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           command: scriptCommand(stage.run.script, stage.run.interpreter),
           cwd: this.context.workspace?.path ?? this.context.repository.folder,
           input: { ...context, runId, repository: this.context.repository },
+          env: scriptRunVariables(this.config, { runId, repositoryId: this.context.repository.id, itemId: String(issue.id), stageId: stage.id }),
           interruptGraceMs: this.config.settings.interruptGraceMs,
           ...(this.signal ? { signal: this.signal } : {}),
         });
@@ -396,7 +399,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           producerResult: context.producerResult,
           workspace,
           repository: this.context.repository,
-        });
+        }, scriptRunVariables(this.config, { repositoryId: this.context.repository.id, itemId: String(issue.id), stageId: context.stageId }));
       } catch (error) {
         this.conveyorMessage(issue.id, context.stageId, null, `${displayName(context.stageId)} check script failed: ${error instanceof Error ? error.message : String(error)}`);
         throw error;
