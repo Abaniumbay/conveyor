@@ -21,6 +21,36 @@ export async function installFakePi(root: string, script: string): Promise<{ com
 }
 
 /**
+ * Installs a fake pi the way pi's official installer does, under `agent` (its `~/.pi/agent`): the
+ * release `install/releases/<version>` holding the npm package and its `node_modules/.bin/pi` link,
+ * `install/current-version` naming it, and the launcher `bin/pi`. The launcher here only fails, so a
+ * test notices if it ever runs. The CLI's `#!` line names `node`; with `dataHome` the installer's Node
+ * is added there (`pi-node/current/bin/node`, a link to Bun, so the script runs).
+ */
+export async function installOfficialFakePi(agent: string, script: string, options: { version?: string; dataHome?: string } = {}): Promise<{
+  launcher: string; release: string; packageRoot: string; cli: string; node?: string;
+}> {
+  const version = options.version ?? "1.5.2";
+  const release = path.join(agent, "install", "releases", version);
+  const packageRoot = path.join(release, "node_modules", "@earendil-works", "pi-coding-agent");
+  const cli = path.join(packageRoot, "dist", "bundle", "cli.js");
+  const launcher = path.join(agent, "bin", "pi");
+  await Promise.all([mkdir(path.dirname(cli), { recursive: true }), mkdir(path.dirname(launcher), { recursive: true }), mkdir(path.join(release, "node_modules", ".bin"), { recursive: true })]);
+  await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version, bin: { pi: "dist/bundle/cli.js" } }));
+  await writeFile(cli, `#!/usr/bin/env node\n${script}`);
+  await chmod(cli, 0o755);
+  await symlink("../@earendil-works/pi-coding-agent/dist/bundle/cli.js", path.join(release, "node_modules", ".bin", "pi"));
+  await writeFile(path.join(agent, "install", "current-version"), `${version}\n`);
+  await writeFile(launcher, "#!/bin/sh\necho 'the launcher must not run' >&2\nexit 99\n");
+  await chmod(launcher, 0o755);
+  if (!options.dataHome) return { launcher, release, packageRoot, cli };
+  const node = path.join(options.dataHome, "pi-node", "current", "bin", "node");
+  await mkdir(path.dirname(node), { recursive: true });
+  await symlink(process.execPath, node);
+  return { launcher, release, packageRoot, cli, node };
+}
+
+/**
  * A fake pi CLI that behaves like pi where Conveyor depends on it: it reads the prompt from stdin,
  * appends to its session record (the `--session` file, or a new one in `--session-dir`), may refresh
  * its login, prints the JSON records in `$FAKE_EVENTS` (`$FAKE_EVENTS_RESUMED` when resuming) and

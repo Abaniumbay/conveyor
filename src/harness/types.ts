@@ -137,6 +137,12 @@ export interface HarnessProfile {
   readonly name: string;
   /** Hosts the harness process itself reaches when egress is enforced and the runner names no `controlPlaneHosts`. */
   readonly controlPlaneHosts: readonly string[];
+  /**
+   * The hosts for a particular runner that names no `controlPlaneHosts`, when they depend on its other
+   * settings (such as its model provider); absent: `controlPlaneHosts`. A repository with
+   * `agentEgress` refuses a runner whose hosts come out empty when the configuration loads.
+   */
+  readonly controlPlaneHostsFor?: (runner: HarnessRunnerConfig) => readonly string[];
   /** Service environment variables that carry the harness's own login and state: kept for the harness process, never for the agent's commands. */
   readonly controlPlaneEnvironment: readonly string[];
   /** The variable that points the harness at the runner's `configDir` (its login and sessions), or null when it takes none. */

@@ -30,7 +30,10 @@ export const piRunnerSchema = z
           .refine((name) => !RESERVED_VARIABLE.test(name), "is reserved: Conveyor never hands it to an agent harness as a credential"),
       )
       .default([]),
-    /** Hosts the pi process itself may reach once egress is supported for pi; not used yet. */
+    /**
+     * Hosts the pi process itself may reach when egress is enforced (default: the hosts of `provider`,
+     * when pi's provider is one Conveyor knows); a runner used under egress with neither is refused.
+     */
     controlPlaneHosts: controlPlaneHostsSchema,
   })
   .strict();

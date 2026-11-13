@@ -7,7 +7,7 @@ import path from "node:path";
 
 import { runPi } from "../../../src/plugins/pi/pi";
 import { bwrapUnavailableReason } from "../../support/bwrap";
-import { VALID_RESULT, installFakePi } from "../../support/fake-pi";
+import { VALID_RESULT, installFakePi, installOfficialFakePi } from "../../support/fake-pi";
 import { shortTemporaryDirectory } from "../../support/short-temporary-directory";
 
 const directories: string[] = [];
@@ -102,4 +102,41 @@ describeSandbox("pi filesystem confinement", () => {
       expect(seen.commandSees).toBe("|");
     });
   }
+
+  test("pi from the official installer runs its current release on the installer's Node, and the rest of its agent directory stays hidden", async () => {
+    const f = await fixture();
+    const root = path.dirname(f.workspace);
+    const home = path.join(root, "service-home");
+    const agent = path.join(home, ".pi", "agent");
+    const official = await installOfficialFakePi(agent, FAKE_PI, { dataHome: path.join(home, ".local", "share") });
+    await writeFile(path.join(agent, "auth.json"), '{"login":"installer"}');
+    await writeFile(path.join(agent, "install", "releases", "1.5.2", "node_modules", "dependency-marker"), "visible");
+    await mkdir(path.join(agent, "install", "releases", "1.4.0"), { recursive: true });
+    await writeFile(path.join(agent, "install", "releases", "1.4.0", "old-marker"), "hidden");
+    const checks = {
+      ...f.checks,
+      packageManifest: path.join(official.packageRoot, "package.json"),
+      files: {
+        ...f.checks.files,
+        dependency: path.join(agent, "install", "releases", "1.5.2", "node_modules", "dependency-marker"),
+        installerLogin: path.join(agent, "auth.json"),
+        launcher: official.launcher,
+        otherRelease: path.join(agent, "install", "releases", "1.4.0", "old-marker"),
+      },
+    };
+    const result = await runPi({
+      command: official.launcher, workspace: f.workspace, artifactsDirectory: f.artifacts, prompt: "verify",
+      sandbox: "read-only", automaticApprovals: false, mcp: { command: "bun", args: ["x"] },
+      runner: { type: "pi", command: official.launcher },
+      env: { PI_CODING_AGENT_DIR: f.service, CHECKS: JSON.stringify(checks), HOME: home },
+    });
+    expect(result).toMatchObject({ sessionId: "fs-1", stageResult: { status: "done" } });
+    const seen = JSON.parse(await readFile(f.capture, "utf8"));
+    expect(seen.packageManifest).toBe(true);
+    expect(seen.dependency).toBe(true);
+    expect(seen.installerLogin).toBe(false);
+    expect(seen.launcher).toBe(false);
+    expect(seen.otherRelease).toBe(false);
+    expect(seen.privateLogin).toBe('{"login":"service"}');
+  });
 });

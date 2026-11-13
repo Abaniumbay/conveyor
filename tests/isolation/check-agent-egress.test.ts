@@ -2,10 +2,16 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import net from "node:net";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
-import { claudeCodeChecks, judgeLiveOutput, liveCommand, liveArguments, liveFilesystemOptions, NOT_SIGNED_IN, liveHosts, liveModeNote, livePrompt, loadCheckConfig, runLiveClaudeCheck, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
+import {
+  claudeCodeChecks, judgeLiveOutput, judgePiLiveOutput, liveCommand, liveArguments, liveFilesystemOptions, NOT_SIGNED_IN, liveHosts, liveModeNote, livePrompt, loadCheckConfig,
+  PI_PROBE_PREFIX, piChecks, piCredentialCommand, piLiveArguments, piLiveCommands, piLivePrompt, runLiveClaudeCheck, runLivePiCheck, runPiCheck,
+  dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck,
+} from "../../scripts/check-agent-egress";
+import { piProcessVariables } from "../../src/plugins/pi/pi";
+import { installFakePi } from "../support/fake-pi";
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
@@ -312,5 +318,161 @@ describe("liveModeNote", () => {
   test("states the real CLI was not exercised without --live and prints nothing with it", () => {
     expect(liveModeNote(false)).toMatch(/real Claude Code CLI was not exercised.*--live/);
     expect(liveModeNote(true)).toBeUndefined();
+  });
+});
+
+describe("pi checks", () => {
+  const unset = ["PI_CODING_AGENT_DIR", "EXAMPLE_API_KEY"];
+  const checks = piChecks({ httpsHosts: ["registry.npmjs.org"], controlPlaneHosts: ["api.anthropic.com"], unset });
+  const find = (text: string) => checks.find((check) => check.name.includes(text))!;
+
+  test("the process reaches only its control-plane host and its commands, run as pi runs them, only the allowed hosts", () => {
+    expect(find("pi process reaches its control-plane host api.anthropic.com")).toMatchObject({ expectFailure: false });
+    expect(find("pi process reaches its control-plane host").argv[2]).not.toContain(PI_PROBE_PREFIX);
+    expect(find("pi process is refused non-control host registry.npmjs.org")).toMatchObject({ expectFailure: true });
+    expect(find("pi command reaches allowed host registry.npmjs.org").argv[2]).toBe(`"$SHELL" -c "$${PI_PROBE_PREFIX}"'\ncurl -sS --max-time 15 -o /dev/null '\\''https://registry.npmjs.org'\\'''`);
+    expect(find("pi command is refused the control-plane host")).toMatchObject({ expectFailure: true });
+    expect(find("pi command: api.github.com is refused").expectFailure).toBe(true);
+    expect(find("pi command: direct IP connection is refused").argv[2]).toContain("--noproxy");
+    expect(find("pi process: api.github.com is refused").expectFailure).toBe(true);
+  });
+
+  test("a command must lose pi's agent directory, the runner's credentials and the control-plane credential", () => {
+    expect(piCredentialCommand(unset)).toBe('test -z "${PI_CODING_AGENT_DIR+x}${EXAMPLE_API_KEY+x}" && case "$HTTPS_PROXY" in *conveyor:*) exit 1;; esac');
+    expect(find("does not receive the agent directory").argv[2]).toContain(piCredentialCommand(unset));
+    expect(find("does not receive the agent directory").expectFailure).toBe(false);
+  });
+
+  test("states the real pi CLI was not exercised without --live", () => {
+    expect(liveModeNote(false, "pi")).toMatch(/real pi CLI was not exercised.*--live before turning on agentEgress for pi agents/);
+  });
+});
+
+describe("live pi check", () => {
+  const hosts = { allowed: "registry.fake.test", refused: "api.github.com" };
+  const commands = piLiveCommands({ hosts, control: "model.fake.test", unset: ["PI_CODING_AGENT_DIR"] });
+  const events = (outcomes: boolean[], stopReason = "stop") => [
+    ...commands.flatMap((entry, index) => [
+      { type: "tool_execution_start", toolCallId: String(index), toolName: "bash", args: { command: entry.command } },
+      { type: "tool_execution_end", toolCallId: String(index), toolName: "bash", isError: !outcomes[index] },
+    ]),
+    { type: "message_end", message: { role: "assistant", stopReason, errorMessage: stopReason === "error" ? "401 invalid x-api-key" : undefined } },
+  ].map((event) => JSON.stringify(event)).join("\n");
+
+  test("asks for an allowed, a refused and a control-plane host and the credential check, in that order", () => {
+    expect(commands.map((entry) => [entry.command, entry.succeeds])).toEqual([
+      [liveCommand("registry.fake.test"), true],
+      [liveCommand("api.github.com"), false],
+      [liveCommand("model.fake.test"), false],
+      [piCredentialCommand(["PI_CODING_AGENT_DIR"]), true],
+    ]);
+    const prompt = piLivePrompt(commands);
+    expect(prompt).toContain("exactly 4 times");
+    expect(prompt).toContain(`3. ${liveCommand("model.fake.test")}`);
+    expect(piLiveArguments({ provider: "anthropic", model: "claude-opus-5-5" })).toEqual(expect.arrayContaining(["--mode", "json", "--no-session", "--tools", "bash", "--provider", "anthropic", "--model", "claude-opus-5-5"]));
+    expect(piLiveArguments({ provider: "anthropic" })).not.toContain("--provider");
+  });
+
+  test("passes only when the model answered and every command behaved as required", () => {
+    expect(judgePiLiveOutput(events([true, false, false, true]), commands)).toEqual({ passed: true, problems: [] });
+    expect(judgePiLiveOutput(events([true, true, false, true]), commands).problems).toEqual([`the bash command that is refused api.github.com succeeded: ${liveCommand("api.github.com")}`]);
+    expect(judgePiLiveOutput(events([true, false, true, true]), commands).passed).toBe(false);
+    expect(judgePiLiveOutput(events([true, false, false, false]), commands).problems.join()).toContain("does not receive pi's agent directory or credentials failed");
+  });
+
+  test("reports a model pi could not reach instead of missing commands", () => {
+    expect(judgePiLiveOutput(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "401 invalid x-api-key" } }), commands))
+      .toEqual({ passed: false, problems: ["pi did not reach its model: 401 invalid x-api-key"] });
+    expect(judgePiLiveOutput("", commands).problems).toEqual(["pi did not reach its model"]);
+  });
+
+  test("ignores commands pi changed from the ones it was asked to run", () => {
+    const changed = commands.map((entry, index) => [
+      { type: "tool_execution_start", toolCallId: String(index), toolName: "bash", args: { command: `${entry.command} || true` } },
+      { type: "tool_execution_end", toolCallId: String(index), toolName: "bash", isError: false },
+    ]).flat().concat([{ type: "message_end", message: { role: "assistant", stopReason: "stop" } } as never]).map((event) => JSON.stringify(event)).join("\n");
+    expect(judgePiLiveOutput(changed, commands).problems).toHaveLength(4);
+  });
+
+  const unavailablePi = bwrapUnavailableReason();
+  test.skipIf(unavailablePi !== undefined)("runs pi's probes as the runner launches pi: its commands source the command environment", async () => {
+    const directory = await shortTemporaryDirectory("egress-pi-", { socketPath: "pi-x/artifacts/net/control.sock", visibleInSandbox: true });
+    try {
+      const workspace = path.join(directory, "workspace");
+      await mkdir(workspace);
+      const base = { PATH: process.env.PATH ?? "", SHELL: resolveBash()! };
+      const egress = { httpsHosts: ["registry.fake.test"], resolve: async () => ["203.0.113.1"], dial: () => net.connect(9, "127.0.0.1") };
+      const credentialCheck = piChecks({ httpsHosts: [], controlPlaneHosts: [], unset: piProcessVariables(["EXAMPLE_API_KEY"]) }).find((check) => check.name.includes("does not receive"))!;
+      const processHolds = { name: "the process holds its credentials", argv: ["sh", "-c", 'test -n "$EXAMPLE_API_KEY" && test -n "$PI_CODING_AGENT_DIR" && case "$HTTPS_PROXY" in *conveyor:*) exit 0;; esac; exit 1'], expectFailure: false };
+      for (const check of [credentialCheck, processHolds]) {
+        const result = await runPiCheck({ check, scratch: directory, workspace, base, egress, controlPlaneHosts: ["model.fake.test"], credentialVariables: ["EXAMPLE_API_KEY"] });
+        expect({ name: check.name, passed: result.passed, output: result.passed ? "" : result.output }).toEqual({ name: check.name, passed: true, output: "" });
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(unavailablePi !== undefined)("starts pi in the run's namespace with a private copy of the runner's login, and fails when a refused command is not refused", async () => {
+    const directory = await shortTemporaryDirectory("egress-pl-", { socketPath: "live-pi-x/artifacts/net/control.sock", visibleInSandbox: true });
+    const servers: net.Server[] = [];
+    try {
+      const workspace = path.join(directory, "workspace");
+      const service = path.join(directory, "service-pi");
+      await Promise.all([mkdir(workspace), mkdir(service)]);
+      await writeFile(path.join(service, "auth.json"), '{"old":true}');
+      // Run inside the namespace instead of curl: CONNECT through the command's proxy, exit 0 on 200.
+      const probe = path.join(workspace, "probe.js");
+      await writeFile(probe, [
+        "const host = process.argv[2];",
+        'const s = require("node:net").connect(Number(new URL(process.env.HTTPS_PROXY).port), "127.0.0.1");',
+        'let r = "";',
+        's.on("data", (c) => { r += c; process.exit(r.split(" ")[1] === "200" ? 0 : 1); });',
+        "s.on(\"error\", () => process.exit(2));",
+        's.write("CONNECT " + host + ":443 HTTP/1.1\\r\\nHost: " + host + ":443\\r\\n\\r\\n");',
+      ].join("\n"));
+      // Stub pi: refreshes its login, runs each numbered command as pi's bash tool does and reports pi's JSON events.
+      const { command: cli } = await installFakePi(path.join(directory, "install"), [
+        'import { readFileSync, writeFileSync } from "node:fs";',
+        "const prompt = await Bun.stdin.text();",
+        "const out = (event) => console.log(JSON.stringify(event));",
+        "const agentDir = process.env.PI_CODING_AGENT_DIR;",
+        'const settings = JSON.parse(readFileSync(agentDir + "/settings.json", "utf8"));',
+        'writeFileSync(agentDir + "/auth.json", JSON.stringify({ refreshed: true }));',
+        "const nl = String.fromCharCode(10);",
+        "let id = 0;",
+        "for (const line of prompt.split(nl).filter((line) => /^[0-9]+[.] /.test(line))) {",
+        '  const command = line.slice(line.indexOf(" ") + 1);',
+        "  const url = command.match(/https:[/][/]([^ ]+)/);",
+        `  const run = url ? '"' + process.execPath + '" ${probe} ' + url[1] : command;`,
+        "  const key = String(id++);",
+        '  out({ type: "tool_execution_start", toolCallId: key, toolName: "bash", args: { command } });',
+        "  const result = Bun.spawnSync([settings.shellPath, \"-c\", settings.shellCommandPrefix + nl + run], { env: process.env });",
+        '  out({ type: "tool_execution_end", toolCallId: key, toolName: "bash", isError: result.exitCode !== 0 });',
+        "}",
+        'out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });',
+        'if (!process.argv.includes("bash") || !process.argv.includes("--no-session")) process.exit(3);',
+      ].join("\n"));
+      const model = net.createServer((socket) => socket.on("error", () => {}));
+      servers.push(model);
+      await new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve));
+      const port = (model.address() as net.AddressInfo).port;
+      const egress = { httpsHosts: ["registry.fake.test"], resolve: async () => ["203.0.113.1"], dial: () => net.connect(port, "127.0.0.1") };
+      const common = {
+        cli, scratch: directory, workspace, base: { PATH: process.env.PATH ?? "", SHELL: resolveBash()! }, controlPlaneHosts: ["model.fake.test"],
+        hosts: { allowed: "registry.fake.test", refused: "api.github.com" }, serviceDirectory: service, credentials: { EXAMPLE_API_KEY: "secret" },
+      };
+      const result = await runLivePiCheck({ ...common, egress });
+      expect(result.problems).toEqual([]);
+      expect(result.passed).toBe(true);
+      // The login pi refreshed goes back to the service, as after a run.
+      expect(JSON.parse(await readFile(path.join(service, "auth.json"), "utf8"))).toEqual({ refreshed: true });
+      const permissive = await runLivePiCheck({ ...common, egress: { ...egress, httpsHosts: ["registry.fake.test", "api.github.com"] } });
+      expect(permissive.passed).toBe(false);
+      expect(permissive.problems).toEqual([`the bash command that is refused api.github.com succeeded: ${liveCommand("api.github.com")}`]);
+    } finally {
+      for (const server of servers) server.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
