@@ -5,9 +5,9 @@ import net from "node:net";
 import path from "node:path";
 
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
-import { prepareCodexEnvironment } from "../../src/isolation/environment";
 import { serveMcpSocket } from "../../src/isolation/mcp-socket";
 import { agentFilesystemCommand, agentFilesystemPlan, confinedCommand, confinedCommandPlan, privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
+import { prepareCodexEnvironment } from "../../src/plugins/codex/home";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
@@ -88,6 +88,7 @@ describeSandbox("confined command exposes only its fresh scratch directory", () 
         scratch,
         readablePaths: [mcpContext],
         runtimePaths: [mcp],
+        credentialFiles: [path.join(codexHome, "auth.json")],
       });
       expect(await readdir(scratch)).toEqual([]);
       const child = Bun.spawn(launch.argv, { env: launch.env, stdout: "pipe", stderr: "pipe" });
@@ -112,16 +113,20 @@ test("confined command fails closed before bubblewrap can launch", async () => {
     await chmod(command, 0o755);
     await writeFile(path.join(codexHome, "auth.json"), "credential");
 
-    const plan = confinedCommandPlan({ argv: [command], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch });
+    const credentialFiles = [path.join(codexHome, "auth.json")];
+    const plan = confinedCommandPlan({ argv: [command], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch, credentialFiles });
     expect(plan.argv).not.toContain("--dev-bind");
     expect(plan.argv.filter((argument) => argument === "--bind")).toEqual(["--bind"]);
     expect(plan.argv.slice(plan.argv.indexOf("--bind"), plan.argv.indexOf("--bind") + 3)).toEqual(["--bind", scratch, scratch]);
     expect(plan.env.HOME).toBe(scratch);
     expect(plan.env.CODEX_HOME).toBe(codexHome);
-    expect(() => confinedCommand({ argv: [command], env: { PATH: "", CODEX_HOME: codexHome }, scratch })).toThrow("requires bubblewrap");
-    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin" }, scratch })).toThrow("requires CODEX_HOME/auth.json");
-    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch: path.join(root, "missing") })).toThrow("scratch directory does not exist");
-    expect(() => confinedCommand({ argv: ["missing-codex"], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch })).toThrow("not installed");
+    expect(plan.argv.some((argument, index) => argument === "--ro-bind" && plan.argv[index + 2] === credentialFiles[0])).toBe(true);
+    expect(() => confinedCommand({ argv: [command], env: { PATH: "", CODEX_HOME: codexHome }, scratch, credentialFiles })).toThrow("requires bubblewrap");
+    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin" }, scratch, credentialFiles: [] })).toThrow("requires the harness's credential files");
+    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin" }, scratch, credentialFiles: [path.join(root, "missing-auth.json")] })).toThrow("which does not exist");
+    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin" }, scratch, credentialFiles: ["auth.json"] })).toThrow("requires an absolute credential file path");
+    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch: path.join(root, "missing"), credentialFiles })).toThrow("scratch directory does not exist");
+    expect(() => confinedCommand({ argv: ["missing-codex"], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch, credentialFiles })).toThrow("not installed");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

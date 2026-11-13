@@ -73,6 +73,11 @@ export interface ConfinedCommandOptions {
   readablePaths?: readonly string[];
   /** Executable installation directories the command needs to invoke its scoped MCP bridge. */
   runtimePaths?: readonly string[];
+  /**
+   * The harness's credential files, mounted read-only. The harness's caller names them; at least one
+   * is required, and each must exist, so a confined command never starts without its login.
+   */
+  credentialFiles: readonly string[];
 }
 
 /**
@@ -391,7 +396,7 @@ export function confinedCommandPlan(options: ConfinedCommandOptions): SandboxedC
   addDirectory(path.dirname(scratch));
   mounts.push("--bind", scratch, scratch);
   directories.add(scratch);
-  // Codex and the MCP bridge can use adjacent runtime files, but no parent directory above
+  // The harness and the MCP bridge can use adjacent runtime files, but no parent directory above
   // their resolved installation directory is made visible.
   addRuntimePath(executable);
   for (const runtimePath of options.runtimePaths ?? []) {
@@ -400,11 +405,12 @@ export function confinedCommandPlan(options: ConfinedCommandOptions): SandboxedC
   for (const file of options.readablePaths ?? []) {
     if (path.isAbsolute(file)) addFile(file);
   }
-  const codexHome = options.env.CODEX_HOME;
-  if (!codexHome) throw new Error("Operator filesystem confinement requires CODEX_HOME/auth.json");
-  const credential = path.join(resolveFilesystemPath(codexHome), "auth.json");
-  if (!existsSync(credential)) throw new Error("Operator filesystem confinement requires CODEX_HOME/auth.json");
-  addFile(credential);
+  if (options.credentialFiles.length === 0) throw new Error("Operator filesystem confinement requires the harness's credential files");
+  for (const file of options.credentialFiles) {
+    if (!path.isAbsolute(file)) throw new Error(`Operator filesystem confinement requires an absolute credential file path, not ${file}`);
+    if (!existsSync(resolveFilesystemPath(file))) throw new Error(`Operator filesystem confinement requires the credential file ${file}, which does not exist`);
+    addFile(file);
+  }
   if (existsSync("/etc/ssl/certs")) {
     addDirectory("/etc");
     mounts.push("--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs");

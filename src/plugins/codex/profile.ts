@@ -1,6 +1,6 @@
 import type { HarnessProfile } from "../../harness/types";
-import { CODEX_CONTROL_PLANE } from "../../isolation/environment";
-import { CODEX_CONTROL_PLANE_HOSTS } from "../../isolation/run-network";
+import { CODEX_CONTROL_PLANE } from "./home";
+import { CODEX_CONTROL_PLANE_HOSTS } from "./launch";
 
 /**
  * Codex runs with the runner's sandbox and approvals, reaches files only through its shell, takes
