@@ -10,6 +10,52 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.21.0] - 2026-11-13
+
+Conveyor is now a small core with replaceable plugins. GitHub (items, code, CI), Codex, Claude Code and the dashboard live in their own plugin folders behind small interfaces, provider and harness settings are validated by their plugins, and every event says whether it is a fact, an observation from a plugin or a trace of the service's own activity, with the event that caused it. Codex runs again where its own sandbox could not nest in Conveyor's, Claude Code agents run commands under agentEgress, and a pull request with a merge conflict no longer waits in the merge stage forever. Event sinks that read the github.* event names must switch to the new itemSource.*, code.* and ci.* names.
+
+### Added
+
+- Every event now has a class: `fact` (a change Conveyor recorded), `ingest` (what a plugin such as GitHub observed, for example a webhook delivery) or `trace` (what the service is doing). Two trace events show the service's own activity: `scheduler.decided` and `timer.fired`; traces are kept for a day. An event recorded in reaction to another names its cause, and `conveyor events --caused-by <seq>` follows the chain; `conveyor events --class` filters by class, and every line shows the class. Event sinks receive facts and observations by default; a sink can select traces with `classes` and events that may carry user-written text with `includeContent`.
+
+- The Operator can record a short summary (at most 300 characters) of an item's current stop with `operator.recordStopSummary`. It is advice only and is read through the store as `currentStopSummary`, which returns nothing once the item resumes and stops again.
+
+### Changed
+
+- Item source, code host and CI provider settings are now defined by the plugin their `type` names: GitHub's `webhookPath`, `autoConfigureWebhook` and `webhookSecret`, and GitHub Actions' `triggers`, are validated by those plugins when the configuration loads. Existing configurations load unchanged. A provider `type` that no plugin provides is now reported as `no items plugin provides type "…"` with the types this build knows.
+
+- **Breaking:** Webhook deliveries are now read by the provider's own plugin and recorded as provider-neutral events, so a second item source, code host or CI system can report the same events. The GitHub-named events are replaced:
+
+  | Before | Now |
+  | --- | --- |
+  | `github.issueUpdated` | `itemSource.itemChanged` (adds `item` and `actors`: the issue as the delivery describes it and who changed it) |
+  | `github.relationshipChanged` | `itemSource.relationsChanged` |
+  | `github.ping` | `itemSource.pinged` |
+  | `github.changeUpdated` | `code.changeUpdated` |
+  | `github.ciUpdated` | `ci.runUpdated` (`pullRequests` is now `changes`) |
+
+  Every one of them is an `ingest` event whose `source` is `github`. `itemSource.itemChanged` may carry the issue's title and body, so event sinks receive it only with `includeContent: true`. **What to change:** an event sink, script or `conveyor events --type` filter that matched the `github.*` names must use the new names, and a sink that needs `itemSource.itemChanged` must set `includeContent: true`. The webhook endpoint, its secrets and GitHub's webhook settings are unchanged; a refused delivery for another provider's repository now says "invalid webhook signature for this repository".
+
+- Harness settings are now defined by the harness plugin a runner's `type` names: the Codex runner's `command`, `sandbox`, `automaticApprovals` and `controlPlaneHosts`, and the Claude Code runner's `command`, `configDir` and `controlPlaneHosts`, are validated by those plugins when the configuration loads, and the plugins decide which agents a harness can run. Existing configurations load unchanged and keep their configuration hash. A runner `type` that no harness provides is now reported as `no harness plugin provides type "…"` with the types this build knows.
+
+- **Breaking:** The first diagnosed required-CI failure no longer re-runs the CI gate in place. It now follows the gate's configured `onFail` route (normally `return: implementation`), so the next attempt receives the failure report as feedback; without a route it uses the default exit-gate failure behaviour. A required-CI failure counts as repeated, and stops the item for intervention, only when the same failure is seen on a different head than the previous failed observation. Observing the same head again never counts as a repeat. If your pipeline relied on the in-place retry, set `onFail` on the CI gate to choose where a first failure goes.
+
+- The dashboard's Blocking reason box shows the Operator's stop summary, or the first line of the recorded reason when there is none. **View full result** opens the complete reason and evidence in a separate dialog, and the Needs-you list shows the same summary or headline.
+
+### Fixed
+
+- Removing a workspace and the sweep of orphaned scratch directories now delete a scratch directory even when it holds read-only directories, such as Go module caches. Cleanup no longer stops after repeated permission errors.
+
+- A run whose commands cannot start because the sandbox itself fails (for example `bwrap: No permissions to create a new namespace`) now ends as an infrastructure failure instead of a normal result. Conveyor retries it with the usual backoff and, once the retries are used up, stops the item with the sandbox error as the reason. This applies to Codex and Claude Code.
+
+- Claude Code agents can run shell commands in repositories with `agentEgress`. The command prefix is now one per-run wrapper script instead of a space-joined command line that Claude Code could not execute. `scripts/check-agent-egress.ts` now invokes the prefix the way Claude Code does and accepts `--home` to load configurations that use `builtin:` includes.
+
+- Claude Code agents under `agentEgress` can now run commands, hooks and MCP servers: the command prefix runs the one command string Claude Code gives it with `$SHELL -c` instead of treating it as a program name. **Behaviour change:** Conveyor now sets every agent's `SHELL` to bash (an absolute path it resolves) instead of passing on the operator's login shell, so agents behave the same on every host. Bash is a prerequisite and `conveyor doctor` reports it when missing. Before turning on `agentEgress` for Claude Code agents, run `bun scripts/check-agent-egress.ts <repository-id> --config <dir> --runner <runner-id> --live`, which starts the real Claude Code CLI in the run's namespace and fails unless an allowed host is reached and a refused host is refused.
+
+- `check-agent-egress --live` now runs Claude Code with the runner's sign-in (its `configDir`, else `CLAUDE_CONFIG_DIR`, else `~/.claude`, mounted writable, plus `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`), so it must run as the account the service runs as. A CLI that is not signed in is reported as such, and a missing runner command names the command and the `PATH` searched.
+
+- A pull request with a merge conflict no longer waits in the merge stage forever. When GitHub refused the merge, Conveyor checked mergeability against its stored copy of the pull request, which could still say "not computed yet" from before GitHub found the conflict, so it retried every 30 seconds instead of sending the item back to implementation. It now reads the pull request's current state from GitHub before deciding.
+
 ## [0.20.0] - 2026-11-09
 
 Merged since v0.19.0:
