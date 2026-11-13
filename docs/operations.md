@@ -198,6 +198,22 @@ the runner's configured `command`; if that is not installed the error names it a
 command against an allowed host and one against a refused host, and fails unless the first succeeds
 and the second is refused.
 
+For a pi runner, `--runner <runner-id>` launches the probes the way the pi runner launches pi: the
+process must reach its control-plane host (the runner's `controlPlaneHosts`, else its `provider`'s
+default hosts; the check stops if it has neither) and no other, and its commands, run as pi 1.5 runs
+its bash tool (`"$SHELL" -c "<shellCommandPrefix>"'<newline><command>'`), must reach only `httpsHosts`,
+be refused `api.github.com`, direct IPs and the control plane, and see neither `PI_CODING_AGENT_DIR`,
+the runner's `credentialVariables` nor the control-plane credential. **Before turning on `agentEgress`
+for pi agents, run it with `--live`** as the account the service runs as: it starts the real pi CLI
+in the run's namespace with the runner's sign-in, as a real run does (a private copy of the `auth.json`
+and `models.json` of the runner's `configDir`, else `PI_CODING_AGENT_DIR`, else `~/.pi/agent`, with
+the runner's `credentialVariables` from your environment for the pi process only; a login pi refreshes
+is copied back), with the model of the first agent on that runner, and asks it to run four bash
+commands: one against an allowed host, one against a refused host, one against its control-plane host
+and one that checks its environment. It fails unless pi's model answers, the first and last commands
+succeed and the other two are refused; a pi that is not signed in fails as "pi did not reach its model"
+with pi's error.
+
 Against an installed home, whose `conveyor.yaml` uses `!include builtin:…`, pass the home so the
 built-in includes resolve:
 

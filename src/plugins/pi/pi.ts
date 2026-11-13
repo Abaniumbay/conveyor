@@ -7,6 +7,9 @@
 // which is the only boundary. A workspace-write agent gets writable mounts for its worktree, Git
 // metadata and configured roots; pi's tool list is a second lock: a read-only agent gets read tools,
 // bash and its MCP tools, and a workspace-write agent also gets edit and write.
+//
+// Under agentEgress the process runs in the run's network namespace (see launch.ts): pi reaches its
+// model through the control-plane proxy, while its commands and MCP servers get the data-plane proxy.
 
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -16,6 +19,7 @@ import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths"
 import { cleanupSanitizedHome, prepareAgentEnvironment } from "../../isolation/environment";
 import { agentFilesystemCommand, verifyAgentWrapper, type AgentFilesystemOptions } from "../../isolation/sandbox";
 import { acquireScratch, assertNoHostTmpWritableRoots, type ScratchDirectory } from "../../isolation/scratch";
+import type { RunNetwork } from "../../isolation/run-network";
 import { log } from "../../log/logger";
 import type { HarnessRunInput } from "../../harness/types";
 import { OUTPUT_SCHEMAS } from "../../runner/output-schemas";
@@ -23,7 +27,7 @@ import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type RunEnvelope }
 import { sandboxSetupError } from "../../runner/sandbox-failure";
 import { PI_AGENT_DIRECTORY, preparePiAgentDirectory, servicePiAgentDirectory, syncPiAgentDirectory } from "./agent-directory";
 import { piRunnerSchema, type PiRunnerConfig } from "./config";
-import { piInstallation } from "./launch";
+import { PI_MCP_LAUNCH, piCommandEnvironmentFile, piControlPlaneHosts, piInstallation, piLaunch, piMountRoot, piShellCommandPrefix } from "./launch";
 import { piProfile } from "./profile";
 
 export interface PiRunInput extends HarnessRunInput {
@@ -102,9 +106,17 @@ export function piTools(input: Pick<PiRunInput, "sandbox" | "shell" | "mcpServer
  * The run's `mcp.json`: Conveyor's scoped server and the agent's servers, all declared directly to the
  * model (an agent server's `enabledTools` are the only ones not hidden).
  */
-export function piMcpConfiguration(input: Pick<PiRunInput, "mcp" | "mcpServers">): Record<string, unknown> {
+export function piMcpConfiguration(
+  input: Pick<PiRunInput, "mcp" | "mcpServers">,
+  egress?: { shell: string; commandEnvironment: string },
+): Record<string, unknown> {
+  // pi starts a server with its own environment (no shell), so under egress the server is started
+  // through the shell, which first sources the command environment its bash commands get.
+  const launch = (command: string, args: string[]) => egress
+    ? { command: egress.shell, args: ["-c", PI_MCP_LAUNCH, egress.commandEnvironment, command, ...args] }
+    : { command, args };
   const servers: Record<string, Record<string, unknown>> = {
-    conveyor: { command: input.mcp.command, args: input.mcp.args, exposure: "direct" },
+    conveyor: { ...launch(input.mcp.command, input.mcp.args), exposure: "direct" },
   };
   for (const [name, server] of Object.entries(input.mcpServers ?? {})) {
     const env = resolvePathEnvironment(server.env);
@@ -114,8 +126,7 @@ export function piMcpConfiguration(input: Pick<PiRunInput, "mcp" | "mcpServers">
       throw new PiRunnerError(`MCP server ${name}: pi would expand the value of ${expanded[0]} (it starts with "!" or contains "\${"); use a literal value`, "process", null, "");
     }
     servers[name] = {
-      command: server.command,
-      args: server.args,
+      ...launch(server.command, server.args),
       ...(Object.keys(env).length > 0 ? { env } : {}),
       ...(server.enabledTools
         ? { exposure: "hidden", toolExposure: Object.fromEntries(server.enabledTools.map((tool) => [tool, "direct"])) }
@@ -126,12 +137,23 @@ export function piMcpConfiguration(input: Pick<PiRunInput, "mcp" | "mcpServers">
   return { autoEnableCodemode: false, mcpServers: servers };
 }
 
+/** The variables the pi process holds for itself, which its commands never get: its agent directory and provider credentials. */
+export function piProcessVariables(credentialVariables: readonly string[]): string[] {
+  return [PI_AGENT_DIRECTORY, ...credentialVariables];
+}
+
 /** The run's `settings.json`: Conveyor's choices only, never the operator's own settings. */
-export function piSettings(options: { shell: string; credentialVariables: readonly string[]; provider?: string | undefined }): Record<string, unknown> {
+export function piSettings(options: {
+  shell: string;
+  credentialVariables: readonly string[];
+  provider?: string | undefined;
+  /** Under egress: the command environment file every command sources first. */
+  commandEnvironment?: string | undefined;
+}): Record<string, unknown> {
   return {
     shellPath: options.shell,
-    // Every command starts by dropping what the pi process holds for itself: its agent directory and provider credentials.
-    shellCommandPrefix: `unset ${[PI_AGENT_DIRECTORY, ...options.credentialVariables].join(" ")}`,
+    // Every command starts by dropping what the pi process holds for itself (and, under egress, by taking the data-plane proxy).
+    shellCommandPrefix: piShellCommandPrefix({ unset: piProcessVariables(options.credentialVariables), commandEnvironment: options.commandEnvironment }),
     defaultProjectTrust: "never",
     enableInstallTelemetry: false,
     ...(options.provider ? { defaultProvider: options.provider } : {}),
@@ -262,11 +284,12 @@ export async function runPi(input: PiRunInput): Promise<RunEnvelope> {
   if (input.sandbox === "danger-full-access") {
     throw new PiRunnerError("pi agents run read-only or workspace-write, never with full access", "process", null, "");
   }
-  if (input.egress) {
-    // Never run unconfined where the repository asks for egress isolation; configuration loading refuses this first.
-    throw new PiRunnerError("pi cannot enforce this repository's agentEgress yet, so its agent was not started; run the stage with an agent on another harness", "process", null, "");
-  }
   const runner = runnerSettings(input);
+  const controlPlaneHosts = input.egress ? input.egress.controlPlaneHosts ?? piControlPlaneHosts(runner) : [];
+  if (input.egress && controlPlaneHosts.length === 0) {
+    // Configuration loading refuses this first; without hosts pi could never reach its model.
+    throw new PiRunnerError(`the pi runner names no controlPlaneHosts and pi has no default hosts for its provider${runner.provider ? ` ${runner.provider}` : ""}, so its agent was not started under agentEgress`, "process", null, "");
+  }
   await mkdir(input.artifactsDirectory, { recursive: true });
   const artifactsDirectory = resolveFilesystemPath(input.artifactsDirectory);
   const workspace = resolveFilesystemPath(input.workspace);
@@ -276,10 +299,12 @@ export async function runPi(input: PiRunInput): Promise<RunEnvelope> {
   const startedAt = performance.now();
   let home: string | undefined;
   let serviceDirectory: string | undefined;
+  let network: RunNetwork | null = null;
   let cleaned = false;
   const cleanup = async (): Promise<string | undefined> => {
     if (cleaned) return undefined;
     cleaned = true;
+    await network?.close();
     return cleanupPiRun({ artifactsDirectory, scratch, home, serviceDirectory });
   };
   try {
@@ -289,21 +314,27 @@ export async function runPi(input: PiRunInput): Promise<RunEnvelope> {
     });
     home = resolveFilesystemPath(environment.HOME!);
     serviceDirectory = resolveFilesystemPath(servicePiAgentDirectory(input.env));
+    const commandEnvironment = input.egress ? piCommandEnvironmentFile(artifactsDirectory) : undefined;
     // The service's agent directory is never mounted: the run gets a private copy inside its home.
     const agentDirectory = await preparePiAgentDirectory({
       home,
       serviceDirectory,
-      settings: piSettings({ shell: environment.SHELL!, credentialVariables: runner.credentialVariables, provider: runner.provider }),
-      mcp: piMcpConfiguration(input),
+      settings: piSettings({ shell: environment.SHELL!, credentialVariables: runner.credentialVariables, provider: runner.provider, commandEnvironment }),
+      mcp: piMcpConfiguration(input, commandEnvironment ? { shell: environment.SHELL!, commandEnvironment } : undefined),
       resumeSessionId: input.resumeSessionId,
     });
     environment[PI_AGENT_DIRECTORY] = agentDirectory.directory;
     environment.PI_SKIP_VERSION_CHECK = "1";
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
-    const installation = piInstallation(input.command, resolvedEnvironment);
+    // The installer's Node is found in the service's data directory, which the run's environment no longer names.
+    const installation = piInstallation(input.command, resolvedEnvironment, { ...process.env, ...input.env });
+    const launched = installation.interpreter
+      ? [installation.interpreter.path, ...installation.interpreter.args, installation.executable]
+      : [installation.executable];
     const filesystemOptions: AgentFilesystemOptions = {
-      command: input.command,
+      // The resolved program, never the command's own path: an installer's launcher stays outside the sandbox.
+      command: launched[0]!,
       env: resolvedEnvironment,
       workspace,
       artifacts: artifactsDirectory,
@@ -312,22 +343,33 @@ export async function runPi(input: PiRunInput): Promise<RunEnvelope> {
       writableGit: input.sandbox === "workspace-write",
       writable: input.sandbox === "workspace-write" ? [workspace, ...writableRoots] : [],
       runtime: [
-        installation.packageRoot,
+        piMountRoot(installation),
         ...(installation.interpreter ? [installation.interpreter.path] : []),
         input.mcp.command,
         ...Object.values(input.mcpServers ?? {}).map((server) => server.command),
       ],
       ...(input.toolchainPaths?.length ? { toolchain: input.toolchainPaths } : {}),
     };
-    const launched = installation.interpreter
-      ? [installation.interpreter.path, ...installation.interpreter.args, installation.executable]
-      : [installation.executable];
-    const launch = agentFilesystemCommand(filesystemOptions, [
+    const argv = [
       ...launched,
       ...piArguments(input, { sessions: agentDirectory.sessions, resumeFile: agentDirectory.resumeFile, provider: runner.provider, schema: OUTPUT_SCHEMAS.producer }),
-    ]);
-    verifyAgentWrapper(launch, launched[0]);
+    ];
+    let launch: { argv: string[]; env: Record<string, string> };
+    if (input.egress) {
+      // Fails closed: without the namespace and its proxies pi is never started.
+      const egressLaunch = await piLaunch({
+        environment: resolvedEnvironment, artifactsDirectory, egress: input.egress, controlPlaneHosts,
+        filesystem: filesystemOptions, argv, unset: piProcessVariables(runner.credentialVariables),
+      });
+      network = egressLaunch.network;
+      launch = egressLaunch;
+    } else {
+      launch = agentFilesystemCommand(filesystemOptions, argv);
+      verifyAgentWrapper(launch, launched[0]);
+    }
     const child = Bun.spawn(launch.argv, { cwd: workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    // Release the per-run network whenever the process ends, even if later handling throws.
+    void child.exited.finally(() => network?.close());
     child.stdin.write(input.prompt);
     child.stdin.end();
 

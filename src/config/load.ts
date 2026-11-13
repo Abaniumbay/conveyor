@@ -16,7 +16,7 @@ import { ConfigError, safeYamlDiagnostic } from "./errors";
 import { materialiseImport, parseImportSpec, type ImportSpec, type ResolvedImport } from "./import";
 import { protectedServiceLocations, resolveToolchainPaths } from "../isolation/toolchain-paths";
 import { normalizeRoleDocuments } from "./roles";
-import { configSchema, isNativeStage, JSON_PROCESS_RUNNER, type ConveyorConfigData, type ProviderEntry } from "./schema";
+import { configSchema, isHarnessRunner, isNativeStage, JSON_PROCESS_RUNNER, type ConveyorConfigData, type ProviderEntry } from "./schema";
 import type { HarnessProfile } from "../harness/types";
 import type { Plugin } from "../core/plugins";
 
@@ -532,14 +532,23 @@ function crossReferenceErrors(config: ConveyorConfigData, plugins: readonly Plug
       }
     }
   }
+  const hostlessRunners = new Set<string>();
   for (const [name, repository] of Object.entries(config.repositories)) {
     if (repository.agentEgress && profiles) {
       // A harness that cannot enforce the repository's egress policy must never run its agents unconfined.
       for (const agentName of repositoryAgents(config, repository)) {
-        const runner = config.runners[config.agents[agentName]?.runner ?? ""];
+        const runnerName = config.agents[agentName]?.runner ?? "";
+        const runner = config.runners[runnerName];
         const profile = runner ? profiles.get(runner.type) : undefined;
         if (profile && !profile.agentEgress) {
           error(["repositories", name, "agentEgress"], `cannot be enforced for agent "${agentName}", which runs on ${profile.name}: ${profile.name} agents cannot run in a repository with agentEgress yet; give the pipeline's stages an agent on another harness`);
+        } else if (profile && runner && isHarnessRunner(runner) && runner.controlPlaneHosts === undefined && !hostlessRunners.has(runnerName)) {
+          // Under egress the harness process reaches only these hosts, so without any it could not reach its model.
+          const hosts = profile.controlPlaneHostsFor?.(runner) ?? profile.controlPlaneHosts;
+          if (hosts.length === 0) {
+            hostlessRunners.add(runnerName);
+            error(["runners", runnerName, "controlPlaneHosts"], `is required: runner "${runnerName}" runs agent "${agentName}" in repository "${name}", which declares agentEgress, and ${profile.name} has no default hosts for this runner's settings; list the hosts its model provider needs`);
+          }
         }
       }
     }

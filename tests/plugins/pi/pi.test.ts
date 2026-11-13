@@ -120,6 +120,26 @@ describe("pi arguments", () => {
     expect(piSettings({ shell: "/bin/bash", credentialVariables: [] })).not.toHaveProperty("defaultProvider");
   });
 
+  test("under agentEgress every command first sources the run's command environment, and a missing one stops it", () => {
+    expect(piSettings({ shell: "/usr/bin/bash", credentialVariables: ["EXAMPLE_API_KEY"], commandEnvironment: "/a/run/net/command-environment" })).toMatchObject({
+      shellPath: "/usr/bin/bash",
+      shellCommandPrefix: ". '/a/run/net/command-environment' || exit 126",
+    });
+  });
+
+  test("under agentEgress every MCP server starts through the shell, which sources the command environment first", () => {
+    const egress = { shell: "/usr/bin/bash", commandEnvironment: "/a/run/net/command-environment" };
+    const servers = (piMcpConfiguration({
+      mcp: { command: "/usr/bin/conveyor", args: ["__mcp"] },
+      mcpServers: { serena: { command: "serena", args: ["start"], env: { SERENA_HOME: "/s" }, enabledTools: ["find_symbol"] } },
+    }, egress) as { mcpServers: Record<string, Record<string, unknown>> }).mcpServers;
+    expect(servers.conveyor).toEqual({ command: "/usr/bin/bash", args: ["-c", '. "$0" && exec "$@"', egress.commandEnvironment, "/usr/bin/conveyor", "__mcp"], exposure: "direct" });
+    expect(servers.serena).toEqual({
+      command: "/usr/bin/bash", args: ["-c", '. "$0" && exec "$@"', egress.commandEnvironment, "serena", "start"],
+      env: { SERENA_HOME: "/s" }, exposure: "hidden", toolExposure: { find_symbol: "direct" },
+    });
+  });
+
   test("the result is the final message's JSON, inside at most one json fence", () => {
     expect(parsePiResult(result())).toEqual(VALID_RESULT);
     expect(parsePiResult(`\n\`\`\`json\n${result()}\n\`\`\`\n`)).toEqual(VALID_RESULT);
@@ -261,10 +281,11 @@ describe("pi runner", () => {
     expect(await readFile(path.join(f.service, "auth.json"), "utf8")).toBe('{"token":"new"}');
   });
 
-  test("refuses to run where the repository enforces agentEgress, and with full access, before pi starts", async () => {
+  test("refuses full access, and agentEgress without control-plane hosts, before pi starts", async () => {
     const f = await fixture();
-    await expect(f.run({ egress: { httpsHosts: [], allowLoopbackMcp: true } as never })).rejects.toThrow("pi cannot enforce this repository's agentEgress yet");
     await expect(f.run({ sandbox: "danger-full-access" })).rejects.toThrow("never with full access");
+    await expect(f.run({ egress: { httpsHosts: [] } })).rejects.toThrow("names no controlPlaneHosts and pi has no default hosts for its provider");
+    await expect(f.run({ egress: { httpsHosts: [] }, runner: { type: "pi", command: f.command, provider: "azure" } })).rejects.toThrow("default hosts for its provider azure");
     expect(existsSync(f.capture)).toBe(false);
   });
 

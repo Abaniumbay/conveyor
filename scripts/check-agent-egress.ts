@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Operator verification for agent egress enforcement (needs the real network; not part of `bun test`).
-// Usage: bun scripts/check-agent-egress.ts <repository-id> --config <conveyor.yaml> [--home <conveyor-home>] [--runner <claude-code-runner-id> [--live]]
+// Usage: bun scripts/check-agent-egress.ts <repository-id> --config <conveyor.yaml> [--home <conveyor-home>] [--runner <runner-id> [--live]]
 //
 // Clones the repository locally, runs its dependency restore inside the network sandbox with an empty
 // task-scoped cache and only the repository's `agentEgress.httpsHosts` reachable, then proves that
@@ -18,6 +18,14 @@
 // Code CLI inside the run's namespace with a prompt that runs one `Bash` command against an allowed
 // host and one against a refused host, and fails unless the first succeeds and the second is refused.
 // Without `--live` the real CLI is not exercised, and the output says so.
+//
+// With `--runner <id>` naming a pi runner, the probes are launched the way the pi runner launches pi:
+// the process reaches only the runner's control-plane hosts (its `controlPlaneHosts`, else its
+// provider's), and a command, run as pi runs its bash tool (`<shell> -c "<shellCommandPrefix>\n<command>"`),
+// only `httpsHosts`, without pi's agent directory or credential variables. `--live` starts the real pi
+// CLI with a private copy of the runner's login (refreshed credentials go back, as after a run) and
+// proves that its model answers and that its bash commands reach the allowed host and are refused a
+// host outside `httpsHosts` and the control plane, without pi's agent directory or credentials.
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -30,8 +38,12 @@ import { startEgressProxy } from "../src/isolation/egress-proxy";
 import { agentEgressFor } from "../src/isolation/agent-egress";
 import { resolveBash, sanitizedAgentEnvironment } from "../src/isolation/environment";
 import { CLAUDE_CONTROL_PLANE_HOSTS, claudeLaunch } from "../src/plugins/claude-code/launch";
+import { preparePiAgentDirectory, servicePiAgentDirectory, syncPiAgentDirectory } from "../src/plugins/pi/agent-directory";
+import { piRunnerSchema } from "../src/plugins/pi/config";
+import { piCommandEnvironmentFile, piControlPlaneHosts, piInstallation, piLaunch, piMountRoot, piShellCommandPrefix } from "../src/plugins/pi/launch";
+import { piProcessVariables, piSettings } from "../src/plugins/pi/pi";
 import { startTcpRelay } from "../src/isolation/tcp-relay";
-import { sandboxCommand, type AgentFilesystemOptions } from "../src/isolation/sandbox";
+import { agentLaunchCommand, sandboxCommand, type AgentFilesystemOptions } from "../src/isolation/sandbox";
 
 export interface RestoreStep {
   name: string;
@@ -111,6 +123,43 @@ export function claudeCodeChecks(options: { httpsHosts: readonly string[]; contr
     command("claude-code command: direct IP connection is refused", prefixed(`${CURL} --noproxy '*' https://1.1.1.1`), true),
     command("claude-code process: api.github.com is refused", `${CURL} https://api.github.com`, true),
     command("claude-code command does not receive the control-plane credential", prefixed(`case "$HTTPS_PROXY" in *conveyor:*) exit 1;; esac`), false),
+  );
+  return checks;
+}
+
+/** The variable the pi probes read the run's `shellCommandPrefix` from (they stand in for the pi process). */
+export const PI_PROBE_PREFIX = "PI_PROBE_PREFIX";
+
+/** A command that fails when it holds pi's agent directory, one of `unset` or the control-plane credential. */
+export function piCredentialCommand(unset: readonly string[]): string {
+  return `test -z "${unset.map((name) => `\${${name}+x}`).join("")}" && case "$HTTPS_PROXY" in *conveyor:*) exit 1;; esac`;
+}
+
+/**
+ * Probes for a pi run, executed by `sh -c` as the pi process would be: plain `curl` is the process
+ * (control-plane proxy); `"$SHELL" -c "<prefix>\n<command>"` is one of its bash commands, exactly as
+ * pi 1.5 runs them, with the prefix taken from `$PI_PROBE_PREFIX`.
+ */
+export function piChecks(options: { httpsHosts: readonly string[]; controlPlaneHosts: readonly string[]; unset: readonly string[] }): SandboxCheck[] {
+  const [control] = options.controlPlaneHosts;
+  const allowed = options.httpsHosts.find((host) => !options.controlPlaneHosts.includes(host));
+  const check = (name: string, script: string, expectFailure: boolean): SandboxCheck => ({ name, argv: ["sh", "-c", script], expectFailure });
+  // pi joins its prefix and the command with a newline and hands both to its shell as one -c argument.
+  const prefixed = (command: string): string => `"$SHELL" -c "$${PI_PROBE_PREFIX}"${quote(`\n${command}`)}`;
+  const checks: SandboxCheck[] = [];
+  if (control) {
+    checks.push(check(`pi process reaches its control-plane host ${control}`, `${CURL} ${quote(`https://${control}`)}`, false));
+    checks.push(check(`pi command is refused the control-plane host ${control}`, prefixed(`${CURL} ${quote(`https://${control}`)}`), true));
+  }
+  if (allowed) {
+    checks.push(check(`pi command reaches allowed host ${allowed}`, prefixed(`${CURL} ${quote(`https://${allowed}`)}`), false));
+    checks.push(check(`pi process is refused non-control host ${allowed}`, `${CURL} ${quote(`https://${allowed}`)}`, true));
+  }
+  checks.push(
+    check("pi command: api.github.com is refused", prefixed(`${CURL} https://api.github.com`), true),
+    check("pi command: direct IP connection is refused", prefixed(`${CURL} --noproxy '*' https://1.1.1.1`), true),
+    check("pi process: api.github.com is refused", `${CURL} https://api.github.com`, true),
+    check("pi command does not receive the agent directory, credentials or control-plane credential", prefixed(piCredentialCommand(options.unset)), false),
   );
   return checks;
 }
@@ -211,11 +260,46 @@ async function runClaudeCodeCheck(options: {
   }
 }
 
+/** Runs one pi probe in the network sandbox exactly as the pi runner launches pi, with the command environment pi's commands source. */
+export async function runPiCheck(options: {
+  check: SandboxCheck; scratch: string; workspace: string; base: Record<string, string>;
+  egress: NonNullable<ReturnType<typeof agentEgressFor>>; controlPlaneHosts: readonly string[];
+  /** The runner's credential variables, set to a probe value for the process so its commands can prove they lose them. */
+  credentialVariables: readonly string[];
+}): Promise<SandboxedCheckResult> {
+  const directory = await mkdtemp(path.join(options.scratch, "pi-"));
+  const [artifacts, home, temporary] = ["artifacts", "home", "tmp"].map((name) => path.join(directory, name)) as [string, string, string];
+  await Promise.all([artifacts, home, temporary].map((target) => mkdir(target, { recursive: true })));
+  const unset = piProcessVariables(options.credentialVariables);
+  const environment = {
+    ...options.base, HOME: home, TMPDIR: temporary,
+    ...Object.fromEntries(unset.map((name) => [name, name === unset[0] ? path.join(home, ".pi", "agent") : "probe-credential"])),
+    [PI_PROBE_PREFIX]: piShellCommandPrefix({ unset, commandEnvironment: piCommandEnvironmentFile(artifacts) }),
+  };
+  const shell = agentLaunchCommand({ command: options.check.argv[0]!, env: environment });
+  const launch = await piLaunch({
+    environment,
+    artifactsDirectory: artifacts,
+    egress: options.egress,
+    controlPlaneHosts: options.controlPlaneHosts,
+    filesystem: { command: shell, env: environment, workspace: options.workspace, artifacts, home, scratch: temporary },
+    argv: [shell, ...options.check.argv.slice(1)],
+    unset,
+  });
+  try {
+    const child = Bun.spawn(launch.argv, { cwd: options.workspace, env: launch.env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { passed: checkPassed(options.check, exitCode), exitCode, output: err || out };
+  } finally {
+    await launch.network.close();
+  }
+}
+
 export interface LiveHosts { allowed: string; refused: string }
 
-/** The line printed when the real Claude Code CLI was not run (no `--live`); nothing under `--live`. */
-export function liveModeNote(live: boolean): string | undefined {
-  return live ? undefined : "NOTE the real Claude Code CLI was not exercised; run again with --live before turning on agentEgress for Claude Code agents";
+/** The line printed when the real CLI was not run (no `--live`); nothing under `--live`. */
+export function liveModeNote(live: boolean, harness = "Claude Code"): string | undefined {
+  return live ? undefined : `NOTE the real ${harness} CLI was not exercised; run again with --live before turning on agentEgress for ${harness} agents`;
 }
 
 /** The hosts the live check probes: the first non-control `httpsHosts` entry, and one outside `httpsHosts`. */
@@ -331,6 +415,128 @@ export async function runLiveClaudeCheck(options: {
   }
 }
 
+/** The bash commands the live pi check asks for, each with whether it must succeed. */
+export function piLiveCommands(options: { hosts: LiveHosts; control: string; unset: readonly string[] }): { command: string; succeeds: boolean; description: string }[] {
+  return [
+    { command: liveCommand(options.hosts.allowed), succeeds: true, description: `reaches allowed host ${options.hosts.allowed}` },
+    { command: liveCommand(options.hosts.refused), succeeds: false, description: `is refused ${options.hosts.refused}` },
+    { command: liveCommand(options.control), succeeds: false, description: `is refused the control-plane host ${options.control}` },
+    { command: piCredentialCommand(options.unset), succeeds: true, description: "does not receive pi's agent directory or credentials" },
+  ];
+}
+
+/** The prompt for the real pi CLI: one bash call per command, in order, reported verbatim. */
+export function piLivePrompt(commands: readonly { command: string }[]): string {
+  return [
+    `This is a network policy check. Use the bash tool exactly ${commands.length} times, one command per call, in this order, and do not retry or modify any command:`,
+    ...commands.map((entry, index) => `${index + 1}. ${entry.command}`),
+    "Then reply with one line saying whether each command succeeded.",
+  ].join("\n");
+}
+
+/**
+ * Reads pi's JSON-mode output: the model must have answered (its replies are not failed requests), and
+ * each asked-for bash command must have completed as required. Only the exact commands count.
+ */
+export function judgePiLiveOutput(output: string, commands: readonly { command: string; succeeds: boolean; description: string }[]): LiveVerdict {
+  const calls = new Map<string, string>();
+  const errored = new Map<string, boolean>();
+  let answered = false;
+  let modelError: string | undefined;
+  for (const line of output.split("\n")) {
+    let event: { type?: string; toolCallId?: string; toolName?: string; args?: { command?: unknown }; isError?: boolean; message?: { role?: string; stopReason?: string; errorMessage?: string } };
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event.type === "tool_execution_start" && event.toolName === "bash" && event.toolCallId && typeof event.args?.command === "string") calls.set(event.toolCallId, event.args.command);
+    if (event.type === "tool_execution_end" && event.toolCallId) errored.set(event.toolCallId, event.isError === true);
+    if (event.type === "message_end" && event.message?.role === "assistant") {
+      if (event.message.stopReason === "error" || event.message.stopReason === "aborted") modelError ??= event.message.errorMessage ?? `the response was ${event.message.stopReason}`;
+      else answered = true;
+    }
+  }
+  if (!answered) return { passed: false, problems: [`pi did not reach its model${modelError ? `: ${modelError}` : ""}`] };
+  const problems: string[] = [];
+  for (const expected of commands) {
+    const found = [...calls].find(([, command]) => command.trim() === expected.command);
+    const failed = found ? errored.get(found[0]) : undefined;
+    if (failed === undefined) problems.push(`no completed bash command: ${expected.command}`);
+    else if (failed === expected.succeeds) problems.push(`the bash command that ${expected.description} ${failed ? "failed" : "succeeded"}: ${expected.command}`);
+  }
+  return { passed: problems.length === 0, problems };
+}
+
+/** pi's arguments for the live check: JSON mode, only bash, nothing of the operator's or the project's, no session kept. */
+export function piLiveArguments(options: { provider?: string | undefined; model?: string | undefined }): string[] {
+  return [
+    "--mode", "json", "--no-approve", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session",
+    "--tools", "bash",
+    ...(options.model ? [...(options.provider ? ["--provider", options.provider] : []), "--model", options.model] : []),
+  ];
+}
+
+/**
+ * Starts the real pi CLI in the run's network namespace, exactly as the pi runner launches it (a
+ * private copy of the runner's login, its credential variables for the process only, the command
+ * environment pi's bash commands source), and judges its reply and bash calls. A login pi refreshed is
+ * synchronised back to the service's agent directory, as after a run.
+ */
+export async function runLivePiCheck(options: {
+  cli: string; scratch: string; workspace: string; base: Record<string, string>;
+  egress: NonNullable<ReturnType<typeof agentEgressFor>>; controlPlaneHosts: readonly string[]; hosts: LiveHosts;
+  /** The service's pi agent directory (the runner's configDir, else PI_CODING_AGENT_DIR, else ~/.pi/agent). */
+  serviceDirectory: string;
+  provider?: string | undefined; model?: string | undefined;
+  /** The runner's credential variables with their values, for the pi process only. */
+  credentials?: Record<string, string>; timeoutMs?: number;
+}): Promise<LiveVerdict & { output: string }> {
+  const directory = await mkdtemp(path.join(options.scratch, "live-pi-"));
+  const [artifacts, home, temporary] = ["artifacts", "home", "tmp"].map((name) => path.join(directory, name)) as [string, string, string];
+  await Promise.all([artifacts, home, temporary].map((target) => mkdir(target, { recursive: true })));
+  const credentialVariables = Object.keys(options.credentials ?? {});
+  const unset = piProcessVariables(credentialVariables);
+  const shell = options.base.SHELL;
+  if (!shell) throw new Error("the live pi check needs SHELL in its base environment");
+  const agent = await preparePiAgentDirectory({
+    home,
+    serviceDirectory: options.serviceDirectory,
+    settings: piSettings({ shell, credentialVariables, provider: options.provider, commandEnvironment: piCommandEnvironmentFile(artifacts) }),
+    mcp: { autoEnableCodemode: false, mcpServers: {} },
+  });
+  try {
+    const environment = { ...options.base, ...options.credentials, HOME: home, TMPDIR: temporary, PI_CODING_AGENT_DIR: agent.directory, PI_SKIP_VERSION_CHECK: "1" };
+    const installation = piInstallation(options.cli, environment);
+    const launched = installation.interpreter ? [installation.interpreter.path, ...installation.interpreter.args, installation.executable] : [installation.executable];
+    const [control] = options.controlPlaneHosts;
+    if (!control) throw new Error("the live pi check needs a control-plane host");
+    const commands = piLiveCommands({ hosts: options.hosts, control, unset });
+    const launch = await piLaunch({
+      environment,
+      artifactsDirectory: artifacts,
+      egress: options.egress,
+      controlPlaneHosts: options.controlPlaneHosts,
+      filesystem: {
+        command: launched[0]!, env: environment, workspace: options.workspace, artifacts, home, scratch: temporary,
+        runtime: [piMountRoot(installation), ...(installation.interpreter ? [installation.interpreter.path] : [])],
+      },
+      argv: [...launched, ...piLiveArguments(options)],
+      unset,
+    });
+    try {
+      const child = Bun.spawn(launch.argv, { cwd: options.workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+      child.stdin.write(piLivePrompt(commands));
+      void child.stdin.end();
+      const timer = setTimeout(() => child.kill(), options.timeoutMs ?? LIVE_TIMEOUT_MS);
+      const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]).finally(() => clearTimeout(timer));
+      const verdict = judgePiLiveOutput(out, commands);
+      return { ...verdict, output: verdict.passed ? out : `${verdict.problems.join("\n")}\n${err || out}` };
+    } finally {
+      await launch.network.close();
+    }
+  } finally {
+    // A refreshed login replaces the service's, so the next run does not start from a revoked one.
+    await syncPiAgentDirectory({ home, serviceDirectory: options.serviceDirectory });
+  }
+}
+
 /**
  * Loads the configuration for the check with the shipped plugins, which complete the runner settings
  * it reads; with the Conveyor home, `!include builtin:` entrypoints resolve.
@@ -344,7 +550,7 @@ async function main(): Promise<number> {
   const repositoryId = args[0];
   const configDirectory = args[args.indexOf("--config") + 1];
   if (!repositoryId || args.indexOf("--config") < 0 || !configDirectory) {
-    console.error("usage: bun scripts/check-agent-egress.ts <repository-id> --config <conveyor.yaml> [--home <conveyor-home>] [--runner <claude-code-runner-id> [--live]]");
+    console.error("usage: bun scripts/check-agent-egress.ts <repository-id> --config <conveyor.yaml> [--home <conveyor-home>] [--runner <runner-id> [--live]]");
     return 2;
   }
   const live = args.includes("--live");
@@ -352,10 +558,10 @@ async function main(): Promise<number> {
   const homeIndex = args.indexOf("--home");
   const home = homeIndex >= 0 ? args[homeIndex + 1] : undefined;
   if (homeIndex >= 0 && !home) throw new Error("--home needs the Conveyor home directory");
-  if (live && !runnerId) throw new Error("--live needs --runner <claude-code-runner-id>");
+  if (live && !runnerId) throw new Error("--live needs --runner <runner-id> (a claude-code or pi runner)");
   const config = await loadCheckConfig(configDirectory, home);
   const runner = runnerId ? config.runners[runnerId] : undefined;
-  if (runnerId && runner?.type !== "claude-code") throw new Error(`--runner ${runnerId} must name a configured claude-code runner`);
+  if (runnerId && runner?.type !== "claude-code" && runner?.type !== "pi") throw new Error(`--runner ${runnerId} must name a configured claude-code or pi runner`);
   const repository = config.repositories[repositoryId];
   if (!repository) throw new Error(`unknown repository: ${repositoryId}`);
   if (!repository.agentEgress) {
@@ -417,6 +623,34 @@ async function main(): Promise<number> {
         const result = await runLiveClaudeCheck({ cli: runner.command, scratch, workspace: work, base, egress, hosts, credentials, configDir: runner.configDir, serviceHome: process.env.HOME });
         if (!result.passed) failures += 1;
         console.log(`${result.passed ? "PASS" : "FAIL"} live claude-code: Bash reaches ${hosts.allowed} and is refused ${hosts.refused}`);
+        if (!result.passed) console.log(result.output.split("\n").slice(-15).join("\n"));
+      }
+    }
+    if (runner?.type === "pi") {
+      const settings = piRunnerSchema.parse(runner);
+      const egress = agentEgressFor(config, repositoryId, settings)!;
+      const controlPlaneHosts = egress.controlPlaneHosts ?? piControlPlaneHosts(settings);
+      if (controlPlaneHosts.length === 0) throw new Error(`pi runner ${runnerId} names no controlPlaneHosts and pi has no default hosts for its provider`);
+      console.log(`pi runner ${runnerId}: control-plane hosts ${controlPlaneHosts.join(", ")}`);
+      for (const check of piChecks({ httpsHosts: repository.agentEgress.httpsHosts, controlPlaneHosts, unset: piProcessVariables(settings.credentialVariables) })) {
+        const result = await runPiCheck({ check, scratch, workspace: work, base, egress, controlPlaneHosts, credentialVariables: settings.credentialVariables });
+        if (!result.passed) failures += 1;
+        console.log(`${result.passed ? "PASS" : "FAIL"} ${check.name}${result.passed ? "" : ` (exit ${result.exitCode})`}`);
+        if (!result.passed) console.log(result.output.split("\n").slice(-15).join("\n"));
+      }
+      const note = liveModeNote(live, "pi");
+      if (note) {
+        console.log(note);
+      } else {
+        const hosts = liveHosts({ httpsHosts: repository.agentEgress.httpsHosts, controlPlaneHosts });
+        if (!hosts) throw new Error("--live needs an httpsHosts entry that is not a control-plane host");
+        // The model of the first agent on this runner that names one; otherwise pi's default for the provider.
+        const model = Object.values(config.agents).find((agent) => agent.runner === runnerId && agent.model)?.model;
+        const credentials = Object.fromEntries(settings.credentialVariables.flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : [])));
+        const serviceDirectory = resolveFilesystemPath(settings.configDir ?? servicePiAgentDirectory());
+        const result = await runLivePiCheck({ cli: settings.command, scratch, workspace: work, base, egress, controlPlaneHosts, hosts, serviceDirectory, provider: settings.provider, model, credentials });
+        if (!result.passed) failures += 1;
+        console.log(`${result.passed ? "PASS" : "FAIL"} live pi: its model answers, bash reaches ${hosts.allowed} and is refused ${hosts.refused} and the control plane, without pi's credentials`);
         if (!result.passed) console.log(result.output.split("\n").slice(-15).join("\n"));
       }
     }
