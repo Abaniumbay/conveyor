@@ -324,9 +324,9 @@ const agentMcpServerSchema = z
   })
   .strict();
 
-const CODEX_CONFIG_KEY = /^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/;
-/** Codex settings Conveyor derives from the agent's other fields; codexConfig must not override them. */
-const CONVEYOR_CODEX_KEYS = /^(mcp_servers|sandbox_mode|sandbox_workspace_write|approvals_reviewer|model_reasoning_effort|web_search)(\.|$)/;
+/** An agent's settings for its harness: the runner's harness plugin defines and validates the keys. */
+export const harnessSettingsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
+export type HarnessSettings = z.infer<typeof harnessSettingsSchema>;
 const MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
 
 const agentSchema = z
@@ -344,11 +344,16 @@ const agentSchema = z
     writableRoots: z.array(homePathSchema).default([]),
     /** Environment variables for the agent's run, such as toolchain cache locations; `~/` values are expanded. */
     env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), homeExpandedSchema).default({}),
-    /** `false` takes the shell away: a Claude Code agent loses Bash; a Codex agent cannot run without one. */
+    /** `false` takes the shell away, for a harness that can run without one (the loader refuses it otherwise). */
     shell: z.boolean().default(true),
-    /** Extra Codex settings, passed as `-c key=value` (Codex agents only), e.g. model_auto_compact_token_limit. */
-    codexConfig: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
-    /** MCP servers the agent may use beside Conveyor's own (Codex agents only), keyed by server name. */
+    /**
+     * Settings for the runner's harness, validated by its plugin when the configuration loads; a harness
+     * that takes none refuses any. Absent: none.
+     */
+    harnessSettings: harnessSettingsSchema.optional(),
+    /** Deprecated name of `harnessSettings`, still accepted (with a warning) for Codex agents. */
+    codexConfig: harnessSettingsSchema.optional(),
+    /** MCP servers the agent may use beside Conveyor's own, keyed by server name. */
     mcpServers: z.record(z.string(), agentMcpServerSchema).default({}),
     /** The exact grant: canonical camelCase tool task names. Defaults to every grantable tool. */
     tasks: z.array(z.string()).optional(),
@@ -357,12 +362,8 @@ const agentSchema = z
   })
   .strict()
   .superRefine((agent, context) => {
-    for (const key of Object.keys(agent.codexConfig)) {
-      if (!CODEX_CONFIG_KEY.test(key)) {
-        context.addIssue({ code: "custom", path: ["codexConfig", key], message: "must be a dotted Codex config key" });
-      } else if (CONVEYOR_CODEX_KEYS.test(key)) {
-        context.addIssue({ code: "custom", path: ["codexConfig", key], message: "is set by Conveyor from the agent's other settings" });
-      }
+    if (agent.harnessSettings && agent.codexConfig) {
+      context.addIssue({ code: "custom", path: ["codexConfig"], message: 'is the deprecated name of harnessSettings: set only "harnessSettings"' });
     }
     for (const name of Object.keys(agent.mcpServers)) {
       if (name === "conveyor") {
@@ -392,8 +393,9 @@ const agentSchema = z
       granted.add(name);
     });
   })
-  .transform(({ tasks, tools, ...agent }) => ({
+  .transform(({ tasks, tools, harnessSettings, codexConfig, ...agent }) => ({
     ...agent,
+    harnessSettings: harnessSettings ?? codexConfig ?? {},
     tasks: tasks ?? (tools ? [...new Set(tools.map(canonicalToolName))] : agentGrantableTools()),
   }));
 

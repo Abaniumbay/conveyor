@@ -132,10 +132,11 @@ authentication, bubblewrap namespaces, every harness and script interpreter the 
 uses (so a custom agent configuration changes which harness executables it checks; it does not
 validate Codex or Claude Code sign-in), each repository checkout, the dashboard account and the
 listen port.
-For configured Codex runs, repositories with `agentEgress` report network and PID namespace support
-and the filesystem mounts required by Conveyor's bubblewrap egress wrapper. Without `agentEgress`, Codex
-needs no namespace of its own, so doctor reports no Codex sandbox check for it. A denied capability names
-the requirement and suggests a host permission fix.
+When any agent runs on a harness (Codex and Claude Code both run in Conveyor's bubblewrap sandbox),
+repositories with `agentEgress` report network and PID namespace support (`Agent sandbox namespaces`)
+and the filesystem mounts required by Conveyor's bubblewrap egress wrapper (`Agent sandbox mounts`).
+Without `agentEgress`, an agent needs no network namespace of its own, so doctor reports neither check
+for it. A denied capability names the requirement and suggests a host permission fix.
 It also starts each MCP server configured for an agent (`mcpServers`, such as a code index) once,
 inside that agent's sandbox, and sends it `initialize`. A server that exits or does not answer in its
 `startupTimeoutSec` (10 seconds by default) is a failing check naming the agent and the server, with the

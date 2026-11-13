@@ -127,6 +127,7 @@ config agents
 config agents.<name>.codexConfig
 config agents.<name>.effort
 config agents.<name>.env
+config agents.<name>.harnessSettings
 config agents.<name>.instructions
 config agents.<name>.mcpServers
 config agents.<name>.mcpServers.<name>.args

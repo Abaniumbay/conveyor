@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { resolveBash } from "../../../src/isolation/environment";
 import { runClaudeCode } from "../../../src/plugins/claude-code/claude-code";
-import { CLAUDE_CONTROL_PLANE_HOSTS, writeClaudeShellPrefix } from "../../../src/isolation/run-network";
+import { CLAUDE_CONTROL_PLANE_HOSTS, writeClaudeShellPrefix } from "../../../src/plugins/claude-code/launch";
 import { bwrapUnavailableReason } from "../../support/bwrap";
 import { shortTemporaryDirectory } from "../../support/short-temporary-directory";
 

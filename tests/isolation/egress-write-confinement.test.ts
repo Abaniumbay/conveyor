@@ -3,7 +3,6 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { agentFilesystemPlan, sandboxCommand } from "../../src/isolation/sandbox";
-import { codexLaunch } from "../../src/isolation/run-network";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
@@ -147,42 +146,5 @@ describeSandbox("egress wrapper in a real bubblewrap run", () => {
     expect(child.stderr.toString()).toBe("");
     expect(JSON.parse(child.stdout.toString())).toEqual({ hostFile: false, root: false, worktree: true, extraRoot: true, scratch: true });
     expect(await readFile(readOnlyFile, "utf8")).toBe("original");
-  });
-});
-
-describe("egress wrapper that cannot be established", () => {
-  async function launch(files: Files, bin: string) {
-    return codexLaunch({
-      command: process.execPath,
-      environment: { PATH: bin, HOME: files.home, TMPDIR: files.scratch },
-      artifactsDirectory: files.artifacts,
-      egress: { httpsHosts: [] },
-      filesystem: {
-        command: process.execPath,
-        env: { PATH: bin },
-        workspace: files.workspace,
-        artifacts: files.artifacts,
-        home: files.home,
-        scratch: files.scratch,
-      },
-      buildArguments: () => ["--should-not-run"],
-    });
-  }
-
-  test("fails with an actionable error when bubblewrap is not installed", async () => {
-    const files = await fixture();
-    const empty = path.join(files.root, "empty-bin");
-    await mkdir(empty);
-    await expect(launch(files, empty)).rejects.toThrow("requires bubblewrap on PATH");
-  });
-
-  test("fails before the agent command starts when bubblewrap cannot create the namespace", async () => {
-    const files = await fixture();
-    const bin = path.join(files.root, "bin");
-    const started = path.join(files.root, "started");
-    await mkdir(bin);
-    await writeFile(path.join(bin, "bwrap"), `#!/bin/sh\necho "bwrap: No permissions to create new namespace" >&2\ntouch ${started}\nexit 1\n`);
-    await chmod(path.join(bin, "bwrap"), 0o755);
-    await expect(launch(files, bin)).rejects.toThrow(/Cannot establish the agent filesystem wrapper.*No permissions to create new namespace.*conveyor doctor/s);
   });
 });

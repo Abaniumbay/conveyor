@@ -25,6 +25,7 @@ const contextSchema = z.object({
   sourceGuidance: z.string(),
   control: z.object({ url: z.string().url(), token: z.string().min(1) }),
   allowedTools: z.array(z.string()),
+  harnessToolGuidance: z.array(z.string()).default([]),
 });
 
 export async function loadRunMcpContext(filename: string): Promise<RunMcpContext> {

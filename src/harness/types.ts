@@ -7,6 +7,7 @@ import type { CheckResult } from "../core/pipeline";
 import type { HarnessCapabilities, HarnessResumeInput } from "../tasks/context";
 import type { RunEnvelope } from "../runner/result";
 import type { EgressInput } from "../isolation/run-network";
+import type { ToolNameGuidance } from "../mcp/guidance";
 import type { QuotaWindows } from "../usage/quota";
 
 type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -47,7 +48,7 @@ export interface HarnessRunInput {
   toolchainPaths?: string[];
   /** Persistent item scratch, or omitted for disposable runner-owned scratch. */
   temporaryDirectory?: string;
-  /** The agent's extra harness settings (only for a harness whose profile takes them). */
+  /** The agent's `harnessSettings` (only for a harness whose plugin takes them). */
   config?: Record<string, string | number | boolean>;
   /** MCP servers beside Conveyor's own. */
   mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number; enabledTools?: string[] }>;
@@ -142,8 +143,6 @@ export interface HarnessProfile {
   readonly sandbox: "runner" | "access";
   /** Whether an agent may withhold the shell (`shell: false`); a harness that reaches files only through its shell never gets the field. */
   readonly optionalShell: boolean;
-  /** Whether the harness takes the agent's extra settings (`codexConfig`). */
-  readonly extraSettings: boolean;
   /** Whether it can run a confined agent (`access: confined`: only a fresh scratch filesystem). */
   readonly confinedAccess: boolean;
   /**
@@ -151,6 +150,11 @@ export interface HarnessProfile {
    * its own API calls, and its commands cannot yet be cut off from it.
    */
   readonly workspaceWriteNeedsNetwork: boolean;
+  /**
+   * Lines the agent's tool guidance adds about how this harness shows Conveyor's tools to the agent
+   * (such as the names they are called by), given the granted canonical names; absent: none.
+   */
+  readonly toolNameGuidance?: ToolNameGuidance;
 }
 
 /** What a harness's quota reader may read about the runner it reports for. */

@@ -12,7 +12,8 @@ import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
 import { prepareAgentEnvironment } from "../../isolation/environment";
-import { claudeLaunch, type RunNetwork } from "../../isolation/run-network";
+import type { RunNetwork } from "../../isolation/run-network";
+import { claudeLaunch } from "./launch";
 import { agentFilesystemPlan, agentLaunchCommand, verifyAgentWrapper, type AgentFilesystemOptions } from "../../isolation/sandbox";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../../isolation/scratch";
 import { log } from "../../log/logger";

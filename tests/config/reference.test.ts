@@ -233,7 +233,7 @@ describe("reference configuration", () => {
 
   test("Kaveh compacts long sessions, and Kaveh and Darya get a code index limited to lookups", async () => {
     const config = await loadReference();
-    expect(config.agents.kaveh!.codexConfig).toEqual({ model_auto_compact_token_limit: 80000 });
+    expect(config.agents.kaveh!.harnessSettings).toEqual({ model_auto_compact_token_limit: 80000 });
     const editingOrShell = /create|replace|insert|delete|rename|write|edit|execute|shell|onboarding|activate/;
     for (const agent of ["kaveh", "darya"]) {
       const serena = config.agents[agent]!.mcpServers.serena!;
@@ -244,14 +244,14 @@ describe("reference configuration", () => {
     }
   });
 
-  test("a Claude Code agent with codexConfig is refused", async () => {
+  test("a Claude Code agent with harnessSettings is refused", async () => {
     const { entrypoint, directory, base } = await referenceConfigEntrypoint();
     bases.push(base);
     const agentsFile = path.join(directory, "defaults/agents.yaml");
     const agents = parse(await readFile(agentsFile, "utf8"), { maxAliasCount: -1 }) as Record<string, Record<string, unknown>>;
-    agents.shaghayegh!.codexConfig = { model_auto_compact_token_limit: 1 };
+    agents.shaghayegh!.harnessSettings = { model_auto_compact_token_limit: 1 };
     await writeFile(agentsFile, stringify(agents));
-    await expect(loadConfig(entrypoint, undefined, { plugins: PLUGINS })).rejects.toThrow("defaults/agents.yaml: shaghayegh runs on Claude Code, which does not take codexConfig");
+    await expect(loadConfig(entrypoint, undefined, { plugins: PLUGINS })).rejects.toThrow("defaults/agents.yaml: shaghayegh runs on Claude Code, which does not take harnessSettings");
   });
 
   test("implementation falls back from Kaveh on Codex to Jamshid on Claude Code (Haiku), with the same tools and worktree access", async () => {

@@ -8,6 +8,7 @@ import { Steering } from "../../src/app/steering";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness, SteeringRunInput } from "../../src/harness/types";
+import { claudeCodeProfile } from "../../src/plugins/claude-code/profile";
 import { codexProfile } from "../../src/plugins/codex/profile";
 import { githubPlugins } from "../support/plugins";
 import { dashboardViews } from "../support/dashboard";
@@ -107,7 +108,7 @@ describe("ConveyorService steering", () => {
     await service.close();
   });
 
-  test("runs the steering agent on its runner's harness, and fails the run clearly when the harness cannot steer", async () => {
+  test("runs the steering agent on its runner's harness, and refuses to start when the harness cannot steer, naming it", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-steering-harness-"));
     temporaryDirectories.push(root);
     const instructions = path.join(root, "operator.md");
@@ -125,11 +126,13 @@ describe("ConveyorService steering", () => {
     const steering = async (harness: Harness) => {
       const store = await ConveyorStore.open(path.join(root, `${steered.length}-${harness.steer ? "steer" : "none"}.sqlite`));
       const service = new ConveyorService(config, store, {} as never, { harnesses: { codex: harness } });
-      const runId = await service.startSteering("Check the board");
-      await service.waitForSteeringRun(runId);
-      const outcome = { run: dashboardViews(service).getSteeringRun(runId), events: store.listRunEvents(runId).map((event) => [event.type, (event.payload as { text?: string }).text]) };
-      await service.close();
-      return outcome;
+      try {
+        const runId = await service.startSteering("Check the board");
+        await service.waitForSteeringRun(runId);
+        return { run: dashboardViews(service).getSteeringRun(runId), events: store.listRunEvents(runId).map((event) => [event.type, (event.payload as { text?: string }).text]) };
+      } finally {
+        await service.close();
+      }
     };
 
     const capable = await steering({
@@ -143,10 +146,11 @@ describe("ConveyorService steering", () => {
     expect(steered).toHaveLength(1);
     expect(steered[0]).toMatchObject({ command: "codex", sandbox: "read-only", automaticApprovals: true });
     expect(capable.events.at(-1)).toEqual(["report", "The board is healthy."]);
+    expect(steered[0]!.prompt).toContain("agent.reportProgress → tools.mcp__conveyor__agent_reportProgress");
 
-    const incapable = await steering(base);
-    expect(incapable.run).toMatchObject({ status: "failed" });
-    expect(incapable.events.at(-1)).toEqual(["error", "No harness can run the steering agent for runner type codex"]);
+    await expect(steering({ ...base, profile: { ...codexProfile, name: "Other" } })).rejects.toThrow(
+      "The steering agent must use a runner whose harness can run the Operator; Other cannot",
+    );
   });
 
   test("runs a configured periodic Operator only for reconciled stopped board items", async () => {
@@ -700,8 +704,8 @@ describe("ConveyorService steering", () => {
         expect(input.sandbox).toBe("read-only");
         expect(input.filesystem).toBe("scratch");
         expect(input.prompt).toContain("Inspect first, before mutation.");
-        expect(input.prompt).toContain("operator.getBoard → tools.mcp__conveyor__operator_getBoard");
-        expect(input.prompt).not.toContain("tools.mcp__conveyor__change_merge");
+        expect(input.prompt).toContain("This run is granted: operator.getBoard, operator.findItem, operator.getItemHistory, operator.retryItem, operator.moveBacklogItem.");
+        expect(input.prompt).not.toContain("change.merge");
         expect(input.prompt).toContain("authenticated owner’s explicit steering and maintenance request");
         expect(input.prompt).toContain("must not silently bypass or replace the normal issue pipeline");
         const contextIndex = input.mcp!.args.indexOf("--context") + 1;
@@ -816,7 +820,12 @@ describe("Steering", () => {
 
   const SUMMARY = { summary: "Done", sessionId: "session", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, durationMs: 1, exitCode: 0, stderr: "" };
 
-  async function setup(options: { periodic?: boolean; runSteering?: (input: SteeringRunInput, steering: () => Steering) => Promise<typeof SUMMARY> } = {}) {
+  async function setup(options: {
+    periodic?: boolean;
+    runSteering?: (input: SteeringRunInput, steering: () => Steering) => Promise<typeof SUMMARY>;
+    /** The runner's harness, run instead of a given Operator runner. */
+    harness?: Harness;
+  } = {}) {
     const world = await itemWorld((root) => ({
       web: { steering: { agent: "operator", workspace: root, ...(options.periodic ? { periodic: { interval: "1h" } } : {}) } },
       runners: { codex: { type: "codex" } },
@@ -835,8 +844,8 @@ describe("Steering", () => {
       config: world.config,
       store: world.store,
       source: world.items.client,
-      harnesses: {},
-      runSteering: (input) => options.runSteering ? options.runSteering(input, () => steering) : Promise.resolve(SUMMARY),
+      harnesses: options.harness ? { codex: options.harness } : {},
+      runSteering: options.harness ? undefined : (input) => options.runSteering ? options.runSteering(input, () => steering) : Promise.resolve(SUMMARY),
       stopSummaryTimeoutMs: 1_000,
       lease: async (_runId, _workspace, allowedTools) => {
         calls.leases.push([...allowedTools]);
@@ -918,6 +927,15 @@ describe("Steering", () => {
       expect.objectContaining({ issueId: "issue-1", outcome: "unresolved", reason: "Scheduled check succeeded before inspecting this target." }),
     ]);
     expect(steering.scheduledCheck(runId!)).toBeUndefined();
+  });
+
+  test("a scheduled check on a runner whose harness cannot run the Operator fails before it starts, naming the harness", async () => {
+    const harness: Harness = { id: "claude-code", capabilities: { sessionResume: true }, profile: claudeCodeProfile, run: async () => { throw new Error("not an Operator run"); } };
+    const { world, steering } = await setup({ periodic: true, harness });
+    world.items.add(1, ["conveyor", "conveyor:implementation", "conveyor:blocked"]);
+    world.seed(1, { stage: "implementation", state: "blocked" });
+    await expect(steering.runScheduledCheck()).rejects.toThrow("The steering agent must use a runner whose harness can run the Operator; Claude Code cannot");
+    expect(world.store.listRunsByKind("steering")).toEqual([]);
   });
 
   test("a scheduled check reads only its targets' history and records the outcome it reports", async () => {

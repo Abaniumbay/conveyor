@@ -26,6 +26,8 @@ export interface RunMcpContext {
   sourceGuidance: string;
   control: { url: string; token: string };
   allowedTools: string[];
+  /** The agent's harness's own lines for the tool guidance (see HarnessProfile.toolNameGuidance). */
+  harnessToolGuidance?: string[];
 }
 
 export interface ControlClient {
@@ -103,7 +105,7 @@ const errorResult = (message: string) => ({ isError: true as const, content: [{ 
 export function createConveyorMcpServer(context: RunMcpContext, control: ControlClient): Server {
   const server = new Server(
     { name: "conveyor", version: BUILD.version },
-    { capabilities: { tools: {} }, instructions: conveyorToolGuidance(context.allowedTools) },
+    { capabilities: { tools: {} }, instructions: conveyorToolGuidance(context.allowedTools, () => context.harnessToolGuidance ?? []) },
   );
 
   const tools = new Map(createTaskRegistry().list("tool").map((task) => [task.name, task]));
