@@ -110,18 +110,18 @@ describe("pi arguments", () => {
   });
 
   test("settings use Conveyor's shell, drop the agent directory and credentials from every command and never trust a project", () => {
-    expect(piSettings({ shell: "/usr/bin/bash", credentialVariables: ["EXAMPLE_API_KEY"], provider: "anthropic" })).toEqual({
+    expect(piSettings({ shell: "/usr/bin/bash", programVariables: ["EXAMPLE_API_KEY"], provider: "anthropic" })).toEqual({
       shellPath: "/usr/bin/bash",
       shellCommandPrefix: "unset PI_CODING_AGENT_DIR EXAMPLE_API_KEY",
       defaultProjectTrust: "never",
       enableInstallTelemetry: false,
       defaultProvider: "anthropic",
     });
-    expect(piSettings({ shell: "/bin/bash", credentialVariables: [] })).not.toHaveProperty("defaultProvider");
+    expect(piSettings({ shell: "/bin/bash", programVariables: [] })).not.toHaveProperty("defaultProvider");
   });
 
   test("under agentEgress every command first sources the run's command environment, and a missing one stops it", () => {
-    expect(piSettings({ shell: "/usr/bin/bash", credentialVariables: ["EXAMPLE_API_KEY"], commandEnvironment: "/a/run/net/command-environment" })).toMatchObject({
+    expect(piSettings({ shell: "/usr/bin/bash", programVariables: ["EXAMPLE_API_KEY"], commandEnvironment: "/a/run/net/command-environment" })).toMatchObject({
       shellPath: "/usr/bin/bash",
       shellCommandPrefix: ". '/a/run/net/command-environment' || exit 126",
     });
@@ -177,19 +177,30 @@ describe("pi runner", () => {
     await writeFile(path.join(f.service, "mcp.json"), '{"mcpServers":{"operator":{"command":"x"}}}');
     await writeFile(f.events, piEvents("sess-1", [assistant(result())]));
 
-    await f.run({ runner: { type: "pi", command: "pi", credentialVariables: ["EXAMPLE_API_KEY"] }, env: { EXAMPLE_API_KEY: "secret", OTHER_API_KEY: "hidden" } });
+    // The harness level's EXAMPLE_API_KEY is pi's own; the deprecated credentialVariables still bring the service's LEGACY_API_KEY.
+    process.env.LEGACY_API_KEY = "legacy";
+    try {
+      await f.run({
+        runner: { type: "pi", command: "pi", credentialVariables: ["LEGACY_API_KEY"] },
+        env: { EXAMPLE_API_KEY: "secret", LISTED_TOKEN: "listed" }, programVariables: ["EXAMPLE_API_KEY"],
+      });
+    } finally {
+      delete process.env.LEGACY_API_KEY;
+    }
 
     const seen = await f.captured();
     expect(seen.agentDir).toBe(path.join(f.artifacts("run-1"), "home", ".pi", "agent"));
     expect(seen.env.PI_CODING_AGENT_DIR).toBe(seen.agentDir);
     expect(seen.auth).toBe('{"anthropic":{"type":"api_key","key":"k"}}');
     expect(seen.models).toBe('{"providers":{}}');
-    expect(seen.settings).toMatchObject({ shellCommandPrefix: "unset PI_CODING_AGENT_DIR EXAMPLE_API_KEY", defaultProjectTrust: "never" });
+    expect(seen.settings).toMatchObject({ shellCommandPrefix: "unset PI_CODING_AGENT_DIR EXAMPLE_API_KEY LEGACY_API_KEY", defaultProjectTrust: "never" });
     expect(seen.settings).not.toHaveProperty("defaultModel");
     expect(path.isAbsolute(seen.settings.shellPath as string)).toBe(true);
     expect(Object.keys(seen.mcp.mcpServers as object)).toEqual(["conveyor"]);
     expect(seen.env.EXAMPLE_API_KEY).toBe("secret");
-    expect(seen.env.OTHER_API_KEY).toBeUndefined();
+    expect(seen.env.LEGACY_API_KEY).toBe("legacy");
+    // Conveyor filters no name: what the run lists reaches it.
+    expect(seen.env.LISTED_TOKEN).toBe("listed");
     expect(Object.values(seen.env)).not.toContain(f.service);
     expect(seen.args[seen.args.indexOf("--tools") + 1]).toBe("read,grep,find,ls,bash,mcp__conveyor__*");
   });

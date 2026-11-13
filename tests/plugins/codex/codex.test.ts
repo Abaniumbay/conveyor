@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -97,7 +98,7 @@ describeSandbox("runCodex", () => {
         command: "bun",
         args: ["run", "/opt/conveyor/mcp.ts", "--context", "/tmp/context.json"],
       },
-      env: { CAPTURE: files.capture },
+      env: { ...defaultRunVariables(), CAPTURE: files.capture },
       onEvent: (event) => events.push(event),
     });
 
@@ -144,7 +145,7 @@ describeSandbox("runCodex", () => {
       command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
       prompt: "The answer is 42", model: "gpt-test", effort: "high" as const,
       sandbox: "workspace-write" as const, automaticApprovals: true,
-      mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
+      mcp: { command: "bun", args: ["mcp.ts"] }, env: { ...defaultRunVariables(), CAPTURE: files.capture },
     };
     const capture = async () => JSON.parse(await readFile(files.capture, "utf8")) as { args: string[]; prompt: string };
 
@@ -179,7 +180,7 @@ describeSandbox("runCodex", () => {
     const base = {
       command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts, prompt: "p",
       sandbox: "workspace-write" as const, automaticApprovals: true,
-      mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
+      mcp: { command: "bun", args: ["mcp.ts"] }, env: { ...defaultRunVariables(), CAPTURE: files.capture },
     };
     const args = async () => (JSON.parse(await readFile(files.capture, "utf8")) as { args: string[] }).args;
     // CI puts disposable fixtures in /tmp, which is deliberately not a permitted extra root.
@@ -235,7 +236,7 @@ describeSandbox("runCodex", () => {
     const input = {
       command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
       prompt: "p", sandbox: "workspace-write" as const, automaticApprovals: true,
-      mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
+      mcp: { command: "bun", args: ["mcp.ts"] }, env: { ...defaultRunVariables(), CAPTURE: files.capture },
       temporaryDirectory: scratch,
     };
 
@@ -265,7 +266,7 @@ describeSandbox("runCodex", () => {
     const base = {
       command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts, prompt: "p",
       sandbox: "workspace-write" as const, automaticApprovals: true,
-      mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
+      mcp: { command: "bun", args: ["mcp.ts"] }, env: { ...defaultRunVariables(), CAPTURE: files.capture },
     };
     const args = async () => (JSON.parse(await readFile(files.capture, "utf8")) as { args: string[] }).args;
     const extensions = {

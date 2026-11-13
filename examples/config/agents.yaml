@@ -60,15 +60,16 @@ kaveh:
                   ~/.dotnet, ~/.pub-cache, ~/.gradle]
   # A run's HOME is its own empty directory, so toolchains are pointed at the shared caches above
   # instead of downloading everything again on every run.
-  env:
-    NUGET_PACKAGES: ~/.nuget/packages
-    PUB_CACHE: ~/.pub-cache
-    GRADLE_USER_HOME: ~/.gradle
-    npm_config_cache: ~/.npm
-    BUN_INSTALL_CACHE_DIR: ~/.bun/install/cache
-    XDG_CACHE_HOME: ~/.cache
-  # Long sessions resend their whole context every turn; compact it before it grows expensive.
-  harnessSettings: { model_auto_compact_token_limit: 80000 }
+  settings:
+    environment:
+      NUGET_PACKAGES: ~/.nuget/packages
+      PUB_CACHE: ~/.pub-cache
+      GRADLE_USER_HOME: ~/.gradle
+      npm_config_cache: ~/.npm
+      BUN_INSTALL_CACHE_DIR: ~/.bun/install/cache
+      XDG_CACHE_HOME: ~/.cache
+    # Long sessions resend their whole context every turn; compact it before it grows expensive.
+    model_auto_compact_token_limit: 80000
   mcpServers: { serena: *serena }        # the same lookup-only code index as Darya
   tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
           agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
@@ -88,13 +89,14 @@ jamshid:                                 # implements when Kaveh cannot run; Cla
                   ~/.dotnet, ~/.pub-cache, ~/.gradle]
   # A run's HOME is its own empty directory, so toolchains are pointed at the shared caches above
   # instead of downloading everything again on every run.
-  env:
-    NUGET_PACKAGES: ~/.nuget/packages
-    PUB_CACHE: ~/.pub-cache
-    GRADLE_USER_HOME: ~/.gradle
-    npm_config_cache: ~/.npm
-    BUN_INSTALL_CACHE_DIR: ~/.bun/install/cache
-    XDG_CACHE_HOME: ~/.cache
+  settings:
+    environment:
+      NUGET_PACKAGES: ~/.nuget/packages
+      PUB_CACHE: ~/.pub-cache
+      GRADLE_USER_HOME: ~/.gradle
+      npm_config_cache: ~/.npm
+      BUN_INSTALL_CACHE_DIR: ~/.bun/install/cache
+      XDG_CACHE_HOME: ~/.cache
   mcpServers:
     serena:
       command: serena

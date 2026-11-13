@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import { claudeArguments, claudeSchema, clearClaudeCodeHome, runClaudeCode, type ClaudeCodeRunInput } from "../../../src/plugins/claude-code/claude-code";
 import { bwrapUnavailableReason } from "../../support/bwrap";
 
@@ -38,7 +39,7 @@ exec "$@"
     root, workspace, artifactsDirectory, command,
     run: (env: Record<string, string> = {}, options: Partial<ClaudeCodeRunInput> = {}) => runClaudeCode({
       ...base, ...options, command, workspace, artifactsDirectory,
-      env: { CLAUDE_CONFIG_DIR: path.join(root, "config"), PATH: `${bin}:${process.env.PATH}`, ...env },
+      env: { ...defaultRunVariables(), CLAUDE_CONFIG_DIR: path.join(root, "config"), PATH: `${bin}:${process.env.PATH}`, ...env },
     }),
   };
 }
@@ -350,7 +351,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-9
     await chmod(fake, 0o755);
     const result = await runClaudeCode({
       ...base, command: fake, workspace, artifactsDirectory: path.join(root, "artifacts", "run-1"),
-      env: { CLAUDE_CONFIG_DIR: path.join(root, "config") },
+      env: { ...defaultRunVariables(), CLAUDE_CONFIG_DIR: path.join(root, "config") },
     });
     expect(result.stageResult).toMatchObject({ outcome: "success", status: "done", summary: "Reviewed" });
     expect(result.sessionId).toBe("sess-9");
@@ -375,7 +376,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","us
     await chmod(fake, 0o755);
     const result = await runClaudeCode({
       ...base, sandbox: "workspace-write", network: true, command: fake, workspace, artifactsDirectory: path.join(root, "artifacts", "run-2"),
-      env: { CLAUDE_CONFIG_DIR: path.join(root, "config") },
+      env: { ...defaultRunVariables(), CLAUDE_CONFIG_DIR: path.join(root, "config") },
     });
     expect(result.stageResult).toMatchObject({ status: "done" });
     expect(await readFile(path.join(workspace, "file.txt"), "utf8")).toBe("changed\n");
@@ -399,7 +400,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","us
 
     const result = await runClaudeCode({
       ...base, command: fake, workspace, artifactsDirectory: path.join(root, "artifacts", "run-1"), temporaryDirectory: scratch,
-      env: { CLAUDE_CONFIG_DIR: path.join(root, "config") },
+      env: { ...defaultRunVariables(), CLAUDE_CONFIG_DIR: path.join(root, "config") },
     });
 
     expect(result.stageResult).toMatchObject({ outcome: "success", status: "done" });
@@ -429,7 +430,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","us
       workspace: path.join(link, "workspace"),
       artifactsDirectory: path.join(link, "artifacts", "run-1"),
       temporaryDirectory: path.join(link, "scratch"),
-      env: { CLAUDE_CONFIG_DIR: path.join(link, "config") },
+      env: { ...defaultRunVariables(), CLAUDE_CONFIG_DIR: path.join(link, "config") },
     });
 
     expect(result.stageResult).toMatchObject({ outcome: "success", status: "done" });

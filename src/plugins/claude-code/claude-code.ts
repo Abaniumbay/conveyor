@@ -13,7 +13,7 @@ import path from "node:path";
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
 import { prepareAgentEnvironment } from "../../isolation/environment";
 import type { RunNetwork } from "../../isolation/run-network";
-import { claudeLaunch } from "./launch";
+import { claudeCommandUnset, claudeLaunch, claudePrefixFile, writeClaudeShellPrefix } from "./launch";
 import { agentFilesystemPlan, agentLaunchCommand, verifyAgentWrapper, type AgentFilesystemOptions } from "../../isolation/sandbox";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../../isolation/scratch";
 import { log } from "../../log/logger";
@@ -242,15 +242,13 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     return undefined;
   };
   try {
-    const environment = await prepareAgentEnvironment({
-      artifactsDirectory, workspace, overrides: input.env,
-      controlPlane: claudeCodeProfile.controlPlaneEnvironment,
-    });
+    const environment = await prepareAgentEnvironment({ artifactsDirectory, workspace, variables: input.env });
     // prepareAgentEnvironment creates this home before config setup, so record it for early-failure teardown.
     const preparedHome = resolveFilesystemPath(environment.HOME!);
     privateHome = preparedHome;
     const serviceHome = process.env.HOME ? resolveFilesystemPath(process.env.HOME) : undefined;
-    const configDir = environment.CLAUDE_CONFIG_DIR ?? (serviceHome ? path.join(serviceHome, ".claude") : undefined);
+    // The runner's configDir, else the service's own Claude Code directory.
+    const configDir = environment.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? (serviceHome ? path.join(serviceHome, ".claude") : undefined);
     if (!configDir) {
       throw new ClaudeCodeRunnerError("cannot locate the Claude Code config directory: set CLAUDE_CONFIG_DIR or HOME", "process", null, "");
     }
@@ -259,6 +257,10 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
+    const commandUnset = claudeCommandUnset(input.programVariables);
+    // Without egress the prefix only removes what Claude Code holds for itself; under egress claudeLaunch writes one that also sets the proxy.
+    const plainPrefix = input.egress ? undefined : await writeClaudeShellPrefix(await claudePrefixFile(artifactsDirectory), {}, commandUnset);
+    if (plainPrefix) resolvedEnvironment.CLAUDE_CODE_SHELL_PREFIX = plainPrefix;
     const filesystemOptions: AgentFilesystemOptions = {
       command: input.command,
       env: resolvedEnvironment,
@@ -273,6 +275,8 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
       ],
       runtime: [input.mcp.command, ...Object.values(input.mcpServers ?? {}).map((server) => server.command)],
       ...(input.toolchainPaths?.length ? { toolchain: input.toolchainPaths } : {}),
+      // Bound read-only over the writable artifacts mount, so the agent cannot rewrite its own prefix.
+      ...(plainPrefix ? { readable: [plainPrefix] } : {}),
     };
     const filesystem = agentFilesystemPlan(filesystemOptions);
     const command = agentLaunchCommand(filesystemOptions);
@@ -289,6 +293,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
         environment: resolvedEnvironment,
         artifactsDirectory,
         egress: input.egress,
+        unset: commandUnset,
         filesystem: filesystemOptions,
         buildArguments: () => claudeArguments(input, schema),
       });

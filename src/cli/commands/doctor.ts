@@ -1,3 +1,4 @@
+import { DEFAULT_RUN_ENVIRONMENT, resolveRunEnvironment, type EnvironmentSettings } from "../../isolation/run-environment";
 import { access, constants, mkdtemp, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -117,7 +118,7 @@ export async function configuredAgentSandboxChecks(
 
 /** Starts each configured MCP server of each agent once, inside the agent's sandbox, and asks it to initialize. */
 export async function mcpServerChecks(
-  config: { agents: Record<string, { runner?: string; env?: Record<string, string> | undefined; writableRoots?: string[] | undefined; workspaceAccess?: string; mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number | undefined }> }> },
+  config: { agents: Record<string, { runner?: string; environment?: EnvironmentSettings | undefined; writableRoots?: string[] | undefined; workspaceAccess?: string; mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number | undefined }> }> },
   probe: typeof probeAgentMcpServers = probeAgentMcpServers,
   full?: ConveyorConfig,
 ): Promise<DoctorCheck[]> {
@@ -140,7 +141,8 @@ export async function mcpServerChecks(
       const runner = full?.runners[definition.runner ?? ""];
       const egress = confined && full ? agentEgressFor(full, repositories[0]![0], { controlPlaneHosts: runner && "controlPlaneHosts" in runner ? runner.controlPlaneHosts : undefined }) : undefined;
       const failures = new Map((await probe(servers, {
-        workspace, env: definition.env, writableRoots, readOnly,
+        // What the agent's commands get, without a repository: the root's and its own settings.environment.
+        workspace, env: resolveRunEnvironment([{ values: full?.settings.environment ?? DEFAULT_RUN_ENVIRONMENT }, { values: definition.environment ?? {} }]).variables, writableRoots, readOnly,
         ...(toolchainPaths ? { toolchainPaths } : {}),
         ...(egress ? { egress } : {}),
       })).map((failure) => [failure.server, failure.detail]));

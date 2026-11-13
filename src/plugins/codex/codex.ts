@@ -32,7 +32,10 @@ export interface CodexRunInput {
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   automaticApprovals: boolean;
   mcp: CodexMcpConfiguration;
+  /** The run's variables, exactly; absent: the root default's from the service. */
   env?: Record<string, string>;
+  /** Variables of `env` for Codex itself, kept out of the commands it runs. */
+  programVariables?: readonly string[];
   timeoutMs?: number;
   interruptGraceMs?: number;
   signal?: AbortSignal;
@@ -208,9 +211,8 @@ async function consumeJsonLines(
 // Web search runs on the model side, so a read-only agent can have it too. Network for commands and
 // extra writable roots are workspace-write settings; read-only has neither.
 function accessArguments(input: CodexRunInput): string[] {
-  // The harness may use the service credential to authenticate its own control-plane traffic,
-  // but agent commands never inherit it as a usable shell variable.
-  const args: string[] = ["-c", 'shell_environment_policy.exclude=["CODEX_HOME"]'];
+  // What commands may not inherit (CODEX_HOME, the harness's own variables) comes with the launch.
+  const args: string[] = [];
   if (input.network) args.push("-c", `web_search=${tomlString("live")}`);
   if (input.sandbox !== "workspace-write") return args;
   args.push("-c", "sandbox_workspace_write.exclude_slash_tmp=true");
@@ -304,7 +306,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   let child: ReturnType<typeof spawnPiped>;
   const scratch = await acquireScratch(input.temporaryDirectory);
   try {
-    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace, overrides: input.env, resumeSessionId: input.resumeSessionId });
+    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace, variables: input.env, resumeSessionId: input.resumeSessionId });
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     // Tools keep their state under HOME, so a run that may write must be able to write its own.
@@ -315,6 +317,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
       command: input.command,
       environment: resolvedEnvironment,
       artifactsDirectory,
+      programVariables: input.programVariables,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
       filesystem: {

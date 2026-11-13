@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, readFile, readdir, rm } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 
 import { runPi } from "../../../src/plugins/pi/pi";
 import { bwrapUnavailableReason } from "../../support/bwrap";
@@ -141,8 +142,10 @@ async function run(options: { sandbox?: "read-only" | "workspace-write"; mcp?: b
     automaticApprovals: false,
     // The run-scoped MCP server stands in for Conveyor's: it reports what it was started with.
     mcp: { command: process.execPath, args: ["-e", PROBE] },
-    runner: { type: "pi", command, credentialVariables: ["EXAMPLE_API_KEY"] } as never,
+    runner: { type: "pi", command, credentialVariables: [] } as never,
+    programVariables: ["EXAMPLE_API_KEY"],
     env: {
+      ...defaultRunVariables(),
       CAPTURE: capture, PROBE, PI_CODING_AGENT_DIR: service, EXAMPLE_API_KEY: "key-secret",
       HOST_PORT: String(port(hostService)), ...(options.mcp ? { MCP_PORT: "4310" } : {}),
     },
@@ -216,7 +219,7 @@ describe("runPi egress setup failure", () => {
     await Promise.all([mkdir(workspace), mkdir(service)]);
     await expect(runPi({
       command, workspace, artifactsDirectory: path.join(directory, "x".repeat(120), "run-1"), prompt: "go", sandbox: "read-only", automaticApprovals: false,
-      mcp: { command: "bun", args: ["x"] }, runner: { type: "pi", command }, env: { PI_CODING_AGENT_DIR: service },
+      mcp: { command: "bun", args: ["x"] }, runner: { type: "pi", command }, env: { ...defaultRunVariables(), PI_CODING_AGENT_DIR: service },
       egress: { httpsHosts: [], controlPlaneHosts: ["model.fake.test"] },
     })).rejects.toThrow(/egress socket|shorter/);
     expect(await Bun.file(marker).exists()).toBe(false);

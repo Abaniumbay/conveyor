@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -39,7 +40,7 @@ describeSandbox("codexHarness", () => {
     const input = {
       command: executable, workspace: path.join(directory, "workspace"), artifactsDirectory,
       prompt: "go", sandbox: "read-only" as const, automaticApprovals: false,
-      mcp: { command: "bun", args: [] }, env: { CAPTURE: capture },
+      mcp: { command: "bun", args: [] }, env: { ...defaultRunVariables(), CAPTURE: capture },
     };
 
     await codexHarness.run(input);
@@ -80,7 +81,7 @@ describeSandbox("codexHarness", () => {
     const input = {
       command: executable, workspace: path.join(directory, "workspace"), artifactsDirectory,
       prompt: "go", sandbox: "read-only" as const, automaticApprovals: false,
-      mcp: { command: "bun", args: [] }, env: { CAPTURE: capture },
+      mcp: { command: "bun", args: [] }, env: { ...defaultRunVariables(), CAPTURE: capture },
     };
     const captured = async () => JSON.parse(await readFile(capture, "utf8")) as string[];
 

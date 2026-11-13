@@ -11,7 +11,7 @@ import { codexToolNameGuidance } from "./guidance";
 export const codexProfile: HarnessProfile = {
   name: "Codex",
   controlPlaneHosts: CODEX_CONTROL_PLANE_HOSTS,
-  controlPlaneEnvironment: CODEX_CONTROL_PLANE,
+  runVariables: CODEX_CONTROL_PLANE,
   configDirectoryVariable: null,
   sandbox: "runner",
   optionalShell: false,

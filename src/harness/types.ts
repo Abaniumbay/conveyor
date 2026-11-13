@@ -32,7 +32,10 @@ export interface HarnessRunInput {
   automaticApprovals: boolean;
   /** The scoped MCP server the agent talks to. */
   mcp: HarnessMcpConfiguration;
+  /** The run's variables, exactly; absent: the root default's from the service. */
   env?: Record<string, string>;
+  /** Variables of `env` for the harness program only, removed before each command it runs. */
+  programVariables?: readonly string[];
   timeoutMs?: number;
   interruptGraceMs?: number;
   signal?: AbortSignal;
@@ -71,7 +74,10 @@ export interface CheckRunInput {
   sandbox: SandboxMode;
   automaticApprovals: boolean;
   mcp: HarnessMcpConfiguration;
+  /** The run's variables, exactly; absent: the root default's from the service. */
   env?: Record<string, string>;
+  /** Variables of `env` for the harness program only, removed before each command it runs. */
+  programVariables?: readonly string[];
   timeoutMs?: number;
   interruptGraceMs?: number;
   signal?: AbortSignal;
@@ -104,7 +110,10 @@ export interface SteeringRunInput {
   sandbox: SandboxMode;
   automaticApprovals: boolean;
   mcp?: HarnessMcpConfiguration;
+  /** The run's variables, exactly; absent: the root default's from the service. */
   env?: Record<string, string>;
+  /** Variables of `env` for the harness program only, removed before each command it runs. */
+  programVariables?: readonly string[];
   timeoutMs?: number;
   interruptGraceMs?: number;
   signal?: AbortSignal;
@@ -143,8 +152,11 @@ export interface HarnessProfile {
    * `agentEgress` refuses a runner whose hosts come out empty when the configuration loads.
    */
   readonly controlPlaneHostsFor?: (runner: HarnessRunnerConfig) => readonly string[];
-  /** Service environment variables that carry the harness's own login and state: kept for the harness process, never for the agent's commands. */
-  readonly controlPlaneEnvironment: readonly string[];
+  /**
+   * Variables the harness sets for its own runs (its private login directory): never taken from the
+   * service, never given to the agent's commands, and refused in the configuration's environment.
+   */
+  readonly runVariables: readonly string[];
   /** The variable that points the harness at the runner's `configDir` (its login and sessions), or null when it takes none. */
   readonly configDirectoryVariable: string | null;
   /**

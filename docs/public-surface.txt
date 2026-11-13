@@ -140,6 +140,8 @@ config agents.<name>.model
 config agents.<name>.name
 config agents.<name>.network
 config agents.<name>.runner
+config agents.<name>.settings
+config agents.<name>.settings.environment
 config agents.<name>.shell
 config agents.<name>.tasks
 config agents.<name>.title
@@ -228,6 +230,8 @@ config repositories.<name>.refinement.require
 config repositories.<name>.refinement.require.fields
 config repositories.<name>.refinement.require.section
 config repositories.<name>.refinement.require.type
+config repositories.<name>.settings
+config repositories.<name>.settings.environment
 config repositories.<name>.source
 config repositories.<name>.systemLabels
 config runners
@@ -243,6 +247,7 @@ config settings
 config settings.agentRunTokenWarning
 config settings.artifacts
 config settings.database
+config settings.environment
 config settings.events
 config settings.events.fallback
 config settings.events.fallback.change
@@ -330,6 +335,8 @@ config stages[].icon
 config stages[].id
 config stages[].name
 config stages[].retries
+config stages[].settings
+config stages[].settings.environment
 config web
 config web.listen
 config web.publicUrl

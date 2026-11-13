@@ -37,8 +37,9 @@ import { PLUGINS } from "../src/plugins";
 import { parseLoopbackTcp } from "../src/isolation/egress-policy";
 import { startEgressProxy } from "../src/isolation/egress-proxy";
 import { agentEgressFor } from "../src/isolation/agent-egress";
-import { resolveBash, sanitizedAgentEnvironment } from "../src/isolation/environment";
-import { CLAUDE_CONTROL_PLANE_HOSTS, claudeLaunch } from "../src/plugins/claude-code/launch";
+import { resolveBash } from "../src/isolation/environment";
+import { resolveRunEnvironment } from "../src/isolation/run-environment";
+import { CLAUDE_CONTROL_PLANE_HOSTS, claudeCommandUnset, claudeLaunch } from "../src/plugins/claude-code/launch";
 import { preparePiAgentDirectory, servicePiAgentDirectory, syncPiAgentDirectory } from "../src/plugins/pi/agent-directory";
 import { piRunnerSchema } from "../src/plugins/pi/config";
 import { piCommandEnvironmentFile, piControlPlaneHosts, piInstallation, piLaunch, piMountRoot, piShellCommandPrefix } from "../src/plugins/pi/launch";
@@ -276,13 +277,13 @@ async function runClaudeCodeCheck(options: {
 export async function runPiCheck(options: {
   check: SandboxCheck; scratch: string; workspace: string; base: Record<string, string>;
   egress: NonNullable<ReturnType<typeof agentEgressFor>>; controlPlaneHosts: readonly string[];
-  /** The runner's credential variables, set to a probe value for the process so its commands can prove they lose them. */
-  credentialVariables: readonly string[];
+  /** The pi process's own variables, set to a probe value for the process so its commands can prove they lose them. */
+  programVariables: readonly string[];
 }): Promise<SandboxedCheckResult> {
   const directory = await mkdtemp(path.join(options.scratch, "pi-"));
   const [artifacts, home, temporary] = ["artifacts", "home", "tmp"].map((name) => path.join(directory, name)) as [string, string, string];
   await Promise.all([artifacts, home, temporary].map((target) => mkdir(target, { recursive: true })));
-  const unset = piProcessVariables(options.credentialVariables);
+  const unset = piProcessVariables(options.programVariables);
   const environment = {
     ...options.base, HOME: home, TMPDIR: temporary,
     ...Object.fromEntries(unset.map((name) => [name, name === unset[0] ? path.join(home, ".pi", "agent") : "probe-credential"])),
@@ -411,6 +412,7 @@ export async function runLiveClaudeCheck(options: {
     environment: filesystem.env,
     artifactsDirectory: artifacts,
     egress: options.egress,
+    unset: claudeCommandUnset(Object.keys(options.credentials ?? {})),
     filesystem,
     buildArguments: liveArguments,
   });
@@ -503,14 +505,14 @@ export async function runLivePiCheck(options: {
   const directory = await mkdtemp(path.join(options.scratch, "live-pi-"));
   const [artifacts, home, temporary] = ["artifacts", "home", "tmp"].map((name) => path.join(directory, name)) as [string, string, string];
   await Promise.all([artifacts, home, temporary].map((target) => mkdir(target, { recursive: true })));
-  const credentialVariables = Object.keys(options.credentials ?? {});
-  const unset = piProcessVariables(credentialVariables);
+  const programVariables = Object.keys(options.credentials ?? {});
+  const unset = piProcessVariables(programVariables);
   const shell = options.base.SHELL;
   if (!shell) throw new Error("the live pi check needs SHELL in its base environment");
   const agent = await preparePiAgentDirectory({
     home,
     serviceDirectory: options.serviceDirectory,
-    settings: piSettings({ shell, credentialVariables, provider: options.provider, commandEnvironment: piCommandEnvironmentFile(artifacts) }),
+    settings: piSettings({ shell, programVariables, provider: options.provider, commandEnvironment: piCommandEnvironmentFile(artifacts) }),
     mcp: { autoEnableCodemode: false, mcpServers: {} },
   });
   try {
@@ -596,7 +598,9 @@ async function main(): Promise<number> {
     await mkdir(privateHome, { recursive: true });
     const bash = resolveBash();
     if (!bash) throw new Error("bash is required to run agents and was not found");
-    const base = { ...sanitizedAgentEnvironment(process.env, { home: privateHome, controlPlane: [] }), SHELL: bash };
+    // What every run of this repository starts with: the root's and the repository's settings.environment.
+    const repositoryVariables = resolveRunEnvironment([{ values: config.settings.environment }, { values: repository.settings.environment }]).variables;
+    const base = { ...repositoryVariables, HOME: privateHome, SHELL: bash };
 
     const localServices = (repository.agentEgress.localServices ?? []).map((service): LocalServiceEntry & { name: string } =>
       service.socket !== undefined ? { name: service.name, endpoint: service.endpoint, socket: service.socket } : { name: service.name, endpoint: service.endpoint, tcp: service.tcp ?? "" },
@@ -630,23 +634,25 @@ async function main(): Promise<number> {
       } else {
         const hosts = liveHosts({ httpsHosts: repository.agentEgress.httpsHosts, controlPlaneHosts });
         if (!hosts) throw new Error("--live needs an httpsHosts entry that is not a control-plane host");
-        const credentials = Object.fromEntries(
-          (["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"] as const).flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : [])),
-        );
-        const result = await runLiveClaudeCheck({ cli: runner.command, scratch, workspace: work, base, egress, hosts, credentials, configDir: runner.configDir, serviceHome: process.env.HOME });
+        // The harness entry's settings.environment, which reaches Claude Code only.
+        const credentials = resolveRunEnvironment([{ values: runner.environment ?? {} }]).variables;
+        const result = await runLiveClaudeCheck({ cli: runner.command, scratch, workspace: work, base, egress, hosts, credentials, configDir: runner.configDir ?? process.env.CLAUDE_CONFIG_DIR, serviceHome: process.env.HOME });
         if (!result.passed) failures += 1;
         console.log(`${result.passed ? "PASS" : "FAIL"} live claude-code: Bash reaches ${hosts.allowed} and is refused ${hosts.refused}`);
         if (!result.passed) console.log(result.output.split("\n").slice(-15).join("\n"));
       }
     }
     if (runner?.type === "pi") {
-      const settings = piRunnerSchema.parse(runner);
+      // The core keeps the entry's settings; pi's own schema reads the rest.
+      const { environment: harnessEnvironment = {}, settings: _harnessKeys, ...entry } = runner;
+      const settings = piRunnerSchema.parse(entry);
+      const programVariables = [...new Set([...Object.keys(harnessEnvironment), ...settings.credentialVariables])];
       const egress = agentEgressFor(config, repositoryId, settings)!;
       const controlPlaneHosts = egress.controlPlaneHosts ?? piControlPlaneHosts(settings);
       if (controlPlaneHosts.length === 0) throw new Error(`pi runner ${runnerId} names no controlPlaneHosts and pi has no default hosts for its provider`);
       console.log(`pi runner ${runnerId}: control-plane hosts ${controlPlaneHosts.join(", ")}`);
-      for (const check of piChecks({ httpsHosts: repository.agentEgress.httpsHosts, controlPlaneHosts, unset: piProcessVariables(settings.credentialVariables) })) {
-        const result = await runPiCheck({ check, scratch, workspace: work, base, egress, controlPlaneHosts, credentialVariables: settings.credentialVariables });
+      for (const check of piChecks({ httpsHosts: repository.agentEgress.httpsHosts, controlPlaneHosts, unset: piProcessVariables(programVariables) })) {
+        const result = await runPiCheck({ check, scratch, workspace: work, base, egress, controlPlaneHosts, programVariables });
         if (!result.passed) failures += 1;
         console.log(`${result.passed ? "PASS" : "FAIL"} ${check.name}${result.passed ? "" : ` (exit ${result.exitCode})`}`);
         if (!result.passed) console.log(result.output.split("\n").slice(-15).join("\n"));
@@ -659,7 +665,10 @@ async function main(): Promise<number> {
         if (!hosts) throw new Error("--live needs an httpsHosts entry that is not a control-plane host");
         // The model of the first agent on this runner that names one; otherwise pi's default for the provider.
         const model = Object.values(config.agents).find((agent) => agent.runner === runnerId && agent.model)?.model;
-        const credentials = Object.fromEntries(settings.credentialVariables.flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : [])));
+        const credentials = {
+          ...resolveRunEnvironment([{ values: harnessEnvironment }]).variables,
+          ...Object.fromEntries(settings.credentialVariables.flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : []))),
+        };
         const serviceDirectory = resolveFilesystemPath(settings.configDir ?? servicePiAgentDirectory());
         const result = await runLivePiCheck({ cli: settings.command, scratch, workspace: work, base, egress, controlPlaneHosts, hosts, serviceDirectory, provider: settings.provider, model, credentials });
         if (!result.passed) failures += 1;

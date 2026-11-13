@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { cleanupSanitizedHome, prepareAgentEnvironment, prepareSanitizedHome, resolveBash, sanitizedAgentEnvironment } from "../../src/isolation/environment";
+import { cleanupSanitizedHome, prepareAgentEnvironment, prepareSanitizedHome, resolveBash } from "../../src/isolation/environment";
 
 const directories: string[] = [];
 async function temporary(): Promise<string> {
@@ -14,84 +14,6 @@ async function temporary(): Promise<string> {
 }
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((d) => rm(d, { recursive: true, force: true })));
-});
-
-describe("sanitizedAgentEnvironment", () => {
-  const base = {
-    PATH: "/usr/bin",
-    HOME: "/home/real",
-    LANG: "C",
-    GH_TOKEN: "a",
-    GITHUB_TOKEN: "b",
-    GH_ENTERPRISE_TOKEN: "c",
-    GITHUB_ENTERPRISE_TOKEN: "d",
-    GIT_ASKPASS: "/bin/ask",
-    SSH_AUTH_SOCK: "/run/ssh",
-    GH_CONFIG_DIR: "/home/real/.config/gh",
-    GIT_CONFIG_GLOBAL: "/home/real/.gitconfig",
-    CONVEYOR_CONFIG: "x",
-    NPM_TOKEN: "t",
-    AWS_SECRET_ACCESS_KEY: "s",
-    DB_PASSWORD: "p",
-    STRIPE_API_KEY: "k",
-    MY_PRIVATE_KEY: "k",
-    TOKENIZER_MODE: "fast",
-    UNDEFINED_ONE: undefined,
-  };
-
-  test("drops provider credentials and secret-looking names, keeps the rest", () => {
-    const env = sanitizedAgentEnvironment(base, { home: "/run/home", controlPlane: [] });
-    expect(env).toEqual({ PATH: "/usr/bin", LANG: "C", HOME: "/run/home", TOKENIZER_MODE: "fast" });
-  });
-
-  test("keeps explicitly listed control-plane variables and still drops unlisted secrets", () => {
-    const env = sanitizedAgentEnvironment({ ...base, CODEX_HOME: "/custom/codex", CODEX_API_KEY: "k", OPENAI_API_KEY: "o" }, {
-      home: "/run/home",
-      controlPlane: ["CODEX_HOME"],
-    });
-    expect(env.CODEX_HOME).toBe("/custom/codex");
-    expect(env.HOME).toBe("/run/home");
-    expect(env.OPENAI_API_KEY).toBeUndefined();
-    expect(env.CODEX_API_KEY).toBeUndefined();
-  });
-
-  test("invents no value for a listed control-plane variable the base does not set", () => {
-    const env = sanitizedAgentEnvironment(base, { home: "/run/home", controlPlane: ["CODEX_HOME"] });
-    expect(env.CODEX_HOME).toBeUndefined();
-  });
-
-  test("a control-plane name overrides the secret pattern", () => {
-    const env = sanitizedAgentEnvironment({ ...base, HARNESS_TOKEN: "h" }, { home: "/h", controlPlane: ["HARNESS_TOKEN"] });
-    expect(env.HARNESS_TOKEN).toBe("h");
-    expect(env.GH_TOKEN).toBeUndefined();
-  });
-
-  test("drops git, gh, xdg, credential and cloud-key variables", () => {
-    const names = [
-      "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_SYSTEM", "GIT_SSH", "GIT_SSH_COMMAND",
-      "GIT_CREDENTIAL_HELPER", "GIT_ASKPASS", "GH_HOST", "GH_PROMPT_DISABLED", "XDG_CONFIG_HOME",
-      "XDG_DATA_HOME", "GOOGLE_APPLICATION_CREDENTIALS", "AWS_SHARED_CREDENTIAL", "AWS_ACCESS_KEY_ID",
-    ];
-    const env = sanitizedAgentEnvironment(
-      { PATH: "/p", XDG_RUNTIME_DIR: "/run/user/1", ...Object.fromEntries(names.map((n) => [n, "x"])) },
-      { home: "/h", controlPlane: [] },
-    );
-    expect(env).toEqual({ PATH: "/p", XDG_RUNTIME_DIR: "/run/user/1", HOME: "/h" });
-  });
-
-  test("strips userinfo from proxy values", () => {
-    const env = sanitizedAgentEnvironment(
-      { HTTPS_PROXY: "http://user:pw@proxy.local:3128", HTTP_PROXY: "http://proxy.local:3128", NO_PROXY: "localhost" },
-      { home: "/h", controlPlane: [] },
-    );
-    expect(env).toMatchObject({ HTTPS_PROXY: "http://proxy.local:3128", HTTP_PROXY: "http://proxy.local:3128", NO_PROXY: "localhost" });
-  });
-
-  test("never mutates the base", () => {
-    const copy = { ...base };
-    sanitizedAgentEnvironment(base, { home: "/h", controlPlane: [] });
-    expect(base).toEqual(copy);
-  });
 });
 
 describe("prepareSanitizedHome", () => {
@@ -159,28 +81,30 @@ describe("prepareSanitizedHome", () => {
   });
 });
 
-describe("a harness's control-plane variables", () => {
-  test("a harness that does not list CODEX_HOME never inherits the parent's", async () => {
+describe("an agent's environment", () => {
+  test("is exactly the run's variables, with HOME and SHELL Conveyor's: nothing inherited, nothing filtered", async () => {
     const artifacts = path.join(await temporary(), "run-1");
     const env = await prepareAgentEnvironment({
       artifactsDirectory: artifacts,
       workspace: await temporary(),
-      parent: { HOME: "/home/real", PATH: process.env.PATH ?? "", CODEX_HOME: "/home/real/.codex", CLAUDE_CONFIG_DIR: "/home/real/.claude" },
-      controlPlane: ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+      parent: { HOME: "/home/real", PATH: process.env.PATH ?? "", GH_TOKEN: "service", CODEX_HOME: "/home/real/.codex" },
+      variables: { PATH: process.env.PATH ?? "", NPM_TOKEN: "listed", GH_HOST: "example.com" },
     });
-    expect(env.CODEX_HOME).toBeUndefined();
-    expect(env.CLAUDE_CONFIG_DIR).toBe("/home/real/.claude");
+    expect(env).toEqual({
+      PATH: process.env.PATH ?? "", NPM_TOKEN: "listed", GH_HOST: "example.com",
+      HOME: path.join(artifacts, "home"), SHELL: resolveBash(process.env.PATH)!,
+    });
   });
 
-  test("a harness inherits only the parent variables its control plane lists", async () => {
-    const artifacts = path.join(await temporary(), "run-1");
+  test("without variables it starts from the root default's, taken from the service", async () => {
     const env = await prepareAgentEnvironment({
-      artifactsDirectory: artifacts,
+      artifactsDirectory: path.join(await temporary(), "run-1"),
       workspace: await temporary(),
-      parent: { HOME: "/home/real", PATH: process.env.PATH ?? "", CODEX_HOME: "/home/real/.codex" },
-      controlPlane: ["CODEX_HOME"],
+      parent: { HOME: "/home/real", PATH: process.env.PATH ?? "", LANG: "C", GH_TOKEN: "service", ANTHROPIC_API_KEY: "k" },
     });
-    expect(env.CODEX_HOME).toBe("/home/real/.codex");
+    expect(env.LANG).toBe("C");
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   });
 });
 
@@ -188,7 +112,7 @@ describe("the agent's shell", () => {
   const prepare = async (parent: Record<string, string>) => {
     const artifacts = path.join(await temporary(), "run-1");
     const workspace = await temporary();
-    return prepareAgentEnvironment({ artifactsDirectory: artifacts, workspace, parent: { HOME: "/home/real", ...parent }, controlPlane: [] });
+    return prepareAgentEnvironment({ artifactsDirectory: artifacts, workspace, parent: { HOME: "/home/real", ...parent } });
   };
 
   test("is Conveyor's resolved absolute bash when the parent's SHELL is another shell", async () => {
@@ -205,7 +129,7 @@ describe("the agent's shell", () => {
 
   test("a run's own SHELL override does not replace it", async () => {
     const artifacts = path.join(await temporary(), "run-1");
-    const env = await prepareAgentEnvironment({ artifactsDirectory: artifacts, workspace: await temporary(), parent: { HOME: "/h", PATH: process.env.PATH ?? "" }, overrides: { SHELL: "/opt/login-shell" }, controlPlane: [] });
+    const env = await prepareAgentEnvironment({ artifactsDirectory: artifacts, workspace: await temporary(), parent: { HOME: "/h", PATH: process.env.PATH ?? "" }, variables: { PATH: process.env.PATH ?? "", SHELL: "/opt/login-shell" } });
     expect(env.SHELL).toBe(resolveBash(process.env.PATH));
   });
 });

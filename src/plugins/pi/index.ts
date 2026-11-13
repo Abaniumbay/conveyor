@@ -33,6 +33,7 @@ export const piPlugin: HarnessPlugin = {
   type: "pi",
   configSchema: piRunnerSchema,
   profile: piProfile,
+  deprecatedSettings: { credentialVariables: "list the variables in the harness's settings.environment instead (an empty value takes the service's)" },
   doctor: piDoctorCheck,
   create: () => piHarness,
 };

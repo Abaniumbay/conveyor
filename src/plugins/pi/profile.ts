@@ -13,7 +13,7 @@ export const piProfile: HarnessProfile = {
   // No provider-independent default: the runner's provider decides.
   controlPlaneHosts: [],
   controlPlaneHostsFor: (runner) => piControlPlaneHosts({ provider: "provider" in runner && typeof runner.provider === "string" ? runner.provider : undefined }),
-  controlPlaneEnvironment: [PI_AGENT_DIRECTORY],
+  runVariables: [PI_AGENT_DIRECTORY],
   configDirectoryVariable: PI_AGENT_DIRECTORY,
   sandbox: "access",
   optionalShell: true,

@@ -191,7 +191,7 @@ bun scripts/check-agent-egress.ts <repository-id> --config <conveyor.yaml> --run
 
 It starts the real Claude Code CLI inside the run's namespace with the runner's sign-in, as a real run
 does: the runner's `configDir` (else `CLAUDE_CONFIG_DIR`, else `~/.claude`) is `CLAUDE_CONFIG_DIR`,
-mounted writable, and `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` are passed from your environment.
+mounted writable, and the runner's `settings.environment` (such as `ANTHROPIC_API_KEY`) is passed from your environment.
 **Run it as the account the service runs as**, with the same `PATH`, so it finds the same `claude` and
 sign-in; a CLI that is not signed in fails the check as "the Claude Code CLI is not signed in". It runs
 the runner's configured `command`; if that is not installed the error names it and the `PATH` searched. The CLI is started with a prompt that runs one `Bash`
@@ -203,11 +203,11 @@ process must reach its control-plane host (the runner's `controlPlaneHosts`, els
 default hosts; the check stops if it has neither) and no other, and its commands, run as pi 1.5 runs
 its bash tool (`"$SHELL" -c "<shellCommandPrefix>"'<newline><command>'`), must reach only `httpsHosts`,
 be refused an unlisted host, direct IPs and the control plane, and see neither `PI_CODING_AGENT_DIR`,
-the runner's `credentialVariables` nor the control-plane credential. **Before turning on `agentEgress`
+the variables of the runner's `settings.environment` and `credentialVariables`, nor the control-plane credential. **Before turning on `agentEgress`
 for pi agents, run it with `--live`** as the account the service runs as: it starts the real pi CLI
 in the run's namespace with the runner's sign-in, as a real run does (a private copy of the `auth.json`
 and `models.json` of the runner's `configDir`, else `PI_CODING_AGENT_DIR`, else `~/.pi/agent`, with
-the runner's `credentialVariables` from your environment for the pi process only; a login pi refreshes
+the runner's `settings.environment` and `credentialVariables` from your environment for the pi process only; a login pi refreshes
 is copied back), with the model of the first agent on that runner, and asks it to run four bash
 commands: one against an allowed host, one against a refused host, one against its control-plane host
 and one that checks its environment. It fails unless pi's model answers, the first and last commands

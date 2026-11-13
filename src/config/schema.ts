@@ -6,6 +6,7 @@ import { z } from "zod";
 import { agentGrantableTools } from "../mcp/tools";
 import { agentToolchainPathsSchema } from "../isolation/toolchain-paths";
 import { agentEgressSchema, validateHttpsHosts } from "../isolation/egress-policy";
+import { DEFAULT_RUN_ENVIRONMENT, environmentSettingsSchema, type EnvironmentSettings } from "../isolation/run-environment";
 import { AGENT_DENIED_TOOLS, canonicalToolName } from "../tasks/aliases";
 
 import type { Route } from "../tasks/contract";
@@ -73,8 +74,16 @@ const eventSinkSchema = z.discriminatedUnion("type", [
   }).strict(),
 ]);
 
+/** A `settings` block below the root: repositories and native stages. */
+const levelSettingsSchema = z
+  .object({ environment: environmentSettingsSchema.default({}) })
+  .strict()
+  .prefault({});
+
 const settingsSchema = z
   .object({
+    /** The variables every run starts with; the repository, stage, harness, agent and script add to them. */
+    environment: environmentSettingsSchema.default(() => ({ ...DEFAULT_RUN_ENVIRONMENT })),
     runners: z.number().int().positive().default(1),
     database: absolutePathSchema,
     logs: absolutePathSchema,
@@ -265,6 +274,10 @@ export type HarnessRunnerConfig = {
   configDir?: string | undefined;
   sandbox?: "read-only" | "workspace-write" | "danger-full-access";
   automaticApprovals?: boolean;
+  /** The harness entry's `settings.environment`: it reaches the harness program, never its commands. */
+  environment?: EnvironmentSettings;
+  /** The harness entry's own keys of `settings`: the defaults of its agents' harness settings. */
+  settings?: HarnessSettings;
 };
 
 export type JsonProcessRunnerConfig = { type: typeof JSON_PROCESS_RUNNER };
@@ -327,6 +340,14 @@ const agentMcpServerSchema = z
 /** An agent's settings for its harness: the runner's harness plugin defines and validates the keys. */
 export const harnessSettingsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
 export type HarnessSettings = z.infer<typeof harnessSettingsSchema>;
+
+/**
+ * The `settings` of a harness entry or an agent: `environment`, and keys the harness plugin defines
+ * (validated when the configuration loads with the plugins).
+ */
+export const harnessLevelSettingsSchema = z
+  .object({ environment: environmentSettingsSchema.optional() })
+  .catchall(z.union([z.string(), z.number(), z.boolean()]));
 const MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
 
 const agentSchema = z
@@ -342,14 +363,16 @@ const agentSchema = z
     network: z.boolean().default(false),
     /** Extra directories a workspace-write agent's commands may write, such as package caches. Missing ones are skipped. */
     writableRoots: z.array(homePathSchema).default([]),
-    /** Environment variables for the agent's run, such as toolchain cache locations; `~/` values are expanded. */
-    env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), homeExpandedSchema).default({}),
+    /** Deprecated name of `settings.environment`, still accepted (with a warning). */
+    env: environmentSettingsSchema.optional(),
     /** `false` takes the shell away, for a harness that can run without one (the loader refuses it otherwise). */
     shell: z.boolean().default(true),
     /**
-     * Settings for the runner's harness, validated by its plugin when the configuration loads; a harness
-     * that takes none refuses any. Absent: none.
+     * The agent's settings: `environment`, added to its repository's, stage's and harness's, and its
+     * harness's own keys, validated by the harness plugin when the configuration loads.
      */
+    settings: harnessLevelSettingsSchema.optional(),
+    /** Deprecated: the harness's keys of `settings`, still accepted (with a warning). */
     harnessSettings: harnessSettingsSchema.optional(),
     /** Deprecated name of `harnessSettings`, still accepted (with a warning) for Codex agents. */
     codexConfig: harnessSettingsSchema.optional(),
@@ -364,6 +387,14 @@ const agentSchema = z
   .superRefine((agent, context) => {
     if (agent.harnessSettings && agent.codexConfig) {
       context.addIssue({ code: "custom", path: ["codexConfig"], message: 'is the deprecated name of harnessSettings: set only "harnessSettings"' });
+    }
+    const { environment, ...harnessKeys } = agent.settings ?? {};
+    if (agent.env && environment) {
+      context.addIssue({ code: "custom", path: ["env"], message: 'is the deprecated name of settings.environment: set only "settings.environment"' });
+    }
+    const legacy = agent.harnessSettings ? "harnessSettings" : agent.codexConfig ? "codexConfig" : undefined;
+    if (legacy && Object.keys(harnessKeys).length > 0) {
+      context.addIssue({ code: "custom", path: [legacy], message: 'is the deprecated place of the harness keys in settings: set them only in "settings"' });
     }
     for (const name of Object.keys(agent.mcpServers)) {
       if (name === "conveyor") {
@@ -393,11 +424,15 @@ const agentSchema = z
       granted.add(name);
     });
   })
-  .transform(({ tasks, tools, harnessSettings, codexConfig, ...agent }) => ({
-    ...agent,
-    harnessSettings: harnessSettings ?? codexConfig ?? {},
-    tasks: tasks ?? (tools ? [...new Set(tools.map(canonicalToolName))] : agentGrantableTools()),
-  }));
+  .transform(({ tasks, tools, harnessSettings, codexConfig, env, settings, ...agent }) => {
+    const { environment, ...harnessKeys } = settings ?? {};
+    return {
+      ...agent,
+      environment: environment ?? env ?? {},
+      harnessSettings: harnessSettings ?? codexConfig ?? harnessKeys,
+      tasks: tasks ?? (tools ? [...new Set(tools.map(canonicalToolName))] : agentGrantableTools()),
+    };
+  });
 
 
 /** The argv prefix a script path is appended to (default `bun run`); `[]` executes the script itself. */
@@ -531,6 +566,8 @@ export const nativeStageSchema = z
     approval: z.literal("manual").optional(),
     concurrency: z.number().int().positive(),
     retries: z.number().int().nonnegative().default(2),
+    /** Settings for the stage's runs: `environment`, added to the repository's. */
+    settings: levelSettingsSchema,
     childrenStartAt: identifierSchema.optional(),
     actions: z.array(taskEntrySchema),
     "exit-gate": z.array(taskEntrySchema).min(1),
@@ -685,6 +722,8 @@ const repositorySchema = z
       .optional(),
     agentEgress: agentEgressSchema.optional(),
     agentToolchainPaths: agentToolchainPathsSchema.optional(),
+    /** Settings for the repository's runs: `environment`, added to the root's. */
+    settings: levelSettingsSchema,
     concurrency: z.number().int().positive().default(1),
     inFlight: z
       .object({

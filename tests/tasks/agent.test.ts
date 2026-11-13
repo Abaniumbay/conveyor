@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { defaultRunVariables } from "../../src/isolation/run-environment";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -330,19 +331,26 @@ describe("agent.run", () => {
     expect(w.store.listConversationMessages("i1").map((m) => [m.actorType, m.message])).toEqual([["agent", "Implementation completed: Implemented."]]);
   });
 
-  test("an agent's env reaches its harness, beside the harness's own variables", async () => {
+  test("an agent's settings.environment and its run context reach its harness, beside the harness's own variables", async () => {
     const w = await world();
-    Object.assign(w.deps.config.agents.kaveh!, { env: { NUGET_PACKAGES: "/caches/nuget" } });
+    Object.assign(w.deps.config.agents.kaveh!, { environment: { NUGET_PACKAGES: "/caches/nuget" } });
     expect((await w.run(false)).status).toBe("pass");
-    expect(w.calls[0]!.env).toEqual({ NUGET_PACKAGES: "/caches/nuget" });
+    expect(w.calls[0]!.env).toEqual({
+      ...defaultRunVariables(),
+      NUGET_PACKAGES: "/caches/nuget",
+      CONVEYOR_RUN_ID: expect.any(String), CONVEYOR_REPOSITORY_ID: w.deps.repository.id, CONVEYOR_ITEM_ID: expect.any(String),
+      CONVEYOR_STAGE_ID: expect.any(String), CONVEYOR_AGENT_ID: "kaveh",
+    });
+    expect(w.calls[0]!.programVariables).toEqual([]);
 
     const config = w.deps.config as unknown as { runners: Record<string, unknown>; agents: Record<string, unknown> };
-    config.runners.claude = { type: "claude-code", command: "claude", configDir: "/claude-config" };
+    config.runners.claude = { type: "claude-code", command: "claude", configDir: "/claude-config", environment: { ANTHROPIC_API_KEY: "key" } };
     config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude" };
     const harnesses = w.deps.harnesses as Record<string, unknown>;
     harnesses["claude-code"] = { ...harnesses.codex as Harness, profile: claudeCodeProfile };
     expect((await w.run(false, { agent: "jamshid" })).status).toBe("pass");
-    expect(w.calls.at(-1)!.env).toEqual({ NUGET_PACKAGES: "/caches/nuget", CLAUDE_CONFIG_DIR: "/claude-config" });
+    expect(w.calls.at(-1)!.env).toMatchObject({ NUGET_PACKAGES: "/caches/nuget", ANTHROPIC_API_KEY: "key", CLAUDE_CONFIG_DIR: "/claude-config", CONVEYOR_AGENT_ID: "jamshid" });
+    expect(w.calls.at(-1)!.programVariables).toEqual(["ANTHROPIC_API_KEY"]);
   });
 
   test("an agent's shell: false reaches a Claude Code harness; without the field there is no shell key", async () => {

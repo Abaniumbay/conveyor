@@ -187,7 +187,7 @@ export async function runCodexCheck(
     const environment = await prepareCodexEnvironment({
       artifactsDirectory,
       workspace,
-      overrides: input.env,
+      variables: input.env,
     });
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
@@ -206,6 +206,7 @@ export async function runCodexCheck(
       command: input.command,
       environment: resolvedEnvironment,
       artifactsDirectory,
+      programVariables: input.programVariables,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
       filesystem: {

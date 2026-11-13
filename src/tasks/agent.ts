@@ -14,6 +14,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import { agentRunVariables, commandVariables } from "../config/run-environment";
 import { isHarnessRunner } from "../config/schema";
 import type { ConversationStore, RunLogStore } from "../db/ports";
 import type { StoredQuestion } from "../db/store";
@@ -268,6 +269,7 @@ async function runAgent(
   store.appendRunEvent(runId, "execution", { idempotencyKey: instance.idempotencyKey, agentId });
   runIds.push(runId);
   const started = performance.now();
+  const runVariables = agentRunVariables(deps.config, { runId, repositoryId: deps.repository.id, itemId: String(issue.id), stageId, agentId });
   try {
     const lease = await deps.mcp.create({
       runId,
@@ -287,7 +289,7 @@ async function runAgent(
         issueId: issue.id, stageId, runId, agentId, servers: agent.mcpServers,
         sandbox: {
           workspace: workspace.path,
-          env: agent.env,
+          env: commandVariables(runVariables),
           readOnly: agent.workspaceAccess === "read-only",
           writableRoots: (await agentAccess(agent, workspace.path)).writableRoots,
           toolchainPaths: toolchainFor(deps).toolchainPaths,
@@ -302,8 +304,8 @@ async function runAgent(
         artifactsDirectory: path.join(deps.config.settings.artifacts, runId),
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
-        ...(Object.keys(agent.env ?? {}).length > 0 ? { env: agent.env } : {}),
-        ...runSettings(harness.profile, runner, agent),
+        ...runSettings(harness.profile, runner, agent, runVariables.env),
+        programVariables: runVariables.programVariables,
         ...egressFor(deps, runner),
         ...(await agentAccess(agent, workspace.path)),
         temporaryDirectory: workspaceScratchPath(workspace.path),
@@ -536,7 +538,8 @@ async function probeConfiguredMcpServers(
 function runSettings(
   profile: HarnessProfile,
   runner: { sandbox?: HarnessRunInput["sandbox"]; automaticApprovals?: boolean; configDir?: string | undefined },
-  agent: { workspaceAccess: string; shell?: boolean; env?: Record<string, string> },
+  agent: { workspaceAccess: string; shell?: boolean },
+  variables: Record<string, string>,
 ): Pick<HarnessRunInput, "sandbox" | "automaticApprovals" | "shell" | "env"> {
   const fromRunner = profile.sandbox === "runner" && runner.sandbox !== undefined && runner.automaticApprovals !== undefined
     ? { sandbox: runner.sandbox, automaticApprovals: runner.automaticApprovals }
@@ -550,7 +553,7 @@ function runSettings(
       : (agent.workspaceAccess === "workspace-write" ? "workspace-write" : "read-only"),
     automaticApprovals: fromRunner ? fromRunner.automaticApprovals : false,
     ...(profile.optionalShell && agent.shell === false ? { shell: false as const } : {}),
-    ...(configDirectory ? { env: { ...(agent.env ?? {}), ...configDirectory } } : {}),
+    env: { ...variables, ...configDirectory },
   };
 }
 

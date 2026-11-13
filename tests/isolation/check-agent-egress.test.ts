@@ -419,7 +419,7 @@ describe("live pi check", () => {
       const credentialCheck = piChecks({ httpsHosts: [], controlPlaneHosts: [], unset: piProcessVariables(["EXAMPLE_API_KEY"]) }).find((check) => check.name.includes("does not receive"))!;
       const processHolds = { name: "the process holds its credentials", argv: ["sh", "-c", 'test -n "$EXAMPLE_API_KEY" && test -n "$PI_CODING_AGENT_DIR" && case "$HTTPS_PROXY" in *conveyor:*) exit 0;; esac; exit 1'], expectFailure: false };
       for (const check of [credentialCheck, processHolds]) {
-        const result = await runPiCheck({ check, scratch: directory, workspace, base, egress, controlPlaneHosts: ["model.fake.test"], credentialVariables: ["EXAMPLE_API_KEY"] });
+        const result = await runPiCheck({ check, scratch: directory, workspace, base, egress, controlPlaneHosts: ["model.fake.test"], programVariables: ["EXAMPLE_API_KEY"] });
         expect({ name: check.name, passed: result.passed, output: result.passed ? "" : result.output }).toEqual({ name: check.name, passed: true, output: "" });
       }
     } finally {

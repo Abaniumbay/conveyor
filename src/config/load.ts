@@ -16,9 +16,9 @@ import { ConfigError, safeYamlDiagnostic } from "./errors";
 import { materialiseImport, parseImportSpec, type ImportSpec, type ResolvedImport } from "./import";
 import { protectedServiceLocations, resolveToolchainPaths } from "../isolation/toolchain-paths";
 import { normalizeRoleDocuments } from "./roles";
-import { configSchema, isHarnessRunner, isNativeStage, JSON_PROCESS_RUNNER, type ConveyorConfigData, type ProviderEntry } from "./schema";
+import { configSchema, harnessLevelSettingsSchema, isHarnessRunner, isNativeStage, JSON_PROCESS_RUNNER, type ConveyorConfigData, type ProviderEntry } from "./schema";
 import type { HarnessProfile } from "../harness/types";
-import type { Plugin } from "../core/plugins";
+import type { HarnessPlugin, Plugin } from "../core/plugins";
 
 const NAMED_SECTIONS = [
   "sources",
@@ -89,49 +89,121 @@ function completeProviders(data: ConveyorConfigData, plugins: readonly Plugin[])
         errors.push({ path: [key, name, "type"], message: `: no ${role} plugin provides type "${entry.type}" (known: ${known.join(", ") || "none"})` });
         continue;
       }
-      const parsed = plugin.configSchema.safeParse(entry);
+      // A harness entry's `settings` are the core's: its environment, and its plugin's agent settings.
+      const { settings, ...rest } = role === "harness" ? entry : { ...entry, settings: undefined };
+      const parsed = plugin.configSchema.safeParse(role === "harness" ? rest : entry);
       if (!parsed.success) {
         errors.push(...parsed.error.issues.map((issue) => ({ path: [key, name, ...issue.path.map(String)], message: `: ${issue.message}` })));
         continue;
       }
-      entries[name] = parsed.data as ProviderEntry;
+      if (role !== "harness") {
+        entries[name] = parsed.data as ProviderEntry;
+        continue;
+      }
+      const levelSettings = harnessLevelSettingsSchema.safeParse(settings ?? {});
+      if (!levelSettings.success) {
+        errors.push(...levelSettings.error.issues.map((issue) => ({ path: [key, name, "settings", ...issue.path.map(String)], message: `: ${issue.message}` })));
+        continue;
+      }
+      const { environment, ...harnessKeys } = levelSettings.data;
+      entries[name] = {
+        ...(parsed.data as ProviderEntry),
+        ...(environment && Object.keys(environment).length > 0 ? { environment } : {}),
+        ...(Object.keys(harnessKeys).length > 0 ? { settings: harnessKeys } : {}),
+      };
     }
   }
   return errors;
 }
 
-/** The agents that set the deprecated `codexConfig` (the old name of `harnessSettings`). */
-function codexConfigAgents(document: ConfigurationDocument): string[] {
+/** Where each agent wrote its harness's keys: `settings`, or a deprecated name. */
+function harnessSettingsFields(document: ConfigurationDocument): Map<string, string> {
+  const fields = new Map<string, string>();
   const agents = document.agents;
-  if (!isObject(agents)) return [];
-  return Object.entries(agents).filter(([, agent]) => isObject(agent) && "codexConfig" in agent).map(([name]) => name);
+  if (!isObject(agents)) return fields;
+  for (const [name, agent] of Object.entries(agents)) {
+    if (!isObject(agent)) continue;
+    fields.set(name, "codexConfig" in agent ? "codexConfig" : "harnessSettings" in agent ? "harnessSettings" : "settings");
+  }
+  return fields;
 }
 
 /**
- * Validates each agent's `harnessSettings` with the settings schema of its runner's harness plugin, and
- * applies its defaults. A harness that declares no schema takes no settings. An agent that used the
- * deprecated `codexConfig` name is told about that key.
+ * Validates each harness entry's and agent's harness keys of `settings` with the settings schema of
+ * the harness plugin, and gives each agent its harness's keys with its own on top. A harness that
+ * declares no schema takes no keys besides `environment`.
  */
-function completeHarnessSettings(data: ConveyorConfigData, plugins: readonly Plugin[], aliased: ReadonlySet<string>): LocatedError[] {
+function completeHarnessSettings(data: ConveyorConfigData, plugins: readonly Plugin[], fields: ReadonlyMap<string, string>): LocatedError[] {
   const errors: LocatedError[] = [];
+  const harnessOf = (type: string) => plugins.find((candidate): candidate is HarnessPlugin => candidate.role === "harness" && candidate.type === type);
+  for (const [name, runner] of Object.entries(data.runners)) {
+    if (!isHarnessRunner(runner) || Object.keys(runner.settings ?? {}).length === 0) continue;
+    const plugin = harnessOf(runner.type);
+    if (!plugin) continue;
+    if (!plugin.agentSettingsSchema) {
+      errors.push({ path: ["runners", name, "settings"], message: `: ${plugin.profile.name} does not take settings besides environment` });
+      continue;
+    }
+    const parsed = plugin.agentSettingsSchema.safeParse(runner.settings);
+    if (!parsed.success) {
+      errors.push(...parsed.error.issues.map((issue) => ({ path: ["runners", name, "settings", ...issue.path.map(String)], message: `: ${issue.message}` })));
+    }
+  }
   for (const [name, agent] of Object.entries(data.agents)) {
-    if (Object.keys(agent.harnessSettings).length === 0) continue;
     const runner = data.runners[agent.runner];
     // An unknown runner is reported with the other references; the JSON process takes no harness settings.
-    const plugin = runner ? plugins.find((candidate) => candidate.role === "harness" && candidate.type === runner.type) : undefined;
-    if (!plugin || plugin.role !== "harness") continue;
-    const field = aliased.has(name) ? "codexConfig" : "harnessSettings";
+    if (!runner || !isHarnessRunner(runner)) continue;
+    const plugin = harnessOf(runner.type);
+    if (!plugin) continue;
+    const merged = { ...runner.settings, ...agent.harnessSettings };
+    if (Object.keys(agent.harnessSettings).length === 0) {
+      agent.harnessSettings = merged;
+      continue;
+    }
+    const field = fields.get(name) ?? "settings";
     if (!plugin.agentSettingsSchema) {
-      errors.push({ path: ["agents", name], message: ` runs on ${plugin.profile.name}, which does not take ${field}` });
+      errors.push({ path: ["agents", name], message: ` runs on ${plugin.profile.name}, which does not take ${field === "settings" ? "settings besides environment" : field}` });
       continue;
     }
-    const parsed = plugin.agentSettingsSchema.safeParse(agent.harnessSettings);
-    if (!parsed.success) {
-      errors.push(...parsed.error.issues.map((issue) => ({ path: ["agents", name, field, ...issue.path.map(String)], message: `: ${issue.message}` })));
+    const own = plugin.agentSettingsSchema.safeParse(agent.harnessSettings);
+    if (!own.success) {
+      errors.push(...own.error.issues.map((issue) => ({ path: ["agents", name, field, ...issue.path.map(String)], message: `: ${issue.message}` })));
       continue;
     }
-    agent.harnessSettings = parsed.data;
+    agent.harnessSettings = { ...runner.settings, ...own.data };
   }
+  return errors;
+}
+
+/**
+ * A variable a harness sets for its own runs (its private login directory) may not be set by the
+ * configuration at any level, for any harness that is configured.
+ */
+function harnessVariableErrors(data: ConveyorConfigData, plugins: readonly Plugin[]): LocatedError[] {
+  const owners = new Map<string, string>();
+  for (const runner of Object.values(data.runners)) {
+    const plugin = plugins.find((candidate): candidate is HarnessPlugin => candidate.role === "harness" && candidate.type === runner.type);
+    for (const variable of plugin?.profile.runVariables ?? []) owners.set(variable, plugin!.profile.name);
+  }
+  if (owners.size === 0) return [];
+  const errors: LocatedError[] = [];
+  const check = (environment: Readonly<Record<string, unknown>> | undefined, at: string[]) => {
+    for (const variable of Object.keys(environment ?? {})) {
+      const owner = owners.get(variable);
+      if (owner) errors.push({ path: [...at, variable], message: `: ${variable} is set by ${owner} for its runs (use the harness's configDir to choose its directory)` });
+    }
+  };
+  check(data.settings.environment, ["settings", "environment"]);
+  for (const [name, repository] of Object.entries(data.repositories)) check(repository.settings.environment, ["repositories", name, "settings", "environment"]);
+  for (const [id, pipeline] of Object.entries(data.pipelines)) {
+    pipeline.stages.forEach((stage, index) => {
+      if (isNativeStage(stage)) check(stage.settings.environment, ["pipelines", id, "stages", String(index), "settings", "environment"]);
+    });
+  }
+  for (const [name, runner] of Object.entries(data.runners)) {
+    if (isHarnessRunner(runner)) check(runner.environment, ["runners", name, "settings", "environment"]);
+  }
+  for (const [name, agent] of Object.entries(data.agents)) check(agent.environment, ["agents", name, "settings", "environment"]);
   return errors;
 }
 
@@ -151,6 +223,12 @@ function resolvePath(value: unknown, baseDirectory: string): unknown {
   return resolveFilesystemPath(expanded);
 }
 
+/** An environment's absolute path values resolved through symbolic links; empty values stay the service's. */
+function resolveEnvironmentPaths(environment: Record<string, string | null>): Record<string, string | null> {
+  const written = Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== null));
+  return { ...environment, ...resolvePathEnvironment(written) };
+}
+
 /** Applies the run-facing path contract after defaults and home expansion have been parsed. */
 function normalizeRunPaths(config: ConveyorConfigData): ConveyorConfigData {
   for (const name of ["database", "logs", "workspaces", "artifacts"] as const) {
@@ -159,10 +237,15 @@ function normalizeRunPaths(config: ConveyorConfigData): ConveyorConfigData {
   if (config.web.steering?.workspace) {
     config.web.steering.workspace = resolveFilesystemPath(config.web.steering.workspace);
   }
+  config.settings.environment = resolveEnvironmentPaths(config.settings.environment);
+  for (const repository of Object.values(config.repositories)) repository.settings.environment = resolveEnvironmentPaths(repository.settings.environment);
+  for (const pipeline of Object.values(config.pipelines)) {
+    for (const stage of pipeline.stages) if (isNativeStage(stage)) stage.settings.environment = resolveEnvironmentPaths(stage.settings.environment);
+  }
   for (const agent of Object.values(config.agents)) {
+    agent.environment = resolveEnvironmentPaths(agent.environment);
     agent.instructions = resolveFilesystemPath(agent.instructions);
     agent.writableRoots = agent.writableRoots.map(resolveFilesystemPath);
-    agent.env = resolvePathEnvironment(agent.env);
     for (const server of Object.values(agent.mcpServers)) server.env = resolvePathEnvironment(server.env);
   }
   for (const check of Object.values(config.checks)) {
@@ -837,9 +920,22 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
       `pipelines: and repository pipeline: are deprecated, used in ${[...deprecatedFiles].join(", ")}: declare stages: instead (\`conveyor config migrate --stages\` rewrites them)`,
     );
   }
-  const codexConfigUsers = codexConfigAgents(merged);
-  if (codexConfigUsers.length > 0) {
-    warnings.push(`agent codexConfig is deprecated, used by ${codexConfigUsers.join(", ")}: rename it to harnessSettings (same keys and values)`);
+  const legacyAgents = (key: string) => (isObject(merged.agents) ? Object.entries(merged.agents) : []).filter(([, agent]) => isObject(agent) && key in agent).map(([name]) => name);
+  for (const [key, hint] of [
+    ["codexConfig", "move its keys into the agent's settings (same keys and values)"],
+    ["harnessSettings", "move its keys into the agent's settings (same keys and values)"],
+    ["env", "move it to the agent's settings.environment (same names and values)"],
+  ] as const) {
+    const users = legacyAgents(key);
+    if (users.length > 0) warnings.push(`agent ${key} is deprecated, used by ${users.join(", ")}: ${hint}`);
+  }
+  const harnessEntries = isObject(merged.harnesses) ? merged.harnesses : isObject(merged.runners) ? merged.runners : {};
+  for (const [name, entry] of Object.entries(harnessEntries)) {
+    if (!isObject(entry)) continue;
+    const plugin = options.plugins?.find((candidate): candidate is HarnessPlugin => candidate.role === "harness" && candidate.type === entry.type);
+    for (const [key, hint] of Object.entries(plugin?.deprecatedSettings ?? {})) {
+      if (key in entry) warnings.push(`harnesses.${name}.${key} is deprecated: ${hint}`);
+    }
   }
 
   // Repositories with a managed webhook are no longer read periodically; these settings did that.
@@ -886,7 +982,7 @@ export async function loadConfig(
   if (options.plugins) {
     const providerErrors = completeProviders(data, options.plugins);
     if (providerErrors.length > 0) throw new ConfigError(formatErrors("configuration is invalid:", providerErrors, locate));
-    const settingsErrors = completeHarnessSettings(data, options.plugins, new Set(codexConfigAgents(merged)));
+    const settingsErrors = [...completeHarnessSettings(data, options.plugins, harnessSettingsFields(merged)), ...harnessVariableErrors(data, options.plugins)];
     if (settingsErrors.length > 0) throw new ConfigError(formatErrors("configuration is invalid:", settingsErrors, locate));
   }
   for (const [id, repository] of Object.entries(data.repositories)) {
