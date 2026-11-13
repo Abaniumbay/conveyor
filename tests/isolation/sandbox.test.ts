@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { serveMcpSocket } from "../../src/isolation/mcp-socket";
-import { agentFilesystemCommand, agentFilesystemPlan, confinedCommand, confinedCommandPlan, privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
+import { agentFilesystemCommand, agentFilesystemPlan, privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
 import { prepareCodexEnvironment } from "../../src/plugins/codex/home";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
@@ -35,101 +35,6 @@ test("architecture documents the shared confined mount plan", async () => {
   expect(architecture).toContain("Its Bubblewrap namespace has an empty root");
   expect(architecture).toContain("The service's `CODEX_HOME` is never mounted");
   expect(architecture).toContain("Every repository receives filesystem confinement");
-});
-
-describeSandbox("confined command exposes only its fresh scratch directory", () => {
-  test("denies an agent read of another Conveyor home's database", async () => {
-    const root = await shortTemporaryDirectory("conveyor-operator-confined-");
-    try {
-      const scratch = path.join(root, "scratch");
-      const otherHome = path.join(root, "another-conveyor-home");
-      const database = path.join(otherHome, "conveyor.sqlite");
-      const runtime = path.join(root, "codex-runtime");
-      const agent = path.join(runtime, "codex");
-      const mcpRuntime = path.join(root, "mcp-runtime");
-      const mcp = path.join(mcpRuntime, "bridge");
-      const mcpContext = path.join(root, "mcp-context.json");
-      const codexHome = path.join(root, "codex-home");
-      await mkdir(scratch);
-      await mkdir(otherHome);
-      await mkdir(runtime);
-      await mkdir(mcpRuntime);
-      await mkdir(codexHome);
-      await writeFile(database, "database that must not be readable");
-      await writeFile(path.join(runtime, "runtime-dependency"), "codex-runtime");
-      await writeFile(path.join(mcpRuntime, "runtime-dependency"), "mcp-runtime");
-      await writeFile(path.join(codexHome, "auth.json"), "credential");
-      await writeFile(mcpContext, "mcp-context");
-      await writeFile(mcp, `#!/bin/sh
-      test "$(cat "$(dirname "$0")/runtime-dependency")" = mcp-runtime || exit 21
-      test "$(cat "$MCP_CONTEXT")" = mcp-context || exit 22
-      printf mcp-ready
-    `);
-      await writeFile(agent, `#!/bin/sh
-      test -z "$(ls -A \"$TMPDIR\")" || exit 11
-      if cat "$HOST_DATABASE" >/dev/null 2>&1; then exit 12; fi
-      test "$(cat "$CODEX_HOME/auth.json")" = credential || exit 13
-      test "$(cat "$(dirname "$0")/runtime-dependency")" = codex-runtime || exit 14
-      test -r /etc/resolv.conf || exit 15
-      test -d /etc/ssl/certs || exit 16
-      test "$("$MCP_COMMAND")" = mcp-ready || exit 17
-      printf usable > "$TMPDIR/operator-file"
-    `);
-      await Promise.all([chmod(agent, 0o755), chmod(mcp, 0o755)]);
-      const launch = confinedCommand({
-        argv: [agent],
-        env: {
-          PATH: "/usr/bin:/bin",
-          HOST_DATABASE: database,
-          CODEX_HOME: codexHome,
-          MCP_COMMAND: mcp,
-          MCP_CONTEXT: mcpContext,
-        },
-        scratch,
-        readablePaths: [mcpContext],
-        runtimePaths: [mcp],
-        credentialFiles: [path.join(codexHome, "auth.json")],
-      });
-      expect(await readdir(scratch)).toEqual([]);
-      const child = Bun.spawn(launch.argv, { env: launch.env, stdout: "pipe", stderr: "pipe" });
-      expect(await child.exited).toBe(0);
-      expect(await Bun.file(path.join(scratch, "operator-file")).text()).toBe("usable");
-      expect(await Bun.file(database).text()).toBe("database that must not be readable");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-});
-
-test("confined command fails closed before bubblewrap can launch", async () => {
-  const root = await shortTemporaryDirectory("conveyor-confined-plan-");
-  try {
-    const scratch = path.join(root, "scratch");
-    const runtime = path.join(root, "runtime");
-    const command = path.join(runtime, "codex");
-    const codexHome = path.join(root, "codex-home");
-    await Promise.all([mkdir(scratch), mkdir(runtime), mkdir(codexHome)]);
-    await writeFile(command, "#!/bin/sh\nexit 0\n");
-    await chmod(command, 0o755);
-    await writeFile(path.join(codexHome, "auth.json"), "credential");
-
-    const credentialFiles = [path.join(codexHome, "auth.json")];
-    const plan = confinedCommandPlan({ argv: [command], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch, credentialFiles });
-    expect(plan.argv).not.toContain("--dev-bind");
-    expect(plan.argv.filter((argument) => argument === "--bind")).toEqual(["--bind"]);
-    expect(plan.argv.slice(plan.argv.indexOf("--bind"), plan.argv.indexOf("--bind") + 3)).toEqual(["--bind", scratch, scratch]);
-    expect(plan.env.HOME).toBe(scratch);
-    expect(plan.env.CODEX_HOME).toBe(codexHome);
-    expect(plan.argv.some((argument, index) => argument === "--ro-bind" && plan.argv[index + 2] === credentialFiles[0])).toBe(true);
-    expect(() => confinedCommand({ argv: [command], env: { PATH: "", CODEX_HOME: codexHome }, scratch, credentialFiles })).toThrow("requires bubblewrap");
-    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin" }, scratch, credentialFiles: [] })).toThrow("requires the harness's credential files");
-    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin" }, scratch, credentialFiles: [path.join(root, "missing-auth.json")] })).toThrow("which does not exist");
-    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin" }, scratch, credentialFiles: ["auth.json"] })).toThrow("requires an absolute credential file path");
-    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch: path.join(root, "missing"), credentialFiles })).toThrow("scratch directory does not exist");
-    expect(() => confinedCommand({ argv: ["missing-codex"], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch, credentialFiles })).toThrow("not installed");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
 });
 
 test("network isolation normalizes a symlinked run temporary directory", async () => {
@@ -734,7 +639,7 @@ describeSandbox("confined agent in a standalone release layout", () => {
     if (options.manifest) await writeFile(path.join(release, "codex-package.json"), "{}");
     await symlink(executable, path.join(root, "bin", "codex"));
     const env = { PATH: `${path.join(root, "bin")}:/usr/bin:/bin`, HOME: path.join(root, "run", "home") };
-    const filesystem = { command: "codex", env, workspace: path.join(root, "workspace"), artifacts: path.join(root, "run"), home: env.HOME, scratch: path.join(root, "run", "scratch") };
+    const filesystem = { command: "codex", env, workspace: path.join(root, "workspace"), artifacts: path.join(root, "run"), home: env.HOME, scratch: path.join(root, "run", "scratch"), releaseManifest: "codex-package.json" };
     return { root, release, other, codex, filesystem };
   }
 
@@ -805,7 +710,7 @@ describe("agent filesystem plan for installation layouts", () => {
     await chmod(path.join(release, "bin", "codex"), 0o755);
     if (manifest) await writeFile(path.join(release, "codex-package.json"), "{}");
     const env = { PATH: "/usr/bin:/bin" };
-    return { release, executable: path.join(release, "bin", "codex"), options: { command: path.join(release, "bin", "codex"), env, workspace: path.join(root, "workspace"), artifacts: path.join(root, "run"), home: path.join(root, "run", "home"), scratch: path.join(root, "run", "scratch") } };
+    return { release, executable: path.join(release, "bin", "codex"), options: { command: path.join(release, "bin", "codex"), env, workspace: path.join(root, "workspace"), artifacts: path.join(root, "run"), home: path.join(root, "run", "home"), scratch: path.join(root, "run", "scratch"), releaseManifest: "codex-package.json" } };
   }
 
   const binds = (mounts: string[]) => mounts.flatMap((mount, index) => mount === "--ro-bind" ? [mounts[index + 1]!] : []);
@@ -823,6 +728,13 @@ describe("agent filesystem plan for installation layouts", () => {
     const { mounts } = agentFilesystemPlan(options);
     expect(binds(mounts)).toContain(realpathSync(executable));
     expect(binds(mounts)).not.toContain(realpathSync(release));
+  });
+
+  test("a manifest makes no release root when the harness names none", async () => {
+    const { release, executable, options } = await install(true);
+    const { releaseManifest: _manifest, ...unnamed } = options;
+    expect(binds(agentFilesystemPlan(unnamed).mounts)).toContain(realpathSync(executable));
+    expect(binds(agentFilesystemPlan(unnamed).mounts)).not.toContain(realpathSync(release));
   });
 
   test("a directory named codex-package.json does not make a release root", async () => {

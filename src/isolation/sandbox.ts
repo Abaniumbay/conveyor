@@ -55,6 +55,11 @@ export interface AgentFilesystemOptions {
    * is missing or overlaps run material fails the plan, so no agent command starts without it.
    */
   toolchain?: readonly string[];
+  /**
+   * The manifest file name that marks the harness's standalone release layout (see
+   * `standaloneRelease`); absent: the executable is always mounted on its own.
+   */
+  releaseManifest?: string;
 }
 
 /** A prepared, narrow bubblewrap filesystem used by every agent harness. */
@@ -62,26 +67,8 @@ export interface AgentFilesystemPlan {
   mounts: string[];
 }
 
-export interface ConfinedCommandOptions {
-  /** The command which is allowed to run in the otherwise empty mount namespace. */
-  argv: readonly string[];
-  /** Its sanitized environment. */
-  env: Record<string, string>;
-  /** The only writable and readable application directory. */
-  scratch: string;
-  /** Individual files the command needs, such as a run-scoped MCP context. */
-  readablePaths?: readonly string[];
-  /** Executable installation directories the command needs to invoke its scoped MCP bridge. */
-  runtimePaths?: readonly string[];
-  /**
-   * The harness's credential files, mounted read-only. The harness's caller names them; at least one
-   * is required, and each must exist, so a confined command never starts without its login.
-   */
-  credentialFiles: readonly string[];
-}
-
 /**
- * Builds the empty-root filesystem shared by Codex and Claude Code.  In particular this never
+ * Builds the empty-root filesystem shared by every agent harness.  In particular this never
  * starts from a read-only host root: doing so makes hiding a few known secret directories a
  * blacklist with inevitable holes.
  */
@@ -136,7 +123,7 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
     addPath(resolved, false);
   }
   // The one exception is the executable itself when it sits in a standalone release layout.
-  const release = standaloneRelease(executable);
+  const release = options.releaseManifest ? standaloneRelease(executable, options.releaseManifest) : undefined;
   if (release) addPath(release, false, true);
   const interpreter = scriptInterpreter(executable, options.env);
   if (interpreter) addPath(interpreter, false);
@@ -203,23 +190,21 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
 
 /**
  * The installation root of a standalone agent release, when the resolved executable is
- * `<root>/bin/<name>` and `<root>/codex-package.json` is a regular file. The Codex installer keeps one
- * release per directory (`~/.codex/packages/standalone/releases/<version>/`) and Codex finds its
- * `bin/codex-code-mode-host` helper and `codex-resources/` relative to its own resolved path, so those
- * siblings must exist. The layout is recognised by its manifest, not by a harness-declared root: that
- * needs no per-harness configuration, and a plain single-file executable (no manifest) keeps mounting
- * only itself. Only this root is mounted, read-only: never `~/.codex`, which holds credentials, nor
- * other releases. Claude Code's native install (`~/.local/share/claude/versions/<version>`) is a single
- * file that needs nothing beside it, so it stays on the single-file path.
+ * `<root>/bin/<name>` and `<root>/<manifest>` is a regular file. Some installers keep one release per
+ * directory and the harness finds helpers and resources relative to its own resolved path, so those
+ * siblings must exist. The harness plugin names its manifest (`releaseManifest`); the root itself is
+ * recognised by that file, so it needs no configuration, and a plain single-file executable (no
+ * manifest) keeps mounting only itself. Only this root is mounted, read-only: never the harness's
+ * home, which holds credentials, nor other releases.
  */
-function standaloneRelease(executable: string): string | undefined {
+function standaloneRelease(executable: string, manifest: string): string | undefined {
   const resolved = resolveFilesystemPath(executable);
   const binDirectory = path.dirname(resolved);
   if (path.basename(binDirectory) !== "bin") return undefined;
   const root = path.dirname(binDirectory);
   if (root === "/" || root === "/usr" || root.startsWith("/usr/")) return undefined;
   try {
-    return statSync(path.join(root, "codex-package.json")).isFile() ? root : undefined;
+    return statSync(path.join(root, manifest)).isFile() ? root : undefined;
   } catch {
     return undefined;
   }
@@ -337,101 +322,6 @@ export function privateTmpCommand(options: { argv: readonly string[]; env: Recor
     env: resolvePathEnvironment(options.env),
     dataEnv: {},
   };
-}
-
-/**
- * Runs a command in an empty filesystem with only its scratch directory and individual run files.
- * This is deliberately separate from the ordinary isolation wrappers: it is for the board-only
- * Operator, whose process must not inherit the service's workspace or home mounts.
- */
-/** Builds the mount namespace arguments before requiring the bubblewrap executable. */
-export function confinedCommandPlan(options: ConfinedCommandOptions): SandboxedCommand {
-  const command = options.argv[0];
-  if (!command) throw new Error("cannot confine an empty command");
-  const scratch = resolveFilesystemPath(options.scratch);
-  if (!existsSync(scratch)) throw new Error(`Operator scratch directory does not exist: ${scratch}`);
-  const executable = path.isAbsolute(command)
-    ? resolveFilesystemPath(command)
-    : findOnPath(command, options.env.PATH);
-  if (!executable || !existsSync(executable)) throw new Error(`cannot confine a command that is not installed: ${command}`);
-
-  const mounts = [
-    "--tmpfs", "/",
-    "--dir", "/usr",
-    "--ro-bind", "/usr", "/usr",
-    "--symlink", "usr/bin", "/bin",
-    "--symlink", "usr/lib", "/lib",
-    "--symlink", "usr/lib64", "/lib64",
-    "--dev", "/dev",
-    "--proc", "/proc",
-  ];
-  const directories = new Set(["/", "/usr", "/dev", "/proc"]);
-  const addDirectory = (directory: string) => {
-    if (directories.has(directory) || directory.startsWith("/usr/")) return;
-    const parent = path.dirname(directory);
-    if (parent !== directory) addDirectory(parent);
-    mounts.push("--dir", directory);
-    directories.add(directory);
-  };
-  const addFile = (file: string) => {
-    const target = path.resolve(file);
-    const resolved = resolveFilesystemPath(file);
-    if (!existsSync(resolved) || target === scratch || target.startsWith(`${scratch}/`) || target.startsWith("/usr/")) return;
-    addDirectory(path.dirname(target));
-    mounts.push("--ro-bind", resolved, target);
-  };
-  const addRuntimePath = (runtimePath: string) => {
-    const target = path.resolve(runtimePath);
-    const resolved = resolveFilesystemPath(runtimePath);
-    if (!existsSync(resolved) || target === scratch || target.startsWith(`${scratch}/`) || target.startsWith("/usr/")) return;
-    const isDirectory = statSync(resolved).isDirectory();
-    const sourceDirectory = isDirectory ? resolved : path.dirname(resolved);
-    const targetDirectory = isDirectory ? target : path.dirname(target);
-    if (directories.has(targetDirectory)) return;
-    addDirectory(path.dirname(targetDirectory));
-    mounts.push("--ro-bind", sourceDirectory, targetDirectory);
-    directories.add(targetDirectory);
-  };
-  // Bubblewrap creates bind targets only when their parents already exist in the new namespace.
-  addDirectory(path.dirname(scratch));
-  mounts.push("--bind", scratch, scratch);
-  directories.add(scratch);
-  // The harness and the MCP bridge can use adjacent runtime files, but no parent directory above
-  // their resolved installation directory is made visible.
-  addRuntimePath(executable);
-  for (const runtimePath of options.runtimePaths ?? []) {
-    if (path.isAbsolute(runtimePath)) addRuntimePath(runtimePath);
-  }
-  for (const file of options.readablePaths ?? []) {
-    if (path.isAbsolute(file)) addFile(file);
-  }
-  if (options.credentialFiles.length === 0) throw new Error("Operator filesystem confinement requires the harness's credential files");
-  for (const file of options.credentialFiles) {
-    if (!path.isAbsolute(file)) throw new Error(`Operator filesystem confinement requires an absolute credential file path, not ${file}`);
-    if (!existsSync(resolveFilesystemPath(file))) throw new Error(`Operator filesystem confinement requires the credential file ${file}, which does not exist`);
-    addFile(file);
-  }
-  if (existsSync("/etc/ssl/certs")) {
-    addDirectory("/etc");
-    mounts.push("--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs");
-  }
-  for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"]) {
-    if (existsSync(file)) addFile(file);
-  }
-  const env: Record<string, string> = { ...options.env, HOME: scratch, TMPDIR: scratch };
-  return {
-    argv: ["--unshare-pid", "--die-with-parent", "--new-session", ...mounts, "--chdir", scratch, "--", executable, ...options.argv.slice(1)],
-    env: resolvePathEnvironment(env),
-    dataEnv: {},
-  };
-}
-
-/** Starts the fail-closed mount namespace for the board-only Operator. */
-export function confinedCommand(options: ConfinedCommandOptions): SandboxedCommand {
-  const plan = confinedCommandPlan(options);
-  const bubblewrap = findOnPath("bwrap", options.env.PATH);
-  if (!bubblewrap) throw new Error("Operator filesystem confinement requires bubblewrap");
-  return { ...plan, argv: [bubblewrap, ...plan.argv] };
 }
 
 function findOnPath(command: string, pathValue: string | undefined): string | undefined {

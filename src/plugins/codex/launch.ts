@@ -6,6 +6,13 @@ import { agentFilesystemCommand, agentLaunchCommand, privateTmpCommand, PROXY_VA
 /** Hosts Codex itself needs for its model backend and authentication. */
 export const CODEX_CONTROL_PLANE_HOSTS: readonly string[] = ["chatgpt.com", "api.openai.com", "auth.openai.com"];
 
+/**
+ * The file that marks a standalone Codex release: its installer keeps one release per directory
+ * (`~/.codex/packages/standalone/releases/<version>/`) and Codex finds its `bin/codex-code-mode-host`
+ * helper and `codex-resources/` relative to its own resolved path, so that root is mounted read-only.
+ */
+export const CODEX_RELEASE_MANIFEST = "codex-package.json";
+
 /** `-c` overrides that keep the control-plane proxy out of commands the harness runs. */
 export function shellPolicyArguments(dataEnv: Record<string, string>): string[] {
   const set = Object.entries(dataEnv).map(([name, value]) => `${name}=${JSON.stringify(value)}`);
@@ -34,18 +41,19 @@ export async function codexLaunch(options: {
   filesystem: AgentFilesystemOptions;
   buildArguments: (extra: string[]) => string[];
 }): Promise<{ argv: string[]; env: Record<string, string>; network: RunNetwork | null }> {
+  const confined: AgentFilesystemOptions = { ...options.filesystem, releaseManifest: CODEX_RELEASE_MANIFEST };
   if (!options.egress) {
     const plain = { argv: [options.command, ...options.buildArguments([])], env: options.environment };
-    const launch = options.privateTmp ? privateTmpCommand(plain) : agentFilesystemCommand(options.filesystem, plain.argv);
-    if (!options.privateTmp) verifyAgentWrapper(launch, agentLaunchCommand(options.filesystem));
+    const launch = options.privateTmp ? privateTmpCommand(plain) : agentFilesystemCommand(confined, plain.argv);
+    if (!options.privateTmp) verifyAgentWrapper(launch, agentLaunchCommand(confined));
     return { argv: launch.argv, env: launch.env, network: null };
   }
   const policy: AgentNetworkPolicy = { ...options.egress, controlPlaneHosts: options.egress.controlPlaneHosts ?? CODEX_CONTROL_PLANE_HOSTS };
   const network = await startRunNetwork({ directory: path.join(options.artifactsDirectory, "net"), policy });
-  const filesystem = withBridgeSockets(options.filesystem, policy);
+  const filesystem = withBridgeSockets(confined, policy);
   let command: string;
   try {
-    command = agentLaunchCommand(options.filesystem);
+    command = agentLaunchCommand(confined);
   } catch (error) {
     await network.close();
     throw error;
