@@ -4,9 +4,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
-import { cleanupSanitizedHome, prepareCodexEnvironment, serviceCodexHome, syncCodexHome } from "../../isolation/environment";
+import { cleanupSanitizedHome } from "../../isolation/environment";
+import { prepareCodexEnvironment, serviceCodexHome, syncCodexHome } from "./home";
 import { acquireScratch, assertNoHostTmpWritableRoots, type ScratchDirectory } from "../../isolation/scratch";
-import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch, type EgressInput, type RunNetwork } from "../../isolation/run-network";
+import type { EgressInput, RunNetwork } from "../../isolation/run-network";
+import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch } from "./launch";
 import { log } from "../../log/logger";
 import {
   EMPTY_USAGE,

@@ -1,5 +1,5 @@
 import type { HarnessProfile } from "../../harness/types";
-import { CLAUDE_CONTROL_PLANE_HOSTS } from "../../isolation/run-network";
+import { CLAUDE_CONTROL_PLANE_HOSTS } from "./launch";
 
 /**
  * Claude Code derives its sandbox from the agent's access, may run without a shell, takes no extra

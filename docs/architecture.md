@@ -115,9 +115,12 @@ the rule new code follows; the current state is tracked by the boundary test.
   network, its control-plane hosts and credential variables. The loader checks agents against the
   profile; the core prepares runs from it and reaches legacy producers, legacy checks, the
   Operator, the harness's usage quota (`Harness.quota`, shown on the dashboard) and its
-  `conveyor doctor` check through the plugin, never by importing a runner. Each plugin
-  picks its own launch (Codex's shell policy arguments, Claude Code's shell prefix) from
-  `src/isolation/`.
+  `conveyor doctor` check through the plugin, never by importing a runner. Each plugin keeps
+  its own environment handling (Codex's private home in `src/plugins/codex/home.ts`) and launch
+  (Codex's shell policy arguments in `src/plugins/codex/launch.ts`, Claude Code's shell prefix in
+  `src/plugins/claude-code/launch.ts`), built from the harness-neutral sandbox, run network and
+  sanitized environment in `src/isolation/`. An agent inherits only the variables its own harness's
+  profile names, so one harness never receives another's (a Claude Code agent gets no `CODEX_HOME`).
 - **Events:** plugins report what they observe as events; the core compares them with what it
   knows, records the change, and emits its own events, which other modules (the dashboard among
   them) consume. Writes stay direct calls through ports, and every write is recorded as an event.
@@ -254,10 +257,10 @@ src/
 ├── db/           all SQLite: migrations, the store and its domain ports, the execution journal, the event log, review and gate records, advisory CI watches, report queries
 ├── engine/       stage executor, stage context and routing, finding types, remaining-work summary
 ├── harness/      neutral agent-harness contract and harness profile
-├── isolation/    agent environment, network sandbox, egress proxies
+├── isolation/    harness-neutral agent environment, filesystem sandbox, run network, egress proxies
 ├── log/          service logging (redaction, rotation) and the log reader
 ├── mcp/          run-scoped MCP context and stdio server
-├── plugins/      plugin implementations: github/{shared,items,code,ci}, codex and claude-code (runners and profiles), dashboard (view models and live feed); index.ts lists them
+├── plugins/      plugin implementations: github/{shared,items,code,ci}, codex and claude-code (runners, profiles, environment and launch), dashboard (view models and live feed); index.ts lists them
 ├── release/      installed-release layout, verified staging, backups and switch history
 ├── runner/       run envelope, output schemas, sandbox-failure detection and the strict JSON-process runner
 ├── source/       item source ports and the client the service holds, call metering, the actor trust policy, the status comment, the managed-section codec, item types and fields

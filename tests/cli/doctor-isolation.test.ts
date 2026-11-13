@@ -3,20 +3,21 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { mcpServerChecks, configuredCodexIsolationChecks, type DoctorCommand } from "../../src/cli/commands/doctor";
+import { mcpServerChecks, configuredAgentSandboxChecks, type DoctorCommand } from "../../src/cli/commands/doctor";
+import type { RunnerConfig } from "../../src/config/schema";
 
 interface IsolationConfig {
   agents: Record<string, { runner: string }>;
-  runners: Record<string, { type: string }>;
+  runners: Record<string, RunnerConfig>;
   repositories: Record<string, { agentEgress?: object | undefined }>;
 }
 
-const config = (agentEgress: boolean): IsolationConfig => ({
+const config = (agentEgress: boolean, runner: RunnerConfig = { type: "codex", command: "codex" }): IsolationConfig => ({
   agents: {
-    codex: { runner: "codex" },
+    agent: { runner: "agents" },
   },
   runners: {
-    codex: { type: "codex" },
+    agents: runner,
   },
   repositories: {
     app: {
@@ -27,26 +28,26 @@ const config = (agentEgress: boolean): IsolationConfig => ({
 
 const succeeds: DoctorCommand = async () => ({ code: 0, output: "" });
 
-describe("configured Codex isolation doctor checks", () => {
-  test("the operator guide describes configured Codex isolation diagnostics", async () => {
+describe("configured agent sandbox doctor checks", () => {
+  test("the operator guide describes the configured agent sandbox diagnostics", async () => {
     const guide = await readFile(path.join(import.meta.dir, "../../docs/operations.md"), "utf8");
 
-    expect(guide).toContain("`agentEgress` report network and PID namespace support");
-    expect(guide).toContain("the filesystem mounts required by Conveyor's bubblewrap egress wrapper");
-    expect(guide).toMatch(/Without `agentEgress`, Codex\s+needs no namespace of its own/);
+    expect(guide).toMatch(/`agentEgress` report network and PID namespace support \(`Agent sandbox namespaces`\)/);
+    expect(guide).toMatch(/the filesystem mounts required by Conveyor's bubblewrap egress wrapper \(`Agent sandbox mounts`\)/);
+    expect(guide).toMatch(/Without `agentEgress`, an agent needs no network namespace of its own/);
     expect(guide).not.toContain("user namespace required by Codex's own sandbox");
   });
 
   test("reports egress namespace and filesystem-mount isolation as available", async () => {
     const commands: string[][] = [];
-    const checks = await configuredCodexIsolationChecks(config(true), async (argv) => {
+    const checks = await configuredAgentSandboxChecks(config(true), async (argv) => {
       commands.push(argv);
       return { code: 0, output: "" };
     });
 
     expect(checks).toEqual([
-      { name: "Codex egress namespaces", status: "ok", detail: "bwrap can create network and PID namespaces" },
-      { name: "Codex egress mounts", status: "ok", detail: "bwrap can create the required filesystem mounts" },
+      { name: "Agent sandbox namespaces", status: "ok", detail: "bwrap can create network and PID namespaces" },
+      { name: "Agent sandbox mounts", status: "ok", detail: "bwrap can create the required filesystem mounts" },
     ]);
     expect(commands).toEqual([
       ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--", "true"],
@@ -55,33 +56,45 @@ describe("configured Codex isolation doctor checks", () => {
   });
 
   test("names and explains a denied egress namespace capability", async () => {
-    const checks = await configuredCodexIsolationChecks(config(true), async (argv) =>
+    const checks = await configuredAgentSandboxChecks(config(true), async (argv) =>
       argv.includes("--unshare-net") ? { code: 1, output: "Creating network namespace failed: Operation not permitted" } : { code: 0, output: "" },
     );
 
     expect(checks[0]).toEqual({
-      name: "Codex egress namespaces",
+      name: "Agent sandbox namespaces",
       status: "fail",
-      detail: "bwrap cannot create the network and PID namespaces required for Codex egress isolation: Creating network namespace failed: Operation not permitted",
+      detail: "bwrap cannot create the network and PID namespaces required for agent egress isolation: Creating network namespace failed: Operation not permitted",
       fix: "allow unprivileged user namespaces and network/PID namespace creation for bwrap (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)",
     });
   });
 
   test("names and explains a denied egress filesystem mount capability", async () => {
-    const checks = await configuredCodexIsolationChecks(config(true), async (argv) =>
+    const checks = await configuredAgentSandboxChecks(config(true), async (argv) =>
       argv.includes("--tmpfs") ? { code: 1, output: "Creating new namespace failed: Operation not permitted" } : { code: 0, output: "" },
     );
 
     expect(checks[1]).toEqual({
-      name: "Codex egress mounts",
+      name: "Agent sandbox mounts",
       status: "fail",
-      detail: "bwrap cannot create the filesystem mounts required for Codex egress isolation: Creating new namespace failed: Operation not permitted",
+      detail: "bwrap cannot create the filesystem mounts required for agent egress isolation: Creating new namespace failed: Operation not permitted",
       fix: "allow bwrap to create the bind, proc, and tmpfs mounts in its mount namespace (for example: grant bwrap mount permissions in the host's AppArmor profile)",
     });
   });
 
-  test("reports no Codex sandbox namespace check for repositories without agentEgress", async () => {
-    const checks = await configuredCodexIsolationChecks(config(false), async () => ({ code: 1, output: "No permissions to create a new namespace" }));
+  test("reports no sandbox namespace check for repositories without agentEgress", async () => {
+    const checks = await configuredAgentSandboxChecks(config(false), async () => ({ code: 1, output: "No permissions to create a new namespace" }));
+
+    expect(checks).toEqual([]);
+  });
+
+  test("checks the sandbox for a Claude Code agent, which runs in the same sandbox", async () => {
+    const checks = await configuredAgentSandboxChecks(config(true, { type: "claude-code", command: "claude" }), succeeds);
+
+    expect(checks.map((check) => check.name)).toEqual(["Agent sandbox namespaces", "Agent sandbox mounts"]);
+  });
+
+  test("reports no sandbox check when no agent runs on a harness", async () => {
+    const checks = await configuredAgentSandboxChecks(config(true, { type: "json-process" }), async () => ({ code: 1, output: "No permissions to create a new namespace" }));
 
     expect(checks).toEqual([]);
   });

@@ -29,7 +29,7 @@ import { parseLoopbackTcp } from "../src/isolation/egress-policy";
 import { startEgressProxy } from "../src/isolation/egress-proxy";
 import { agentEgressFor } from "../src/isolation/agent-egress";
 import { resolveBash, sanitizedAgentEnvironment } from "../src/isolation/environment";
-import { CLAUDE_CONTROL_PLANE_HOSTS, claudeLaunch } from "../src/isolation/run-network";
+import { CLAUDE_CONTROL_PLANE_HOSTS, claudeLaunch } from "../src/plugins/claude-code/launch";
 import { startTcpRelay } from "../src/isolation/tcp-relay";
 import { sandboxCommand, type AgentFilesystemOptions } from "../src/isolation/sandbox";
 

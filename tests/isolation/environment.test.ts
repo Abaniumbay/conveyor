@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { cleanupSanitizedHome, prepareAgentEnvironment, prepareSanitizedHome, resolveBash, sanitizedAgentEnvironment, syncCodexHome } from "../../src/isolation/environment";
+import { cleanupSanitizedHome, prepareAgentEnvironment, prepareSanitizedHome, resolveBash, sanitizedAgentEnvironment } from "../../src/isolation/environment";
 
 const directories: string[] = [];
 async function temporary(): Promise<string> {
@@ -44,20 +44,20 @@ describe("sanitizedAgentEnvironment", () => {
     expect(env).toEqual({ PATH: "/usr/bin", LANG: "C", HOME: "/run/home", TOKENIZER_MODE: "fast" });
   });
 
-  test("keeps explicitly listed control-plane variables, resolving CODEX_HOME from the original HOME", () => {
-    const secretish = sanitizedAgentEnvironment({ ...base, CODEX_API_KEY: "k", OPENAI_API_KEY: "o" }, {
+  test("keeps explicitly listed control-plane variables and still drops unlisted secrets", () => {
+    const env = sanitizedAgentEnvironment({ ...base, CODEX_HOME: "/custom/codex", CODEX_API_KEY: "k", OPENAI_API_KEY: "o" }, {
       home: "/run/home",
       controlPlane: ["CODEX_HOME"],
     });
-    expect(secretish.CODEX_HOME).toBe("/home/real/.codex");
-    expect(secretish.HOME).toBe("/run/home");
-    expect(secretish.OPENAI_API_KEY).toBeUndefined();
-    expect(secretish.CODEX_API_KEY).toBeUndefined();
-    const explicit = sanitizedAgentEnvironment({ ...base, CODEX_HOME: "/custom/codex" }, {
-      home: "/run/home",
-      controlPlane: ["CODEX_HOME"],
-    });
-    expect(explicit.CODEX_HOME).toBe("/custom/codex");
+    expect(env.CODEX_HOME).toBe("/custom/codex");
+    expect(env.HOME).toBe("/run/home");
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.CODEX_API_KEY).toBeUndefined();
+  });
+
+  test("invents no value for a listed control-plane variable the base does not set", () => {
+    const env = sanitizedAgentEnvironment(base, { home: "/run/home", controlPlane: ["CODEX_HOME"] });
+    expect(env.CODEX_HOME).toBeUndefined();
   });
 
   test("a control-plane name overrides the secret pattern", () => {
@@ -85,12 +85,6 @@ describe("sanitizedAgentEnvironment", () => {
       { home: "/h", controlPlane: [] },
     );
     expect(env).toMatchObject({ HTTPS_PROXY: "http://proxy.local:3128", HTTP_PROXY: "http://proxy.local:3128", NO_PROXY: "localhost" });
-  });
-
-  test("throws when ~/.codex cannot be located", () => {
-    expect(() => sanitizedAgentEnvironment({ PATH: "/p" }, { home: "/h", controlPlane: ["CODEX_HOME"] })).toThrow(
-      "neither CODEX_HOME nor HOME",
-    );
   });
 
   test("never mutates the base", () => {
@@ -165,44 +159,28 @@ describe("prepareSanitizedHome", () => {
   });
 });
 
-describe("syncCodexHome", () => {
-  async function homes() {
-    const root = await temporary();
-    const privateHome = path.join(root, "private");
-    const serviceHome = path.join(root, "service");
-    await mkdir(path.join(privateHome, "sessions", "2026"), { recursive: true });
-    await mkdir(serviceHome, { recursive: true });
-    return { root, privateHome, serviceHome };
-  }
-
-  test("does not promote an auth.json symlink to a host file", async () => {
-    const { root, privateHome, serviceHome } = await homes();
-    await writeFile(path.join(serviceHome, "auth.json"), '{"tokens":"service"}');
-    await writeFile(path.join(root, "ssh-key"), '{"secret":"key"}');
-    await symlink(path.join(root, "ssh-key"), path.join(privateHome, "auth.json"));
-    await syncCodexHome({ privateHome, serviceHome });
-    expect(await readFile(path.join(serviceHome, "auth.json"), "utf8")).toBe('{"tokens":"service"}');
+describe("a harness's control-plane variables", () => {
+  test("a harness that does not list CODEX_HOME never inherits the parent's", async () => {
+    const artifacts = path.join(await temporary(), "run-1");
+    const env = await prepareAgentEnvironment({
+      artifactsDirectory: artifacts,
+      workspace: await temporary(),
+      parent: { HOME: "/home/real", PATH: process.env.PATH ?? "", CODEX_HOME: "/home/real/.codex", CLAUDE_CONFIG_DIR: "/home/real/.claude" },
+      controlPlane: ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+    });
+    expect(env.CODEX_HOME).toBeUndefined();
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/home/real/.claude");
   });
 
-  test("does not promote a malformed auth.json", async () => {
-    const { privateHome, serviceHome } = await homes();
-    await writeFile(path.join(serviceHome, "auth.json"), '{"tokens":"service"}');
-    await writeFile(path.join(privateHome, "auth.json"), "junk");
-    await syncCodexHome({ privateHome, serviceHome });
-    expect(await readFile(path.join(serviceHome, "auth.json"), "utf8")).toBe('{"tokens":"service"}');
-  });
-
-  test("promotes a refreshed auth record and regular session files but not symlinked sessions", async () => {
-    const { root, privateHome, serviceHome } = await homes();
-    await writeFile(path.join(serviceHome, "auth.json"), '{"tokens":"old"}');
-    await writeFile(path.join(privateHome, "auth.json"), '{"tokens":"new"}');
-    await writeFile(path.join(privateHome, "sessions", "2026", "rollout-abc.jsonl"), "{}\n");
-    await writeFile(path.join(root, "outside"), "private");
-    await symlink(path.join(root, "outside"), path.join(privateHome, "sessions", "2026", "rollout-link.jsonl"));
-    await syncCodexHome({ privateHome, serviceHome });
-    expect(await readFile(path.join(serviceHome, "auth.json"), "utf8")).toBe('{"tokens":"new"}');
-    expect(await readFile(path.join(serviceHome, "sessions", "2026", "rollout-abc.jsonl"), "utf8")).toBe("{}\n");
-    expect(existsSync(path.join(serviceHome, "sessions", "2026", "rollout-link.jsonl"))).toBe(false);
+  test("a harness inherits only the parent variables its control plane lists", async () => {
+    const artifacts = path.join(await temporary(), "run-1");
+    const env = await prepareAgentEnvironment({
+      artifactsDirectory: artifacts,
+      workspace: await temporary(),
+      parent: { HOME: "/home/real", PATH: process.env.PATH ?? "", CODEX_HOME: "/home/real/.codex" },
+      controlPlane: ["CODEX_HOME"],
+    });
+    expect(env.CODEX_HOME).toBe("/home/real/.codex");
   });
 });
 

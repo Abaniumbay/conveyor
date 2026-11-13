@@ -5,9 +5,10 @@ import { existsSync } from "node:fs";
 import { z } from "zod";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
-import { prepareCodexEnvironment } from "../../isolation/environment";
+import { prepareCodexEnvironment } from "./home";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../../isolation/scratch";
-import { codexLaunch, type RunNetwork } from "../../isolation/run-network";
+import type { RunNetwork } from "../../isolation/run-network";
+import { codexLaunch } from "./launch";
 import {
   CodexRunnerError,
   cleanupCodexRun,

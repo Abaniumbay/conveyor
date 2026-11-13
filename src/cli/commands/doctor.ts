@@ -11,7 +11,7 @@ import { publicRepositoryTrustPolicy } from "../../source/trust";
 import { CALL_SOURCES } from "../../source/calls";
 import type { GitHubCallReport } from "../../app/control-sources";
 import { EXIT } from "../args";
-import { isHarnessRunner } from "../../config/schema";
+import { isHarnessRunner, type RunnerConfig } from "../../config/schema";
 import type { HarnessPlugin } from "../../core/plugins";
 import { probeAgentMcpServers } from "../../isolation/mcp-probe";
 import { agentEgressFor } from "../../isolation/agent-egress";
@@ -49,9 +49,9 @@ export interface DoctorRuntime {
   findTool?: ToolFinder;
 }
 
-interface CodexIsolationConfig {
+interface AgentSandboxConfig {
   agents: Record<string, { runner: string }>;
-  runners: Record<string, { type: string }>;
+  runners: Record<string, RunnerConfig>;
   repositories: Record<string, { agentEgress?: object | undefined }>;
 }
 
@@ -76,35 +76,39 @@ function harnessPlugin(type: string): HarnessPlugin | undefined {
   return PLUGINS.find((plugin): plugin is HarnessPlugin => plugin.role === "harness" && plugin.type === type);
 }
 
-function codexIsolationConfigured(config: Pick<CodexIsolationConfig, "agents" | "runners">): boolean {
-  return Object.values(config.agents).some((agent) => config.runners[agent.runner]?.type === "codex");
+/** Whether any configured agent runs on a harness: every harness runs in Conveyor's bubblewrap sandbox. */
+function agentSandboxConfigured(config: Pick<AgentSandboxConfig, "agents" | "runners">): boolean {
+  return Object.values(config.agents).some((agent) => {
+    const runner = config.runners[agent.runner];
+    return runner !== undefined && isHarnessRunner(runner);
+  });
 }
 
-/** Checks the namespace and mount capabilities used by each configured Codex isolation mode. */
-export async function configuredCodexIsolationChecks(
-  config: CodexIsolationConfig,
+/** Checks the namespace and mount capabilities the agent sandbox needs for repositories with egress. */
+export async function configuredAgentSandboxChecks(
+  config: AgentSandboxConfig,
   execute: DoctorCommand = run,
 ): Promise<DoctorCheck[]> {
-  if (!codexIsolationConfigured(config)) return [];
+  if (!agentSandboxConfigured(config)) return [];
   const repositories = Object.values(config.repositories);
   const checks: DoctorCheck[] = [];
   if (repositories.some((repository) => repository.agentEgress)) {
     const namespaces = await execute(["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--", "true"]);
     checks.push(namespaces.code === 0
-      ? { name: "Codex egress namespaces", status: "ok", detail: "bwrap can create network and PID namespaces" }
+      ? { name: "Agent sandbox namespaces", status: "ok", detail: "bwrap can create network and PID namespaces" }
       : {
-          name: "Codex egress namespaces",
+          name: "Agent sandbox namespaces",
           status: "fail",
-          detail: `bwrap cannot create the network and PID namespaces required for Codex egress isolation: ${namespaces.output}`,
+          detail: `bwrap cannot create the network and PID namespaces required for agent egress isolation: ${namespaces.output}`,
           fix: "allow unprivileged user namespaces and network/PID namespace creation for bwrap (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)",
         });
     const mounts = await execute(["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc", "--tmpfs", "/tmp", "--", "true"]);
     checks.push(mounts.code === 0
-      ? { name: "Codex egress mounts", status: "ok", detail: "bwrap can create the required filesystem mounts" }
+      ? { name: "Agent sandbox mounts", status: "ok", detail: "bwrap can create the required filesystem mounts" }
       : {
-          name: "Codex egress mounts",
+          name: "Agent sandbox mounts",
           status: "fail",
-          detail: `bwrap cannot create the filesystem mounts required for Codex egress isolation: ${mounts.output}`,
+          detail: `bwrap cannot create the filesystem mounts required for agent egress isolation: ${mounts.output}`,
           fix: "allow bwrap to create the bind, proc, and tmpfs mounts in its mount namespace (for example: grant bwrap mount permissions in the host's AppArmor profile)",
         });
   }
@@ -226,7 +230,7 @@ export async function doctorReport(
     checks.push(probe.code === 0
       ? { name: "sandbox", status: "ok", detail: "bwrap can create network and PID namespaces" }
       : { name: "sandbox", status: "fail", detail: `bwrap cannot create namespaces: ${probe.output}`, fix: "allow unprivileged user namespaces (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)" });
-    if (config && codexIsolationConfigured(config)) checks.push(...await configuredCodexIsolationChecks(config, execute));
+    if (config && agentSandboxConfigured(config)) checks.push(...await configuredAgentSandboxChecks(config, execute));
   }
 
   if (config) {

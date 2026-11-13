@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
-import { prepareCodexEnvironment } from "../../isolation/environment";
+import { prepareCodexEnvironment } from "./home";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../../isolation/scratch";
-import { codexLaunch, type RunNetwork } from "../../isolation/run-network";
+import type { RunNetwork } from "../../isolation/run-network";
+import { codexLaunch } from "./launch";
 import { CodexRunnerError, cleanupCodexRun, withCleanupError } from "./codex";
 import { EMPTY_USAGE } from "../../runner/result";
 import type { SteeringRunInput, SteeringRunResult } from "../../harness/types";
