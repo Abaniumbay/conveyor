@@ -136,7 +136,8 @@ console.log(JSON.stringify({ outcome: "success", summary: "captured" }));
           run: { stage: "deploy", attempt: 1, taskInstanceId: "deploy", feedback: null },
         } as unknown as Partial<TaskContext>,
         deps,
-        config: { script, recovery: "replay-safe" },
+        // An empty value takes the service's value of the variable.
+        config: { script, recovery: "replay-safe", settings: { environment: { SCRIPT_CAPTURE: null } } },
         instance: { id: "deploy", stage: "deploy", idempotencyKey: "key-path", resumed: false },
       });
       expect(output(result)).toMatchObject({ passed: true, summary: "captured" });
@@ -153,6 +154,53 @@ console.log(JSON.stringify({ outcome: "success", summary: "captured" }));
       if (originalCapture === undefined) delete process.env.SCRIPT_CAPTURE;
       else process.env.SCRIPT_CAPTURE = originalCapture;
     }
+  });
+
+  test("a script gets exactly its levels' variables, its run context and the service's home, nothing else", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-script-env-"));
+    directories.push(root);
+    const script = path.join(root, "env.ts");
+    const capture = path.join(root, "env.json");
+    await writeFile(script, `
+await new Response(Bun.stdin.stream()).text();
+await Bun.write(${JSON.stringify(capture)}, JSON.stringify(process.env));
+console.log(JSON.stringify({ outcome: "success", summary: "captured" }));
+`);
+    const deps = {
+      store: { getIssue: () => ({ id: "i1", sourceNumber: 7 }), getActiveWorkspace: () => null },
+      config: {
+        settings: { interruptGraceMs: 100, environment: { PATH: null, ROOT_VALUE: "root" } },
+        repositories: { repo: { settings: { environment: { LEVEL: "repository" } } } },
+      },
+      repository: { id: "repo", address: "o/r", folder: root, baseBranch: "main" },
+      issueId: "i1",
+    } as unknown as TaskDeps;
+    const saved = process.env.SERVICE_TOKEN;
+    process.env.SERVICE_TOKEN = "service-only";
+    try {
+      await runTask(registry.require("script.run"), {
+        context: {}, deps,
+        config: { script, recovery: "replay-safe", settings: { environment: { LEVEL: "step", DEPLOY_TOKEN: "listed" } } },
+        instance: { id: "deploy", stage: "deploy", idempotencyKey: "key-env", resumed: false },
+      });
+    } finally {
+      if (saved === undefined) delete process.env.SERVICE_TOKEN;
+      else process.env.SERVICE_TOKEN = saved;
+    }
+    const env = JSON.parse(await readFile(capture, "utf8")) as Record<string, string>;
+    expect(env).toMatchObject({
+      PATH: process.env.PATH!, ROOT_VALUE: "root", LEVEL: "step", DEPLOY_TOKEN: "listed", HOME: process.env.HOME!,
+      CONVEYOR_RUN_ID: "key-env", CONVEYOR_REPOSITORY_ID: "repo", CONVEYOR_ITEM_ID: "i1", CONVEYOR_STAGE_ID: "deploy",
+    });
+    expect(env.SERVICE_TOKEN).toBeUndefined();
+  });
+
+  test("a script step's environment may not set what Conveyor sets for every run", async () => {
+    const go = (environment: Record<string, string>) => runTask(registry.require("script.run"), {
+      context: {}, deps: undefined as never, config: { script: "s.ts", recovery: "replay-safe", settings: { environment } },
+      instance: { id: "x", stage: "s", idempotencyKey: "k", resumed: false },
+    });
+    await expect(go({ HOME: "/tmp" })).rejects.toThrow("HOME is set by Conveyor for every run");
   });
 
   test("reconcile applies on the first run without observing", async () => {

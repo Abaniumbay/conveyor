@@ -52,6 +52,8 @@ settings:
   logs: ${root}/logs
   workspaces: ${root}/workspaces
   artifacts: ${root}/artifacts
+  # A check script gets only what the configuration lists; EVIDENCE_CAPTURE is the service's.
+  environment: { PATH: , EVIDENCE_CAPTURE: }
 web: {}
 sources:
   github: { type: github }

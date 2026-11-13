@@ -7,6 +7,8 @@ import { z } from "zod";
 
 import { RunnerProcessError, runProcess } from "../runner/json-process";
 import { resolveFilesystemPath } from "../core/paths";
+import { scriptRunVariables } from "../config/run-environment";
+import { environmentSettingsSchema } from "../isolation/run-environment";
 import { scriptCommand } from "../self";
 import type { ScriptContext, ScriptRecoveryObservation, ScriptRecoveryRequest } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, TransientScriptError, type TaskArgs, type TaskDefinition } from "./contract";
@@ -33,6 +35,8 @@ const runConfig = z
     }),
     /** The argv prefix the script path is appended to; default `bun run`. `[]` executes the script itself. */
     interpreter: z.array(z.string().min(1)).optional(),
+    /** The step's settings: `environment`, added to the root's, the repository's and the stage's. */
+    settings: z.object({ environment: environmentSettingsSchema.default({}) }).strict().optional(),
   })
   .strict();
 type RunConfig = z.output<typeof runConfig>;
@@ -124,6 +128,10 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
         return await runProcess({
           command: scriptCommand(config.script, config.interpreter),
           cwd: workspace ?? repository.folder,
+          env: scriptRunVariables(deps.config, {
+            runId: instance.idempotencyKey, repositoryId: deps.repository.id, itemId: String(issue.id), stageId: instance.stage,
+            step: config.settings?.environment,
+          }),
           // The legacy fields keep stage scripts written for `run: { type: script }` working unchanged.
           input: {
             ...request, context,

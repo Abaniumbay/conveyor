@@ -704,6 +704,8 @@ task-config item.issueClosed graceMinutes
 task-config script.run interpreter
 task-config script.run recovery
 task-config script.run script
+task-config script.run settings
+task-config script.run settings.environment
 task-config script.succeeded run
 task-input agent.askQuestion allowFreeText
 task-input agent.askQuestion maxSelections

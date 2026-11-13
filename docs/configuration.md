@@ -343,6 +343,22 @@ The script protocol (JSON request on stdin, JSON result on stdout, and `observe`
 scripts) is the same for every interpreter; see [tasks.md](tasks.md#script-protocol).
 `conveyor doctor` checks that every interpreter the configuration uses is installed.
 
+A script runs on the host as the service, but with only the variables its configuration lists (see
+[Settings and run environments](#settings-and-run-environments)): the root's, the repository's, the
+stage's and the step's own `settings.environment`, plus the service's `HOME` and `TMPDIR` and the run's
+`CONVEYOR_*` context. A variable a script needs from the service, such as `SSH_AUTH_SOCK` or
+`XDG_RUNTIME_DIR`, is listed with an empty value:
+
+```yaml
+- id: deployScript
+  task: script.run
+  with:
+    script: ./stages/deploy.ts
+    recovery: reconcile
+    settings:
+      environment: { SSH_AUTH_SOCK: , DEPLOY_HOST: !secret deploy_host }
+```
+
 ## Refinement outputs (issue type, fields, Refinement section)
 
 A repository may let refinement fill the GitHub issue page beyond the criteria:
@@ -485,6 +501,7 @@ agents:
 - **Set by Conveyor.** `HOME`, `SHELL`, `TMPDIR` and every `CONVEYOR_*` name are Conveyor's for every run, and a harness's private login directory (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`) is that harness's: listing one at any level is a configuration error (choose a harness's directory with its `configDir`). Under `agentEgress` the proxy variables are Conveyor's too. Each agent run gets `CONVEYOR_RUN_ID`, `CONVEYOR_REPOSITORY_ID`, `CONVEYOR_ITEM_ID`, `CONVEYOR_STAGE_ID` and `CONVEYOR_AGENT_ID` (identifiers only; the Operator's runs have no repository or stage).
 - An MCP server's `env` and a local service's `environment` stay where they are: they belong to that server or service.
 - The agent's `env` is the deprecated name of its `settings.environment` and still works, with a warning; it is no longer filtered.
+- A script run (a `script.run` step, a legacy script stage or a legacy check's script) takes the root's, the repository's, the stage's and its step's `settings.environment` (`with: { settings: { environment } }`), the service's `HOME` and `TMPDIR`, and the run's `CONVEYOR_RUN_ID`, `CONVEYOR_REPOSITORY_ID`, `CONVEYOR_ITEM_ID` and `CONVEYOR_STAGE_ID` (a legacy check's evidence script runs before its run is recorded and has no `CONVEYOR_RUN_ID`). Nothing else is inherited from the service.
 
 ## Reference
 

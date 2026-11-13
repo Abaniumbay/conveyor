@@ -89,7 +89,8 @@ export function defaultRunVariables(service: Record<string, string | undefined> 
 
 /** What a run is part of, given to it as `CONVEYOR_*` variables: identifiers only. */
 export interface RunContext {
-  runId: string;
+  /** Absent for a script that runs before its run is recorded (a legacy check's evidence script). */
+  runId?: string | undefined;
   repositoryId?: string | undefined;
   itemId?: string | undefined;
   stageId?: string | undefined;
@@ -97,7 +98,8 @@ export interface RunContext {
 }
 
 export function runContextVariables(context: RunContext): Record<string, string> {
-  const variables: Record<string, string> = { CONVEYOR_RUN_ID: context.runId };
+  const variables: Record<string, string> = {};
+  if (context.runId !== undefined) variables.CONVEYOR_RUN_ID = context.runId;
   if (context.repositoryId !== undefined) variables.CONVEYOR_REPOSITORY_ID = context.repositoryId;
   if (context.itemId !== undefined) variables.CONVEYOR_ITEM_ID = context.itemId;
   if (context.stageId !== undefined) variables.CONVEYOR_STAGE_ID = context.stageId;

@@ -1,4 +1,4 @@
-import { DEFAULT_RUN_ENVIRONMENT, resolveRunEnvironment, runContextVariables, type EnvironmentLayer, type RunContext } from "../isolation/run-environment";
+import { DEFAULT_RUN_ENVIRONMENT, resolveRunEnvironment, runContextVariables, type EnvironmentLayer, type EnvironmentSettings, type RunContext } from "../isolation/run-environment";
 import { isHarnessRunner, isNativeStage, type ConveyorConfigData } from "./schema";
 
 type EnvironmentLevels = Pick<ConveyorConfigData, "settings" | "repositories" | "pipelines" | "runners" | "agents">;
@@ -11,19 +11,42 @@ export function agentEnvironmentLayers(
   config: EnvironmentLevels,
   at: { repositoryId?: string | undefined; stageId?: string | undefined; agentId: string },
 ): EnvironmentLayer[] {
+  const agent = config.agents?.[at.agentId];
+  const runner = agent ? config.runners?.[agent.runner] : undefined;
+  const layers = placeLayers(config, at);
+  if (runner && isHarnessRunner(runner)) layers.push({ values: runner.environment ?? {}, program: true });
+  if (agent) layers.push({ values: agent.environment ?? {} });
+  return layers;
+}
+
+/** The levels every run shares, most general first: the root, the repository and the stage. */
+function placeLayers(config: EnvironmentLevels, at: { repositoryId?: string | undefined; stageId?: string | undefined }): EnvironmentLayer[] {
   const repository = at.repositoryId === undefined ? undefined : config.repositories?.[at.repositoryId];
   const stage = repository && at.stageId !== undefined
     ? config.pipelines?.[repository.pipeline ?? ""]?.stages.find((candidate) => candidate.id === at.stageId)
     : undefined;
-  const agent = config.agents?.[at.agentId];
-  const runner = agent ? config.runners?.[agent.runner] : undefined;
   // A configuration assembled in code rather than loaded may leave a level's settings out; its root is the default.
   const layers: EnvironmentLayer[] = [{ values: config.settings?.environment ?? DEFAULT_RUN_ENVIRONMENT }];
   if (repository) layers.push({ values: repository.settings?.environment ?? {} });
   if (stage && isNativeStage(stage)) layers.push({ values: stage.settings?.environment ?? {} });
-  if (runner && isHarnessRunner(runner)) layers.push({ values: runner.environment ?? {}, program: true });
-  if (agent) layers.push({ values: agent.environment ?? {} });
   return layers;
+}
+
+/**
+ * A script run's variables: the root's, the repository's, the stage's and the script step's
+ * `settings.environment`, the run's `CONVEYOR_*` context, and the service's `HOME` and `TMPDIR`: a
+ * script runs on the host as the service, so it keeps the service's home and temporary directory.
+ */
+export function scriptRunVariables(
+  config: EnvironmentLevels,
+  context: RunContext & { step?: Readonly<EnvironmentSettings> | undefined },
+  service: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  const layers = placeLayers(config, context);
+  if (context.step) layers.push({ values: context.step });
+  const { variables } = resolveRunEnvironment(layers, service);
+  const host = Object.fromEntries((["HOME", "TMPDIR"] as const).flatMap((name) => (service[name] === undefined ? [] : [[name, service[name]!]])));
+  return { ...variables, ...host, ...runContextVariables(context) };
 }
 
 /**
