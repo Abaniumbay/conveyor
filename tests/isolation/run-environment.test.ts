@@ -40,7 +40,7 @@ describe("resolveRunEnvironment", () => {
 
 describe("defaultRunVariables", () => {
   test("is the root default's variables from the service, and nothing else", () => {
-    expect(defaultRunVariables({ PATH: "/usr/bin", LANG: "C", HOME: "/home/real", GH_TOKEN: "t", SHELL: "/bin/zsh" })).toEqual({ PATH: "/usr/bin", LANG: "C" });
+    expect(defaultRunVariables({ PATH: "/usr/bin", LANG: "C", HOME: "/home/real", GH_TOKEN: "t", SHELL: "/opt/login-shell" })).toEqual({ PATH: "/usr/bin", LANG: "C" });
   });
 });
 
