@@ -362,6 +362,38 @@ function harnessProfiles(plugins: readonly Plugin[]): Map<string, HarnessProfile
   return new Map(plugins.flatMap((plugin) => (plugin.role === "harness" ? [[plugin.type, plugin.profile] as const] : [])));
 }
 
+/**
+ * The agents a repository's stages run: `agent.run` agents (with the repository's task overrides,
+ * which replace an entry's `with`), legacy stage agents and legacy check verifiers. Skipped stages run none.
+ */
+function repositoryAgents(config: ConveyorConfigData, repository: ConveyorConfigData["repositories"][string]): Set<string> {
+  const agents = new Set<string>();
+  for (const stage of config.pipelines[repository.pipeline]?.stages ?? []) {
+    const overrides = repository.overrides?.stages[stage.id];
+    if (overrides?.skip) continue;
+    if (isNativeStage(stage)) {
+      for (const [entries, group] of [[stage.actions, overrides?.actions], [stage.exitGate, overrides?.exitGate]] as const) {
+        for (const entry of entries) {
+          if (entry.task !== "agent.run") continue;
+          // An entry is overridden by its instance id, which is its task when it names none (as the plan compiler does).
+          const settings = group?.[entry.id ?? entry.task]?.with ?? entry.with;
+          if (typeof settings?.agent === "string") agents.add(settings.agent);
+          if (Array.isArray(settings?.agents)) {
+            for (const agentName of settings.agents) if (typeof agentName === "string") agents.add(agentName);
+          }
+        }
+      }
+      continue;
+    }
+    if (stage.run.type === "agent") agents.add(stage.run.agent);
+    for (const check of [stage.enterCheck, stage.exitCheck]) {
+      const verifier = check ? config.checks[check]?.verifier : undefined;
+      if (verifier) agents.add(verifier);
+    }
+  }
+  return agents;
+}
+
 function crossReferenceErrors(config: ConveyorConfigData, plugins: readonly Plugin[] | undefined): LocatedError[] {
   const errors: LocatedError[] = [];
   const error = (segments: readonly (string | number)[], message: string) =>
@@ -501,6 +533,16 @@ function crossReferenceErrors(config: ConveyorConfigData, plugins: readonly Plug
     }
   }
   for (const [name, repository] of Object.entries(config.repositories)) {
+    if (repository.agentEgress && profiles) {
+      // A harness that cannot enforce the repository's egress policy must never run its agents unconfined.
+      for (const agentName of repositoryAgents(config, repository)) {
+        const runner = config.runners[config.agents[agentName]?.runner ?? ""];
+        const profile = runner ? profiles.get(runner.type) : undefined;
+        if (profile && !profile.agentEgress) {
+          error(["repositories", name, "agentEgress"], `cannot be enforced for agent "${agentName}", which runs on ${profile.name}: ${profile.name} agents cannot run in a repository with agentEgress yet; give the pipeline's stages an agent on another harness`);
+        }
+      }
+    }
     if (!config.sources[repository.source]) {
       error(["repositories", name, "source"], `references unknown source "${repository.source}"`);
     }

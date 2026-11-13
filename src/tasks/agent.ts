@@ -297,6 +297,7 @@ async function runAgent(
       const resume = answered !== null && harness.capabilities.sessionResume && answered.sessionId !== null;
       const shared = {
         command: runner.command,
+        runner,
         workspace: workspace.path,
         artifactsDirectory: path.join(deps.config.settings.artifacts, runId),
         ...(agent.model ? { model: agent.model } : {}),

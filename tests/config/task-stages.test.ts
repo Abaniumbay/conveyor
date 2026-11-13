@@ -478,6 +478,51 @@ describe("repository agentEgress", () => {
   test("rejects unknown keys", async () => {
     await expect(load(NATIVE_PIPELINE + repository("    agentEgress: { hosts: [] }\n"))).rejects.toThrow();
   });
+
+  describe("agents of a harness that cannot enforce it", () => {
+    const agents = `
+runners:
+  claude: { type: claude-code }
+  pi: { type: pi }
+agents:
+  claude-worker: { runner: claude, instructions: /tmp/worker.md, workspaceAccess: read-only }
+  pi-worker: { runner: pi, instructions: /tmp/worker.md, workspaceAccess: read-only }
+`;
+    const pipeline = (stage: string) => `
+pipelines:
+  default:
+    stages:
+${stage}`;
+    const fallback = "      - { id: review, concurrency: 1, actions: [{ task: agent.run, with: { agents: [claude-worker, pi-worker] } }], exit-gate: [{ task: item.criteriaDefined }] }\n";
+
+    test("a pi agent in an agent.run fallback list is refused with a message naming it", async () => {
+      await expect(load(agents + pipeline(fallback) + repository("    agentEgress: {}\n")))
+        .rejects.toThrow('repositories.sample.agentEgress cannot be enforced for agent "pi-worker", which runs on pi');
+    });
+
+    test("a pi agent of an exit-gate agent.run is refused too", async () => {
+      const gate = "      - { id: review, concurrency: 1, actions: [], exit-gate: [{ task: agent.run, with: { agent: pi-worker } }] }\n";
+      await expect(load(agents + pipeline(gate) + repository("    agentEgress: {}\n"))).rejects.toThrow('agent "pi-worker", which runs on pi');
+    });
+
+    test("the repository's task overrides decide which agents run: one that swaps a pi agent in is refused, one that swaps it out is accepted", async () => {
+      const claudeOnly = "      - { id: review, concurrency: 1, actions: [{ task: agent.run, with: { agent: claude-worker } }], exit-gate: [{ task: item.criteriaDefined }] }\n";
+      const swapIn = "    agentEgress: {}\n    overrides: { stages: { review: { actions: { agent.run: { with: { agent: pi-worker } } } } } }\n";
+      await expect(load(agents + pipeline(claudeOnly) + repository(swapIn))).rejects.toThrow('agent "pi-worker", which runs on pi');
+      const swapOut = "    agentEgress: {}\n    overrides: { stages: { review: { actions: { agent.run: { with: { agent: claude-worker } } } } } }\n";
+      expect((await load(agents + pipeline(fallback) + repository(swapOut))).config.repositories.sample!.agentEgress).toBeDefined();
+      const skipped = "    agentEgress: {}\n    overrides: { stages: { review: { skip: true } } }\n";
+      expect((await load(agents + pipeline(fallback) + repository(skipped))).config.repositories.sample!.agentEgress).toBeDefined();
+    });
+
+    test("the same pipeline is accepted where the repository declares no agentEgress, and a Claude Code agent where it does", async () => {
+      const { config } = await load(agents + pipeline(fallback) + repository());
+      expect(config.agents["pi-worker"]?.runner).toBe("pi");
+      const claudeOnly = "      - { id: review, concurrency: 1, actions: [{ task: agent.run, with: { agent: claude-worker } }], exit-gate: [{ task: item.criteriaDefined }] }\n";
+      const { config: confined } = await load(agents + pipeline(claudeOnly) + repository("    agentEgress: {}\n"));
+      expect(confined.repositories.sample!.agentEgress).toBeDefined();
+    });
+  });
 });
 
 describe("claude-code runner controlPlaneHosts", () => {

@@ -3,6 +3,7 @@
 // A harness plugin (src/plugins/<harness>/) implements it and declares its profile, so the core
 // prepares a run without knowing which harness it is.
 
+import type { HarnessRunnerConfig } from "../config/schema";
 import type { CheckResult } from "../core/pipeline";
 import type { HarnessCapabilities, HarnessResumeInput } from "../tasks/context";
 import type { RunEnvelope } from "../runner/result";
@@ -52,6 +53,11 @@ export interface HarnessRunInput {
   config?: Record<string, string | number | boolean>;
   /** MCP servers beside Conveyor's own. */
   mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number; enabledTools?: string[] }>;
+  /**
+   * The run's runner as its harness plugin's schema completed it, so a harness reads its own runner
+   * settings (beyond `command`) from it; absent when the caller has none.
+   */
+  runner?: HarnessRunnerConfig & Record<string, unknown>;
 }
 
 /** A legacy verifier check: one read-only agent turn that returns a check decision. */
@@ -150,6 +156,11 @@ export interface HarnessProfile {
    * its own API calls, and its commands cannot yet be cut off from it.
    */
   readonly workspaceWriteNeedsNetwork: boolean;
+  /**
+   * Whether it can run the agents of a repository that declares `agentEgress`, enforcing it; a
+   * harness that cannot is refused for such a repository when the configuration loads.
+   */
+  readonly agentEgress: boolean;
   /**
    * Lines the agent's tool guidance adds about how this harness shows Conveyor's tools to the agent
    * (such as the names they are called by), given the granted canonical names; absent: none.

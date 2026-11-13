@@ -15,4 +15,5 @@ export const claudeCodeProfile: HarnessProfile = {
   optionalShell: true,
   confinedAccess: false,
   workspaceWriteNeedsNetwork: true,
+  agentEgress: true,
 };

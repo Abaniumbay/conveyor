@@ -17,5 +17,6 @@ export const codexProfile: HarnessProfile = {
   optionalShell: false,
   confinedAccess: true,
   workspaceWriteNeedsNetwork: false,
+  agentEgress: true,
   toolNameGuidance: codexToolNameGuidance,
 };

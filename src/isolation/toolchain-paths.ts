@@ -28,7 +28,7 @@ export interface ProtectedLocationInput {
 
 /** Directories under the service user's home which hold credentials or agent state. */
 const CREDENTIAL_ROOTS = [
-  ".ssh", ".aws", ".gnupg", ".config", ".claude", ".claude.json", ".codex", ".conveyor", ".docker", ".kube",
+  ".ssh", ".aws", ".gnupg", ".config", ".claude", ".claude.json", ".codex", ".pi", ".conveyor", ".docker", ".kube",
   ".netrc", ".npmrc", ".git-credentials", ".local/share", ".azure", ".gcloud",
 ];
 
@@ -46,7 +46,7 @@ export function protectedServiceLocations(input: ProtectedLocationInput): string
     ...Object.values(input.repositories).map((repository) => repository.folder),
     ...Object.values(input.runners).flatMap((runner) => ("configDir" in runner && typeof runner.configDir === "string" ? [runner.configDir] : [])),
     ...CREDENTIAL_ROOTS.map((name) => path.join(serviceHome, name)),
-    ...[process.env.CODEX_HOME, process.env.CLAUDE_CONFIG_DIR].filter((value): value is string => Boolean(value)),
+    ...[process.env.CODEX_HOME, process.env.CLAUDE_CONFIG_DIR, process.env.PI_CODING_AGENT_DIR].filter((value): value is string => Boolean(value)),
   ];
   return [...new Set(locations.map((location) => resolveFilesystemPath(location)))];
 }
