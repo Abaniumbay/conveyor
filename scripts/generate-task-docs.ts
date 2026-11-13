@@ -68,6 +68,8 @@ exit-gate:
 
 \`apply\` prints one JSON object on stdout: the producer result (\`outcome\` \`success\` or \`failure\`, \`status\`, \`summary\`, \`reason\`, and so on), optionally with \`externalOperationId\` and \`artifactUrl\`. \`observe\` prints \`{ "state": "already-applied", "operationId": "..." | null, "result": <apply output> }\`, \`{ "state": "not-applied" }\` or \`{ "state": "indeterminate", "reason": "..." }\`. A non-zero exit, a timeout or output that does not match is an infrastructure error.
 
+The script's environment is exactly what the configuration lists: the root's, the repository's, the stage's and the step's \`settings.environment\` (the step's under \`with: { settings: { environment } }\`), the service's \`HOME\` and \`TMPDIR\`, and \`CONVEYOR_RUN_ID\`, \`CONVEYOR_REPOSITORY_ID\`, \`CONVEYOR_ITEM_ID\` and \`CONVEYOR_STAGE_ID\`. Nothing else is inherited from the service: a variable the script reads, such as a token or \`SSH_AUTH_SOCK\`, must be listed at one of those levels (an empty value takes the service's). See [configuration.md](configuration.md#settings-and-run-environments).
+
 A script that completes always lets \`script.run\` pass, even when it reports failure. The bounded result (\`passed\`, \`recovery\`, \`externalOperationId\`, \`summary\`, \`artifactUrl\`, \`outputTail\` of at most 4 KB, \`finishedAt\`) is stored as \`script.results[<instance id>]\`, and \`script.succeeded\` (with \`with.run\` naming the instance) fails the exit gate with the summary when \`passed\` is false.
 
 ## Exit-gate semantics
