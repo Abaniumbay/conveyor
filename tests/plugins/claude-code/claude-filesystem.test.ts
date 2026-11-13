@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import { runClaudeCode } from "../../../src/plugins/claude-code/claude-code";
 import { bwrapUnavailableReason } from "../../support/bwrap";
 import { shortTemporaryDirectory } from "../../support/short-temporary-directory";
@@ -118,6 +119,7 @@ describeSandbox("Claude Code filesystem confinement", () => {
       mcp: { command: "bun", args: ["x"] },
       ...(resumeSessionId ? { resumeSessionId } : {}),
       env: {
+        ...defaultRunVariables(),
         CAPTURE: files.capture,
         CHECKS: JSON.stringify(files.checks),
         CLAUDE_CONFIG_DIR: files.claudeConfig,
@@ -169,7 +171,7 @@ test("Claude filesystem confinement fails before an agent command starts when it
     sandbox: "read-only",
     automaticApprovals: false,
     mcp: { command: "bun", args: ["x"] },
-    env: { STARTED: started, CLAUDE_CONFIG_DIR: files.claudeConfig },
+    env: { ...defaultRunVariables(), STARTED: started, CLAUDE_CONFIG_DIR: files.claudeConfig },
   })).rejects.toThrow("cannot confine a command that is not installed");
   expect(await Bun.file(started).exists()).toBe(false);
 });

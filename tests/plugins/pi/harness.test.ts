@@ -17,6 +17,7 @@ import type { TaskContext } from "../../../src/tasks/context";
 import { runTask, type TaskResult } from "../../../src/tasks/contract";
 import type { TaskDeps } from "../../../src/tasks/deps";
 import { FAKE_PI, VALID_RESULT, assistant, installFakePi, installPassThroughBwrap, piEvents } from "../../support/fake-pi";
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -47,15 +48,15 @@ async function world() {
   const capture = path.join(root, "capture.json");
   const events = path.join(root, "events.jsonl");
   const resumedEvents = path.join(root, "events-resumed.jsonl");
-  const env = { PATH: `${fakeBin}:${process.env.PATH}`, CAPTURE: capture, FAKE_EVENTS: events, FAKE_EVENTS_RESUMED: resumedEvents, EXAMPLE_API_KEY: "provider-key" };
+  const environment = { ...defaultRunVariables(), PATH: `${fakeBin}:${process.env.PATH}`, CAPTURE: capture, FAKE_EVENTS: events, FAKE_EVENTS_RESUMED: resumedEvents };
   const config = {
     hash: "cfg",
     settings: { artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, agentRunTokenWarning: 15_000_000 },
     agents: {
-      parisa: { runner: "pi", instructions, tasks: [], name: "Parisa", title: "Reviewer", workspaceAccess: "read-only", env },
+      parisa: { runner: "pi", instructions, tasks: [], name: "Parisa", title: "Reviewer", workspaceAccess: "read-only", environment },
       shirin: { runner: "claude", instructions, tasks: [], name: "Shirin", title: "Reviewer", workspaceAccess: "read-only" },
     },
-    runners: { pi: { type: "pi", command, configDir: service, credentialVariables: ["EXAMPLE_API_KEY"] }, claude: { type: "claude-code", command: "claude" } },
+    runners: { pi: { type: "pi", command, configDir: service, credentialVariables: [], environment: { EXAMPLE_API_KEY: "provider-key" } }, claude: { type: "claude-code", command: "claude" } },
   } as unknown as ConveyorConfig;
   const claudeCalls: HarnessRunInput[] = [];
   const claude: Harness = {

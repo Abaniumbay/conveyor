@@ -196,7 +196,7 @@ repositories:
     expect(config.agents.worker).toMatchObject({
       instructions: path.join(target, "instructions.md"),
       writableRoots: [path.join(target, "cache")],
-      env: { CACHE_DIR: path.join(target, "cache"), LOG_LEVEL: "info" },
+      environment: { CACHE_DIR: path.join(target, "cache"), LOG_LEVEL: "info" },
       mcpServers: { helper: { env: { HELPER_CACHE: path.join(target, "cache") } } },
     });
   });
@@ -372,11 +372,14 @@ repositories:
       await expect(load("    codexConfig: { sandbox_mode: danger-full-access }")).rejects.toThrow("agents.worker.codexConfig.sandbox_mode: is set by Conveyor");
       await expect(load("    mcpServers: { conveyor: { command: x } }")).rejects.toThrow("reserved");
     });
-    test("the deprecated codexConfig loads as harnessSettings, with a warning naming the agent", async () => {
+    test("the deprecated codexConfig and harnessSettings load as the agent's harness settings, with a warning naming the agent", async () => {
       const config = await load("    codexConfig: { model_auto_compact_token_limit: 80000 }");
       expect(config.agents.worker?.harnessSettings).toEqual({ model_auto_compact_token_limit: 80000 });
-      expect(config.warnings).toContain("agent codexConfig is deprecated, used by worker: rename it to harnessSettings (same keys and values)");
-      expect((await load("    harnessSettings: { model_auto_compact_token_limit: 80000 }")).warnings?.filter((warning) => warning.includes("codexConfig"))).toEqual([]);
+      expect(config.warnings).toContain("agent codexConfig is deprecated, used by worker: move its keys into the agent's settings (same keys and values)");
+      expect((await load("    harnessSettings: { model_auto_compact_token_limit: 80000 }")).warnings).toContain("agent harnessSettings is deprecated, used by worker: move its keys into the agent's settings (same keys and values)");
+      const current = await load("    settings: { model_auto_compact_token_limit: 80000 }");
+      expect(current.agents.worker?.harnessSettings).toEqual({ model_auto_compact_token_limit: 80000 });
+      expect(current.warnings?.filter((warning) => warning.startsWith("agent "))).toEqual([]);
     });
     test("an agent may not set both harnessSettings and the deprecated codexConfig", async () => {
       await expect(load("    harnessSettings: { model_verbosity: low }\n    codexConfig: { model_verbosity: high }")).rejects.toThrow("is the deprecated name of harnessSettings");
@@ -388,11 +391,20 @@ repositories:
       expect((await load("")).agents.worker).toMatchObject({ shell: true });
       expect((await load("    shell: true")).agents.worker).toMatchObject({ shell: true });
     });
-    test("env defaults empty, expands ~/ values and rejects invalid variable names", async () => {
-      expect((await load("")).agents.worker).toMatchObject({ env: {} });
-      const config = await load("    env: { NUGET_PACKAGES: ~/.nuget/packages, DOTNET_NOLOGO: '1' }");
-      expect(config.agents.worker!.env).toEqual({ NUGET_PACKAGES: resolveFilesystemPath(path.join(homedir(), ".nuget/packages")), DOTNET_NOLOGO: "1" });
-      await expect(load("    env: { BAD-NAME: x }")).rejects.toThrow("env");
+    test("settings.environment defaults empty, expands ~/ values, keeps empty values for the service's and rejects invalid variable names", async () => {
+      expect((await load("")).agents.worker).toMatchObject({ environment: {} });
+      const config = await load("    settings: { environment: { NUGET_PACKAGES: ~/.nuget/packages, DOTNET_NOLOGO: '1', NPM_TOKEN: } }");
+      expect(config.agents.worker!.environment).toEqual({ NUGET_PACKAGES: path.join(homedir(), ".nuget/packages"), DOTNET_NOLOGO: "1", NPM_TOKEN: null });
+      await expect(load("    settings: { environment: { BAD-NAME: x } }")).rejects.toThrow("environment");
+    });
+    test("the deprecated env is the agent's settings.environment, unfiltered", async () => {
+      const config = await load("    env: { NPM_TOKEN: secret-value, GH_HOST: example.com }");
+      expect(config.agents.worker!.environment).toEqual({ NPM_TOKEN: "secret-value", GH_HOST: "example.com" });
+      await expect(load("    env: { A: x }\n    settings: { environment: { B: y } }")).rejects.toThrow("settings.environment");
+    });
+    test("refuses a variable Conveyor sets for every run, at any level", async () => {
+      await expect(load("    settings: { environment: { HOME: /tmp } }")).rejects.toThrow("HOME is set by Conveyor for every run");
+      await expect(load("    settings: { environment: { CONVEYOR_RUN_ID: x } }")).rejects.toThrow("CONVEYOR_RUN_ID is set by Conveyor for every run");
     });
     test("a relative writable root is a config error", async () => {
       await expect(load("    writableRoots: [cache]")).rejects.toThrow("writableRoots");
@@ -775,6 +787,28 @@ describe("harness runners", () => {
     expect((await loadWith(agentOn("claude", "workspaceAccess: read-only", "harnessSettings: {}"))).agents.worker?.harnessSettings).toEqual({});
   });
 
+  test("a harness entry's settings: its environment, and keys its plugin validates that its agents inherit", async () => {
+    const withCodex = (runner: string, ...agent: string[]) => agentOn("codex", ...agent).replace("  codex: { type: codex }\n", `  codex: { type: codex, ${runner} }\n`);
+    const config = await loadWith(withCodex("settings: { environment: { OPENAI_API_KEY: }, model_auto_compact_token_limit: 2, model_verbosity: low }", "settings: { model_verbosity: high }"));
+    expect(config.runners.codex).toMatchObject({ environment: { OPENAI_API_KEY: null }, settings: { model_auto_compact_token_limit: 2, model_verbosity: "low" } });
+    expect(config.agents.worker?.harnessSettings).toEqual({ model_auto_compact_token_limit: 2, model_verbosity: "high" });
+    await expect(loadWith(withCodex("settings: { sandbox_mode: danger-full-access }"))).rejects.toThrow(/runners\.codex\.settings\.sandbox_mode.*is set by Conveyor/s);
+    await expect(loadWith(agentOn("codex", "settings: { sandbox_mode: danger-full-access }"))).rejects.toThrow("agents.worker.settings.sandbox_mode: is set by Conveyor");
+    await expect(loadWith(RUNNERS.replace("claude: { type: claude-code }", "claude: { type: claude-code, settings: { effort: 1 } }"))).rejects.toThrow(/runners\.claude\.settings.*Claude Code does not take settings besides environment/s);
+    await expect(loadWith(agentOn("claude", "workspaceAccess: read-only", "settings: { effort: 1 }"))).rejects.toThrow("agents.worker runs on Claude Code, which does not take settings besides environment");
+    expect((await loadWith(RUNNERS.replace("claude: { type: claude-code }", "claude: { type: claude-code, settings: { environment: { ANTHROPIC_API_KEY: } } }"))).runners.claude).toMatchObject({ environment: { ANTHROPIC_API_KEY: null } });
+  });
+
+  test("a variable a configured harness sets for its runs is refused at every level", async () => {
+    await expect(loadWith(agentOn("codex", "settings: { environment: { CODEX_HOME: /srv/codex } }"))).rejects.toThrow("CODEX_HOME is set by Codex for its runs");
+    await expect(loadWith(`settings:\n  environment: { CLAUDE_CONFIG_DIR: /srv/claude }\n${RUNNERS}`)).rejects.toThrow("CLAUDE_CONFIG_DIR is set by Claude Code for its runs");
+  });
+
+  test("a pi runner's credentialVariables is deprecated, with a warning naming the runner", async () => {
+    const config = await loadWith("runners:\n  pi: { type: pi, credentialVariables: [EXAMPLE_API_KEY] }\n");
+    expect(config.warnings).toContain("harnesses.pi.credentialVariables is deprecated: list the variables in the harness's settings.environment instead (an empty value takes the service's)");
+  });
+
   test("the pi plugin completes a pi runner and validates its credential variables", async () => {
     const config = await loadWith("runners:\n  pi: { type: pi }\n  azure: { type: pi, command: /opt/pi/bin/pi, configDir: /srv/pi-agent, provider: azure, credentialVariables: [AZURE_OPENAI_API_KEY] }\n");
     const pi: unknown = config.runners.pi;
@@ -782,8 +816,10 @@ describe("harness runners", () => {
     const azure: unknown = config.runners.azure;
     expect(azure).toMatchObject({ type: "pi", command: "/opt/pi/bin/pi", provider: "azure", credentialVariables: ["AZURE_OPENAI_API_KEY"] });
     await expect(loadWith("runners:\n  pi: { type: pi, credentialVariables: [\"NOT A NAME\"] }\n")).rejects.toThrow(/runners\.pi\.credentialVariables\.0.*must be an environment variable name/s);
-    await expect(loadWith("runners:\n  pi: { type: pi, credentialVariables: [GH_TOKEN] }\n")).rejects.toThrow(/runners\.pi\.credentialVariables\.0.*is reserved/s);
-    await expect(loadWith("runners:\n  pi: { type: pi, credentialVariables: [PI_CODING_AGENT_DIR] }\n")).rejects.toThrow(/runners\.pi\.credentialVariables\.0.*is reserved/s);
+    // Conveyor judges no name: only the variables it or pi sets for every run are refused.
+    expect((await loadWith("runners:\n  pi: { type: pi, credentialVariables: [GH_TOKEN] }\n")).runners.pi).toMatchObject({ credentialVariables: ["GH_TOKEN"] });
+    await expect(loadWith("runners:\n  pi: { type: pi, credentialVariables: [PI_CODING_AGENT_DIR] }\n")).rejects.toThrow(/runners\.pi\.credentialVariables\.0.*is set by Conveyor or pi for every run/s);
+    await expect(loadWith("runners:\n  pi: { type: pi, credentialVariables: [HOME] }\n")).rejects.toThrow(/runners\.pi\.credentialVariables\.0.*is set by Conveyor or pi for every run/s);
     await expect(loadWith("runners:\n  pi: { type: pi, sandbox: read-only }\n")).rejects.toThrow(/runners\.pi.*Unrecognized key: "sandbox"/s);
   });
 

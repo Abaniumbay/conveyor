@@ -1,4 +1,4 @@
-import { chmod, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { startRunNetwork, withBridgeSockets, type AgentNetworkPolicy, type EgressInput, type RunNetwork } from "../../isolation/run-network";
@@ -7,8 +7,16 @@ import { agentLaunchCommand, verifyAgentWrapper, type AgentFilesystemOptions } f
 /** Hosts Claude Code itself needs for its model API and authentication. */
 export const CLAUDE_CONTROL_PLANE_HOSTS: readonly string[] = ["api.anthropic.com", "console.anthropic.com", "platform.claude.com", "claude.ai"];
 
-/** Variables the harness holds for itself that commands it runs must not inherit. */
-const CLAUDE_COMMAND_UNSET = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
+/** What commands Claude Code runs must not inherit: its config directory and the run's `programVariables`. */
+export function claudeCommandUnset(programVariables: readonly string[] = []): string[] {
+  return [...new Set(["CLAUDE_CONFIG_DIR", ...programVariables])];
+}
+
+/** Where a run's shell prefix is written (`<artifacts>/net/shell-prefix`), its directory created. */
+export async function claudePrefixFile(artifactsDirectory: string): Promise<string> {
+  await mkdir(path.join(artifactsDirectory, "net"), { recursive: true });
+  return path.join(artifactsDirectory, "net", "shell-prefix");
+}
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -20,11 +28,11 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
  * data-plane proxy environment and runs that string with `$SHELL -c`.
  * Returns the script's path, which contains no whitespace.
  */
-export async function writeClaudeShellPrefix(file: string, dataEnv: Record<string, string>): Promise<string> {
+export async function writeClaudeShellPrefix(file: string, dataEnv: Record<string, string>, unset: readonly string[] = claudeCommandUnset()): Promise<string> {
   if (/\s/.test(file)) throw new Error(`cannot use ${JSON.stringify(file)} as the Claude Code shell prefix: the path contains whitespace; use a settings.artifacts directory without spaces`);
   const lines = [
     "#!/bin/sh",
-    `unset ${CLAUDE_COMMAND_UNSET.join(" ")}`,
+    `unset ${unset.join(" ")}`,
     ...Object.entries(dataEnv).map(([name, value]) => `export ${name}=${shellQuote(value)}`),
     'exec "$SHELL" -c "$1"',
     "",
@@ -45,6 +53,8 @@ export async function claudeLaunch(options: {
   artifactsDirectory: string;
   egress: EgressInput;
   filesystem: AgentFilesystemOptions;
+  /** What the prefix removes before each command (see claudeCommandUnset). */
+  unset?: readonly string[];
   buildArguments: () => string[];
 }): Promise<{ argv: string[]; env: Record<string, string>; network: RunNetwork }> {
   const policy: AgentNetworkPolicy = { ...options.egress, controlPlaneHosts: options.egress.controlPlaneHosts ?? CLAUDE_CONTROL_PLANE_HOSTS };
@@ -56,7 +66,7 @@ export async function claudeLaunch(options: {
     // The wrapper is pure; the first pass only learns the command proxy environment the second needs.
     network.wrap(options.environment, (env) => { dataEnv = env; return build(); }, withBridgeSockets(options.filesystem, policy));
     const prefixFile = path.join(options.artifactsDirectory, "net", "shell-prefix");
-    const prefix = await writeClaudeShellPrefix(prefixFile, dataEnv);
+    const prefix = await writeClaudeShellPrefix(prefixFile, dataEnv, options.unset);
     // Bound read-only over the writable artifacts mount, so the agent cannot rewrite its own prefix.
     const filesystem = withBridgeSockets({ ...options.filesystem, readable: [...(options.filesystem.readable ?? []), prefix] }, policy);
     const sandboxed = network.wrap(

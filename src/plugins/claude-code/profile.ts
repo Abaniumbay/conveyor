@@ -9,7 +9,7 @@ import { CLAUDE_CONTROL_PLANE_HOSTS } from "./launch";
 export const claudeCodeProfile: HarnessProfile = {
   name: "Claude Code",
   controlPlaneHosts: CLAUDE_CONTROL_PLANE_HOSTS,
-  controlPlaneEnvironment: ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+  runVariables: ["CLAUDE_CONFIG_DIR"],
   configDirectoryVariable: "CLAUDE_CONFIG_DIR",
   sandbox: "access",
   optionalShell: true,

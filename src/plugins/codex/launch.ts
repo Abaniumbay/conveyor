@@ -13,12 +13,19 @@ export const CODEX_CONTROL_PLANE_HOSTS: readonly string[] = ["chatgpt.com", "api
  */
 export const CODEX_RELEASE_MANIFEST = "codex-package.json";
 
-/** `-c` overrides that keep the control-plane proxy out of commands the harness runs. */
-export function shellPolicyArguments(dataEnv: Record<string, string>): string[] {
+/** The `-c` override that keeps these variables out of every command Codex runs. */
+function shellExclusionArguments(excluded: readonly string[]): string[] {
+  return ["-c", `shell_environment_policy.exclude=[${[...new Set(excluded)].map((name) => JSON.stringify(name)).join(",")}]`];
+}
+
+/**
+ * `-c` overrides that keep the control-plane proxy, the private Codex home and the run's
+ * `programVariables` (the harness level's environment) out of commands the harness runs.
+ */
+export function shellPolicyArguments(dataEnv: Record<string, string>, programVariables: readonly string[] = []): string[] {
   const set = Object.entries(dataEnv).map(([name, value]) => `${name}=${JSON.stringify(value)}`);
   return [
-    "-c",
-    `shell_environment_policy.exclude=[${[...PROXY_VARIABLES, "CODEX_HOME"].map((name) => JSON.stringify(name)).join(",")}]`,
+    ...shellExclusionArguments([...PROXY_VARIABLES, "CODEX_HOME", ...programVariables]),
     "-c",
     `shell_environment_policy.set={${set.join(",")}}`,
     "-c",
@@ -39,11 +46,14 @@ export async function codexLaunch(options: {
   privateTmp?: boolean;
   /** Required narrow filesystem for every normal Codex launch. */
   filesystem: AgentFilesystemOptions;
+  /** Variables for Codex itself that its commands must not inherit (the harness level's environment). */
+  programVariables?: readonly string[] | undefined;
   buildArguments: (extra: string[]) => string[];
 }): Promise<{ argv: string[]; env: Record<string, string>; network: RunNetwork | null }> {
   const confined: AgentFilesystemOptions = { ...options.filesystem, releaseManifest: CODEX_RELEASE_MANIFEST };
   if (!options.egress) {
-    const plain = { argv: [options.command, ...options.buildArguments([])], env: options.environment };
+    const exclusion = shellExclusionArguments(["CODEX_HOME", ...(options.programVariables ?? [])]);
+    const plain = { argv: [options.command, ...options.buildArguments(exclusion)], env: options.environment };
     const launch = options.privateTmp ? privateTmpCommand(plain) : agentFilesystemCommand(confined, plain.argv);
     if (!options.privateTmp) verifyAgentWrapper(launch, agentLaunchCommand(confined));
     return { argv: launch.argv, env: launch.env, network: null };
@@ -58,7 +68,7 @@ export async function codexLaunch(options: {
     await network.close();
     throw error;
   }
-  const sandboxed = network.wrap(options.environment, (dataEnv) => [command, ...options.buildArguments(shellPolicyArguments(dataEnv))], filesystem);
+  const sandboxed = network.wrap(options.environment, (dataEnv) => [command, ...options.buildArguments(shellPolicyArguments(dataEnv, options.programVariables))], filesystem);
   try {
     verifyAgentWrapper(sandboxed, command);
   } catch (error) {

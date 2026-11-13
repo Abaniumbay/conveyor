@@ -1,3 +1,4 @@
+import { agentRunVariables } from "../config/run-environment";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -445,6 +446,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         sandbox: "read-only",
         automaticApprovals: false,
         mcp: lease.configuration,
+        ...agentRunVariables(this.config, { runId, repositoryId: this.context.repository.id, itemId: String(issue.id), stageId: context.stageId, agentId: definition.verifier }),
         ...this.egressInput(runner),
         interruptGraceMs: this.config.settings.interruptGraceMs,
         ...(this.signal ? { signal: this.signal } : {}),

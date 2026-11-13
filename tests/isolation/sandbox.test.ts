@@ -279,7 +279,7 @@ async function runHarness(access: "read-only" | "workspace-write"): Promise<any>
     artifactsDirectory: path.join(directory, `run-${access}`),
     workspace: directory,
     parent,
-    overrides: { RUN_TOKEN: TOKEN, ACCESS: access } as never,
+    variables: { PATH: process.env.PATH ?? "", RUN_TOKEN: TOKEN, ACCESS: access },
   });
   const sandboxed = sandboxCommand({
     argv: [process.execPath, path.join(directory, "harness.ts")],

@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 
 import { runPi } from "../../../src/plugins/pi/pi";
 import { bwrapUnavailableReason } from "../../support/bwrap";
@@ -84,8 +85,9 @@ describeSandbox("pi filesystem confinement", () => {
       const result = await runPi({
         command: f.command, workspace: f.workspace, artifactsDirectory: f.artifacts, prompt: "verify",
         sandbox, automaticApprovals: false, mcp: { command: "bun", args: ["x"] },
-        runner: { type: "pi", command: f.command, credentialVariables: ["EXAMPLE_API_KEY"] } as never,
-        env: { PI_CODING_AGENT_DIR: f.service, CHECKS: JSON.stringify(f.checks), EXAMPLE_API_KEY: "provider-key" },
+        runner: { type: "pi", command: f.command, credentialVariables: [] } as never,
+        env: { ...defaultRunVariables(), PI_CODING_AGENT_DIR: f.service, CHECKS: JSON.stringify(f.checks), EXAMPLE_API_KEY: "provider-key" },
+        programVariables: ["EXAMPLE_API_KEY"],
       });
       expect(result).toMatchObject({ sessionId: "fs-1", stageResult: { status: "done" } });
       const seen = JSON.parse(await readFile(f.capture, "utf8"));
@@ -128,7 +130,7 @@ describeSandbox("pi filesystem confinement", () => {
       command: official.launcher, workspace: f.workspace, artifactsDirectory: f.artifacts, prompt: "verify",
       sandbox: "read-only", automaticApprovals: false, mcp: { command: "bun", args: ["x"] },
       runner: { type: "pi", command: official.launcher },
-      env: { PI_CODING_AGENT_DIR: f.service, CHECKS: JSON.stringify(checks), HOME: home },
+      env: { ...defaultRunVariables(), PI_CODING_AGENT_DIR: f.service, CHECKS: JSON.stringify(checks), HOME: home },
     });
     expect(result).toMatchObject({ sessionId: "fs-1", stageResult: { status: "done" } });
     const seen = JSON.parse(await readFile(f.capture, "utf8"));

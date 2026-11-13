@@ -128,7 +128,7 @@ describe("MCP server doctor checks", () => {
         agents,
       } as unknown as Parameters<typeof mcpServerChecks>[2];
       let seen: Record<string, unknown> | undefined;
-      await mcpServerChecks({ agents: { darya: { runner: "codex", workspaceAccess: "read-only", env: { A: "b" }, mcpServers: { serena: server } } } }, async (_servers, options) => { seen = options as never; return []; }, full);
+      await mcpServerChecks({ agents: { darya: { runner: "codex", workspaceAccess: "read-only", environment: { A: "b" }, mcpServers: { serena: server } } } }, async (_servers, options) => { seen = options as never; return []; }, full);
       expect(seen).toMatchObject({ readOnly: true, env: { A: "b" }, writableRoots: [], toolchainPaths: [await realpath(tools)], egress: { httpsHosts: ["example.com"], controlPlaneHosts: ["api.example"] } });
     } finally {
       await rm(tools, { recursive: true, force: true });

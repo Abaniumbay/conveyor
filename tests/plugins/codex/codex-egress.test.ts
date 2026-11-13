@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import net from "node:net";
 import path from "node:path";
 
@@ -59,7 +60,7 @@ async function run(egress: boolean, localServiceEnvironment?: Record<string, str
     sandbox: "workspace-write",
     automaticApprovals: false,
     mcp: { command: "bun", args: ["x"] },
-    env: { CAPTURE: capture },
+    env: { ...defaultRunVariables(), CAPTURE: capture },
     ...(egress
       ? {
           egress: {

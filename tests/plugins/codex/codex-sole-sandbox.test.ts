@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import net from "node:net";
 import path from "node:path";
 
@@ -52,7 +53,7 @@ async function launch(kind: "run" | "check", sandbox: Mode, egress: boolean, res
     sandbox,
     automaticApprovals: true,
     mcp: { command: "bun", args: ["x"] },
-    env: { CAPTURE: capture, KIND: kind },
+    env: { ...defaultRunVariables(), CAPTURE: capture, KIND: kind },
     ...(egress
       ? {
           egress: {

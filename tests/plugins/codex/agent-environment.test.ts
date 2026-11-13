@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { resolveFilesystemPath } from "../../../src/core/paths";
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import { runCodex } from "../../../src/plugins/codex/codex";
 import { runCodexCheck } from "../../../src/plugins/codex/codex-check";
 import { runCodexSteering } from "../../../src/plugins/codex/codex-steering";
@@ -61,11 +62,14 @@ async function fixture() {
 
 type Captured = Record<string, string | undefined>;
 
+/** The service's own variables never reach Codex; a variable for Codex itself reaches it and is kept out of its commands. */
 async function expectCredentialFree(files: Awaited<ReturnType<typeof fixture>>): Promise<void> {
   const env = JSON.parse(await readFile(files.capture, "utf8")) as Captured;
-  for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "GIT_ASKPASS", "CONVEYOR_CONFIG", "OPENAI_API_KEY", "LEAK_TOKEN"]) {
+  for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "GIT_ASKPASS", "CONVEYOR_CONFIG", "OPENAI_API_KEY"]) {
     expect(env[name]).toBeUndefined();
   }
+  expect(env.LEAK_TOKEN).toBe("x");
+  expect(JSON.parse(env.RUN_ARGS!) as string[]).toContain('shell_environment_policy.exclude=["CODEX_HOME","LEAK_TOKEN"]');
   expect(env.HOME).toBe(path.join(files.artifacts, "home"));
   expect(env.CODEX_HOME).toBe(path.join(files.artifacts, "home", ".codex"));
   expect(env.ENV_CAPTURE).toBe(files.capture);
@@ -91,7 +95,7 @@ describeSandbox("agent environment", () => {
       command: files.executable,
       workspace: files.workspace,
       artifactsDirectory: files.artifacts,
-      env: { ENV_CAPTURE: files.capture, KIND: "run", LEAK_TOKEN: "x" },
+      env: { ...defaultRunVariables(), ENV_CAPTURE: files.capture, KIND: "run", LEAK_TOKEN: "x" }, programVariables: ["LEAK_TOKEN"],
     });
     await expectCredentialFree(files);
   });
@@ -101,7 +105,7 @@ describeSandbox("agent environment", () => {
       const files = await fixture();
       const run = runCodex({
         ...common, command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
-        env: { ENV_CAPTURE: files.capture, KIND: kind },
+        env: { ...defaultRunVariables(), ENV_CAPTURE: files.capture, KIND: kind },
       });
       if (kind === "fail") await expect(run).rejects.toThrow();
       else await run;
@@ -119,7 +123,7 @@ describeSandbox("agent environment", () => {
     const controller = new AbortController();
     const run = runCodex({
       ...common, command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
-      env: { ENV_CAPTURE: files.capture, KIND: "wait" }, signal: controller.signal, interruptGraceMs: 20,
+      env: { ...defaultRunVariables(), ENV_CAPTURE: files.capture, KIND: "wait" }, signal: controller.signal, interruptGraceMs: 20,
     });
     for (let attempts = 0; !existsSync(files.capture) && attempts < 20; attempts += 1) await Bun.sleep(10);
     const env = JSON.parse(await readFile(files.capture, "utf8")) as Captured;
@@ -137,7 +141,7 @@ describeSandbox("agent environment", () => {
       command: files.executable,
       workspace: files.workspace,
       artifactsDirectory: files.artifacts,
-      env: { ENV_CAPTURE: files.capture, KIND: "check", LEAK_TOKEN: "x" },
+      env: { ...defaultRunVariables(), ENV_CAPTURE: files.capture, KIND: "check", LEAK_TOKEN: "x" }, programVariables: ["LEAK_TOKEN"],
     });
     await expectCredentialFree(files);
   });
@@ -149,7 +153,7 @@ describeSandbox("agent environment", () => {
       command: files.executable,
       workspace: files.workspace,
       artifactsDirectory: files.artifacts,
-      env: { ENV_CAPTURE: files.capture, KIND: "steer", LEAK_TOKEN: "x" },
+      env: { ...defaultRunVariables(), ENV_CAPTURE: files.capture, KIND: "steer", LEAK_TOKEN: "x" }, programVariables: ["LEAK_TOKEN"],
     });
     await expectCredentialFree(files);
   });
@@ -165,7 +169,7 @@ describeSandbox("agent environment", () => {
           command: files.executable,
           workspace: files.workspace,
           artifactsDirectory: files.artifacts,
-          env: { ENV_CAPTURE: files.capture, KIND: kind, LOCK_HOME: "true" },
+          env: { ...defaultRunVariables(), ENV_CAPTURE: files.capture, KIND: kind, LOCK_HOME: "true" },
           onEvent: (event: unknown) => events.push(event),
         };
         if (kind === "run") {
@@ -201,7 +205,7 @@ describeSandbox("agent environment", () => {
         command: files.executable,
         workspace: files.workspace,
         artifactsDirectory: files.artifacts,
-        env: { ENV_CAPTURE: files.capture, KIND: kind },
+        env: { ...defaultRunVariables(), ENV_CAPTURE: files.capture, KIND: kind },
         ...(kind === "wait" ? { signal: controller.signal, interruptGraceMs: 20 } : {}),
       });
       if (kind === "wait") {
@@ -224,7 +228,7 @@ describeSandbox("agent environment", () => {
         command: files.executable,
         workspace: files.workspace,
         artifactsDirectory: files.artifacts,
-        env: { ENV_CAPTURE: files.capture, KIND: "wait", LOCK_HOME: "true", LOCK_READY: lockReady },
+        env: { ...defaultRunVariables(), ENV_CAPTURE: files.capture, KIND: "wait", LOCK_HOME: "true", LOCK_READY: lockReady },
         signal: controller.signal,
         interruptGraceMs: 20,
       };
@@ -258,7 +262,7 @@ describeSandbox("agent environment", () => {
         artifactsDirectory: path.join(link, "artifacts", "run-1"),
         temporaryDirectory: path.join(link, "scratch"),
         writableRoots: [allowedRoot, path.join(link, "missing")],
-        env: { ENV_CAPTURE: path.join(link, "artifacts", "run-1", "env.json"), KIND: kind },
+        env: { ...defaultRunVariables(), ENV_CAPTURE: path.join(link, "artifacts", "run-1", "env.json"), KIND: kind },
       };
       if (kind === "run") await runCodex({ ...common, command: files.executable, ...linked });
       else if (kind === "check") await runCodexCheck({ ...common, command: files.executable, ...linked });

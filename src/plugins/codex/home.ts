@@ -7,29 +7,26 @@ import path from "node:path";
 
 import { prepareAgentEnvironment, type Environment } from "../../isolation/environment";
 
-/** Variables the Codex harness needs for its own (outside-the-sandbox) control plane. */
+/** The variable Codex finds its home in: Conveyor sets it to the run's private copy. */
 export const CODEX_CONTROL_PLANE: readonly string[] = ["CODEX_HOME"];
 
 /**
- * The environment every Codex agent process is spawned with: the inherited allowlist (plus the
- * caller's overrides) minus credentials, with HOME pointing at the run's sanitized home under
- * `artifactsDirectory`.
+ * The environment every Codex agent process is spawned with: the run's variables, with HOME pointing
+ * at the run's sanitized home under `artifactsDirectory` and CODEX_HOME at a private copy of the
+ * service's Codex home inside it.
  */
 export async function prepareCodexEnvironment(options: {
   artifactsDirectory: string;
   workspace: string;
-  overrides?: Record<string, string> | undefined;
+  /** The run's variables; a `CODEX_HOME` among them names the service's Codex home (the runner's configDir). */
+  variables?: Record<string, string> | undefined;
   parent?: Environment;
   /** A persisted session the run resumes; its record is copied into the private Codex home. */
   resumeSessionId?: string | undefined;
 }): Promise<Record<string, string>> {
   const { resumeSessionId, ...rest } = options;
-  const serviceHome = serviceCodexHome(options.overrides, options.parent ?? process.env);
-  const env = await prepareAgentEnvironment({
-    ...rest,
-    overrides: { ...options.overrides, CODEX_HOME: serviceHome },
-    controlPlane: CODEX_CONTROL_PLANE,
-  });
+  const serviceHome = serviceCodexHome(options.variables, options.parent ?? process.env);
+  const env = await prepareAgentEnvironment(rest);
   // The service's Codex home holds every run's credentials and sessions. The harness gets a
   // private one inside this run's home instead; commands never receive its location (the shell
   // policy excludes CODEX_HOME) and it is deleted with the home when the run ends.

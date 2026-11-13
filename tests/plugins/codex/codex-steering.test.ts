@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -49,7 +50,7 @@ describe("runCodexSteering", () => {
       sandbox: "workspace-write",
       automaticApprovals: true,
       mcp: { command: "bun", args: ["run", "mcp.ts"] },
-      env: { CAPTURE: capture },
+      env: { ...defaultRunVariables(), CAPTURE: capture },
       onEvent: (event) => events.push(event),
     });
 
@@ -105,7 +106,7 @@ describe("runCodexSteering", () => {
       sandbox: "read-only",
       automaticApprovals: false,
       filesystem: "scratch",
-      env: { HOST_DATABASE: database, CODEX_HOME: codexHome },
+      env: { ...defaultRunVariables(), HOST_DATABASE: database, CODEX_HOME: codexHome },
     });
 
     expect(result.summary).toBe("confined");

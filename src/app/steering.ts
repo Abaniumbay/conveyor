@@ -3,6 +3,7 @@
 // use (the redacted board, finding an item, its bounded history, and the scheduled check's answers
 // and outcomes). Each run reaches Conveyor only through its system-scoped MCP grant.
 
+import { agentRunVariables } from "../config/run-environment";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -196,7 +197,7 @@ export class Steering {
       "You may answer only an open target question when its answer is unambiguous and you quote the current issue, acceptance criteria, or recorded conversation evidence.",
       "For every inspected target you cannot safely retry or answer, use the outcome-reporting tool to record why it remains stopped. Do not move backlog items, inspect or act on unrelated items, or make up owner preferences.",
     ].join("\n");
-    const completion = this.#execute(runId, prompt, { ...agent, tasks: allowed }, runner, steering.workspace, controller.signal, true)
+    const completion = this.#execute(runId, prompt, steering.agent, { ...agent, tasks: allowed }, runner, steering.workspace, controller.signal, true)
       .finally(() => {
         const check = this.#scheduledChecks.get(runId);
         const run = store.getRun(runId);
@@ -260,7 +261,7 @@ export class Steering {
     store.appendRunEvent(runId, "user", { text: request });
     const controller = new AbortController();
     this.#active.set(runId, controller);
-    const completion = this.#execute(runId, request, agent, runner, steering.workspace, controller.signal)
+    const completion = this.#execute(runId, request, steering.agent, agent, runner, steering.workspace, controller.signal)
       .finally(() => {
         this.#active.delete(runId);
         this.#completions.delete(runId);
@@ -333,6 +334,7 @@ export class Steering {
       timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
       const result = await harness.run({
         command: runner.command,
+        ...agentRunVariables(config, { runId, itemId: issueId, agentId }),
         // Always the run's own empty scratch directory: the same filesystem a confined Operator gets.
         workspace: scratch,
         artifactsDirectory: path.join(config.settings.artifacts, runId),
@@ -408,6 +410,7 @@ export class Steering {
   async #execute(
     runId: string,
     userPrompt: string,
+    agentId: string,
     agent: ConveyorConfig["agents"][string],
     runner: HarnessRunnerConfig,
     workspace: string,
@@ -425,6 +428,7 @@ export class Steering {
       const instructions = await readFile(agent.instructions, "utf8");
       const result = await steer({
         command: runner.command,
+        ...agentRunVariables(config, { runId, agentId }),
         workspace,
         artifactsDirectory: path.join(config.settings.artifacts, runId),
         prompt: [

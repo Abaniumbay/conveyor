@@ -4,6 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import { CodexRunnerError } from "../../../src/plugins/codex/codex";
 import { checkResultSchema, runCodexCheck } from "../../../src/plugins/codex/codex-check";
 import { bwrapUnavailableReason } from "../../support/bwrap";
@@ -123,7 +124,7 @@ describeSandbox("runCodexCheck", () => {
       sandbox: "read-only",
       automaticApprovals: true,
       mcp: { command: "bun", args: ["run", "/opt/conveyor/mcp.ts"] },
-      env: { CAPTURE: files.capture, SECRET_SHOULD_NOT_LEAK: "no" },
+      env: { ...defaultRunVariables(), CAPTURE: files.capture },
     });
 
     expect(result).toMatchObject({
@@ -170,7 +171,7 @@ describeSandbox("runCodexCheck", () => {
     await runCodexCheck({
       command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
       prompt: "Review", sandbox: "workspace-write", automaticApprovals: true,
-      mcp: { command: "bun", args: [] }, env: { CAPTURE: files.capture }, temporaryDirectory: scratch,
+      mcp: { command: "bun", args: [] }, env: { ...defaultRunVariables(), CAPTURE: files.capture }, temporaryDirectory: scratch,
     });
 
     const captured = JSON.parse(await readFile(files.capture, "utf8")) as { args: string[]; tmpdir: string };
@@ -280,7 +281,7 @@ describeSandbox("runCodexCheck", () => {
   const descendantOnTimeout = async (prefix: string, grace: number) => {
     const files = await fixture(prefix + descendant);
     const marker = path.join(files.artifacts, "descendant.up");
-    const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, timeoutMs: 1_500, env: { PIDFILE: marker } });
+    const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, timeoutMs: 1_500, env: { ...defaultRunVariables(), PIDFILE: marker } });
     const settled = run.then(() => undefined, (error: unknown) => error);
     await waitForDescendant(marker);
     expect(await settled).toMatchObject({ kind: "timeout" });
@@ -290,7 +291,7 @@ describeSandbox("runCodexCheck", () => {
     const files = await fixture(prefix + descendant);
     const marker = path.join(files.artifacts, "descendant.up");
     const controller = new AbortController();
-    const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, signal: controller.signal, env: { PIDFILE: marker } });
+    const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, signal: controller.signal, env: { ...defaultRunVariables(), PIDFILE: marker } });
     const settled = run.then(() => undefined, (error: unknown) => error);
     await waitForDescendant(marker);
     controller.abort();
@@ -312,7 +313,7 @@ describeSandbox("runCodexCheck", () => {
     const base = (files: Awaited<ReturnType<typeof fixture>>) => ({
       command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
       prompt: "Check", sandbox: "read-only" as const, automaticApprovals: false,
-      mcp: { command: "bun", args: [] }, env: { CAPTURE: files.capture },
+      mcp: { command: "bun", args: [] }, env: { ...defaultRunVariables(), CAPTURE: files.capture },
     });
     await expect(runCodexCheck(base(failed))).rejects.toMatchObject({ kind: "process" });
     const failedPaths = JSON.parse(await readFile(failed.capture, "utf8")) as { tmpdir: string; home: string };
@@ -422,7 +423,7 @@ await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({
       sandbox: "read-only",
       automaticApprovals: false,
       mcp: { command: "bun", args: [] },
-      env: { CAPTURE: capture },
+      env: { ...defaultRunVariables(), CAPTURE: capture },
       egress: {
         httpsHosts: [],
         localServiceEnvironment: {

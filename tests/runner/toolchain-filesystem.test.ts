@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { defaultRunVariables } from "../../src/isolation/run-environment";
 import { runClaudeCode } from "../../src/plugins/claude-code/claude-code";
 import { runCodex } from "../../src/plugins/codex/codex";
 import { bwrapUnavailableReason } from "../support/bwrap";
@@ -56,7 +57,7 @@ async function fixture(program: string) {
   await writeFile(executable, program);
   await chmod(executable, 0o755);
   const capture = path.join(artifacts, "capture.json");
-  const env = { CAPTURE: capture, TOOLCHAIN: toolchain, CODEX_HOME: credentials, CLAUDE_CONFIG_DIR: claudeConfig };
+  const env = { ...defaultRunVariables(), CAPTURE: capture, TOOLCHAIN: toolchain, CODEX_HOME: credentials, CLAUDE_CONFIG_DIR: claudeConfig };
   return { root, workspace, artifacts, executable, toolchain, capture, env };
 }
 

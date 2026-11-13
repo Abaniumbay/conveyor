@@ -117,7 +117,7 @@ export async function runCodexSteering(
   try {
     const confined = input.filesystem === "scratch";
     const agentWorkspace = confined ? scratch.path : workspace;
-    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace: agentWorkspace, overrides: input.env });
+    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace: agentWorkspace, variables: input.env });
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     const run = runInput.sandbox === "workspace-write"
@@ -134,6 +134,7 @@ export async function runCodexSteering(
       command: input.command,
       environment: resolvedEnvironment,
       artifactsDirectory,
+      programVariables: input.programVariables,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
       filesystem: {

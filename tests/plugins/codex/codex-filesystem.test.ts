@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -19,7 +20,9 @@ const readable = async (file) => await Bun.file(file).exists();
 const result = {};
 for (const [name, file] of Object.entries(checks.files)) result[name] = await readable(file);
 result.harnessAuthentication = await readable(process.env.CODEX_HOME + "/auth.json");
-result.agentEnvironmentExcludesCodexHome = args.includes('shell_environment_policy.exclude=["CODEX_HOME"]');
+// Codex takes the last exclusion it is given; Conveyor gives exactly one.
+const exclusions = args.filter((arg) => arg.startsWith("shell_environment_policy.exclude="));
+result.agentEnvironmentExcludesCodexHome = exclusions.length === 1 && exclusions[0].includes('"CODEX_HOME"');
 result.workspaceContents = await Bun.file(checks.workspaceMarker).text();
 try {
   await Bun.write(checks.workspace + "/write-marker", "workspace write");
@@ -149,6 +152,7 @@ describeSandbox("Codex filesystem confinement", () => {
       automaticApprovals: false,
       mcp: { command: "bun", args: ["x"] },
       env: {
+          ...defaultRunVariables(),
         CAPTURE: files.capture,
         CHECKS: JSON.stringify(files.checks),
         CODEX_HOME: path.join(path.dirname(files.workspace), "credentials"),
@@ -226,7 +230,7 @@ describeSandbox("Codex filesystem confinement", () => {
       sandbox: "read-only",
       automaticApprovals: false,
       mcp: { command: "bun", args: ["x"] },
-      env: { CAPTURE: files.capture, CHECKS: JSON.stringify(checks), CODEX_HOME: path.join(root, "credentials") },
+      env: { ...defaultRunVariables(), CAPTURE: files.capture, CHECKS: JSON.stringify(checks), CODEX_HOME: path.join(root, "credentials") },
       ...(egress ? { egress: { httpsHosts: [], controlPlaneHosts: [] } } : {}),
     });
     const result = JSON.parse(await readFile(files.capture, "utf8"));
@@ -247,7 +251,7 @@ describeSandbox("Codex filesystem confinement", () => {
       sandbox: "read-only",
       automaticApprovals: false,
       mcp: { command: "bun", args: ["x"] },
-      env: { STARTED: started },
+      env: { ...defaultRunVariables(), STARTED: started },
     })).rejects.toThrow("cannot confine a command that is not installed");
     expect(await Bun.file(started).exists()).toBe(false);
   });
@@ -271,6 +275,7 @@ describeSandbox("Codex filesystem confinement", () => {
         mcp: { command: "bun", args: ["x"] },
         writableRoots: [writableRoot],
         env: {
+          ...defaultRunVariables(),
           CAPTURE: files.capture,
           CHECKS: JSON.stringify({ workspace: files.workspace, writableRoot, outside, tmpFile }),
           CODEX_HOME: path.join(root, "credentials"),

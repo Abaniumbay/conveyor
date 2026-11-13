@@ -60,7 +60,7 @@ Run these from the repository root.
 | `src/plugins/` | Plugin implementations, one folder per provider and one per role inside it: `github/{shared,items,code,ci}`, `codex/` (its runner, profile, Codex home handling in `home.ts` and launch in `launch.ts`), `claude-code/` (its runner, profile and launch with the shell prefix in `launch.ts`), `pi/` (its runner in `pi.ts`, profile, private agent directory in `agent-directory.ts`, and in `launch.ts` package, interpreter and official-installer resolution, provider control-plane hosts and the egress launch with its command environment), and `dashboard/` (the dashboard's view models in `views.ts`, its live feed in `feed.ts`). `index.ts` is the list the composition root registers. |
 | `src/source/`, `src/codehost/` | Item source and code host ports (`types.ts`: `ItemReader`, `ItemSections`, `ItemMarkers`, … combined as `ItemTracker`; `client.ts`: the service-only ports combined as `ItemSourceClient`, the type the service holds instead of a provider client), call metering and the reason each request is made (`calls.ts`), who may act (`trust.ts`), the status comment (`status-comment.ts`), Conveyor's managed-section codec (`managed-sections.ts`), item types and fields (`item-metadata.ts`), and provider-neutral change actions. |
 | `src/harness/`, `src/runner/` | The harness port (`harness/types.ts`: `Harness`, its `HarnessProfile` and the optional quota reader, legacy-check and Operator runs; `harness/doctor.ts`: the `conveyor doctor` check a harness plugin supplies) and the shared runner pieces (run envelope, output schemas, JSON-process runner). The Codex and Claude Code runners live in their plugins (`src/plugins/codex/`, `src/plugins/claude-code/`). |
-| `src/isolation/` | The harness-neutral sandbox: the sanitized agent environment (`environment.ts`; a harness's own variables come only from its profile), the empty-root and Operator filesystem plans (`sandbox.ts`), the run network (`run-network.ts`) and egress proxies. Nothing here knows a particular harness. |
+| `src/isolation/` | The harness-neutral sandbox: a run's environment (`run-environment.ts`: `settings.environment` resolved level by level, exactly what the configuration lists, never filtered by name; `environment.ts`: the agent process's private home and shell), the empty-root and Operator filesystem plans (`sandbox.ts`), the run network (`run-network.ts`) and egress proxies. Nothing here knows a particular harness. |
 | `src/web/` | `server.ts` (HTTP routes, SSE), `model.ts` (the live dashboard model and its patches), `render.tsx` (Preact markup), `types.ts` (view models), `styles.ts` (CSS), `app/` (the browser application: `main.tsx`, `store.ts`, `derive.ts`, `behaviour.ts`). |
 | `src/cli/` | `main.ts` (command table) and `commands/*.ts`. |
 | `src/log/` | Structured logging (`log` from `src/log/logger.ts`). |
@@ -208,9 +208,10 @@ a service mutation directly.
    the contract in `src/core/plugins.ts`, and add it to `src/plugins/index.ts`; the composition
    root (`src/cli/commands/serve.ts`) registers it. Plugins of one provider share a client through
    `PluginContext.shared`, never by importing another plugin. A harness plugin keeps its runner in
-   its folder, validates its agents' `harnessSettings` with its `agentSettingsSchema` (none: it takes
-   no settings), declares a `HarnessProfile` (how the core prepares its runs, including the
-   control-plane variables and hosts it needs and its own tool-name guidance) and keeps its own
+   its folder, validates the harness keys of its entry's and its agents' `settings` with its
+   `agentSettingsSchema` (none: it takes none), declares a `HarnessProfile` (how the core prepares its
+   runs, including the control-plane hosts it needs, the variables it sets for its own runs and its
+   own tool-name guidance) and keeps its own
    environment handling (such as Codex's private home) and launch (such as Claude Code's shell
    prefix) in its folder, built from the neutral pieces in `src/isolation/`; the core never branches
    on the runner type to launch it.

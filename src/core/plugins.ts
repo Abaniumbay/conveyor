@@ -120,6 +120,8 @@ export interface HarnessPlugin {
    * the harness takes no settings, so an agent that sets any is refused.
    */
   readonly agentSettingsSchema?: z.ZodType<HarnessSettings>;
+  /** Deprecated keys of a runner entry, each with what to use instead; the loader warns about them. */
+  readonly deprecatedSettings?: Readonly<Record<string, string>>;
   /** Checks for `conveyor doctor` that a runner of this type can start; absent when there is nothing to check. */
   doctor?(input: HarnessDoctorInput): HarnessDoctorCheck;
   create(context: PluginContext): Harness;

@@ -17,6 +17,7 @@ import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
 import { cleanupSanitizedHome, prepareAgentEnvironment } from "../../isolation/environment";
+import { defaultRunVariables } from "../../isolation/run-environment";
 import { agentFilesystemCommand, verifyAgentWrapper, type AgentFilesystemOptions } from "../../isolation/sandbox";
 import { acquireScratch, assertNoHostTmpWritableRoots, type ScratchDirectory } from "../../isolation/scratch";
 import type { RunNetwork } from "../../isolation/run-network";
@@ -137,15 +138,26 @@ export function piMcpConfiguration(
   return { autoEnableCodemode: false, mcpServers: servers };
 }
 
-/** The variables the pi process holds for itself, which its commands never get: its agent directory and provider credentials. */
-export function piProcessVariables(credentialVariables: readonly string[]): string[] {
-  return [PI_AGENT_DIRECTORY, ...credentialVariables];
+/** The variables the pi process holds for itself, which its commands never get: its agent directory and the run's `programVariables`. */
+export function piProcessVariables(programVariables: readonly string[]): string[] {
+  return [...new Set([PI_AGENT_DIRECTORY, ...programVariables])];
+}
+
+/** The pi process's own variables: the harness level's environment and the deprecated `credentialVariables`. */
+function piProgramVariables(input: { programVariables?: readonly string[] | undefined }, runner: { credentialVariables: readonly string[] }): string[] {
+  return [...new Set([...(input.programVariables ?? []), ...runner.credentialVariables])];
+}
+
+/** The deprecated `credentialVariables`, with their values from the service. */
+function credentialValues(names: readonly string[], service: Record<string, string | undefined> = process.env): Record<string, string> {
+  return Object.fromEntries(names.flatMap((name) => (service[name] === undefined ? [] : [[name, service[name]!]])));
 }
 
 /** The run's `settings.json`: Conveyor's choices only, never the operator's own settings. */
 export function piSettings(options: {
   shell: string;
-  credentialVariables: readonly string[];
+  /** What commands may not inherit besides pi's agent directory: the run's `programVariables`. */
+  programVariables: readonly string[];
   provider?: string | undefined;
   /** Under egress: the command environment file every command sources first. */
   commandEnvironment?: string | undefined;
@@ -153,7 +165,7 @@ export function piSettings(options: {
   return {
     shellPath: options.shell,
     // Every command starts by dropping what the pi process holds for itself (and, under egress, by taking the data-plane proxy).
-    shellCommandPrefix: piShellCommandPrefix({ unset: piProcessVariables(options.credentialVariables), commandEnvironment: options.commandEnvironment }),
+    shellCommandPrefix: piShellCommandPrefix({ unset: piProcessVariables(options.programVariables), commandEnvironment: options.commandEnvironment }),
     defaultProjectTrust: "never",
     enableInstallTelemetry: false,
     ...(options.provider ? { defaultProvider: options.provider } : {}),
@@ -246,7 +258,9 @@ async function consumeJsonLines(stream: ReadableStream<Uint8Array>, onEvent: (ev
 }
 
 function runnerSettings(input: PiRunInput): PiRunnerConfig {
-  const parsed = piRunnerSchema.safeParse(input.runner ?? { type: "pi", command: input.command });
+  // The core completes every harness entry with its `settings` (environment and harness keys); pi's own schema reads the rest.
+  const { environment: _environment, settings: _settings, ...runner } = input.runner ?? { type: "pi", command: input.command };
+  const parsed = piRunnerSchema.safeParse(runner);
   if (!parsed.success) {
     throw new PiRunnerError(`the run's runner is not a valid pi runner: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "runner"}: ${issue.message}`).join("; ")}`, "process", null, "");
   }
@@ -308,9 +322,10 @@ export async function runPi(input: PiRunInput): Promise<RunEnvelope> {
     return cleanupPiRun({ artifactsDirectory, scratch, home, serviceDirectory });
   };
   try {
+    const programVariables = piProgramVariables(input, runner);
     const environment = await prepareAgentEnvironment({
-      artifactsDirectory, workspace, overrides: input.env,
-      controlPlane: [...piProfile.controlPlaneEnvironment, ...runner.credentialVariables],
+      artifactsDirectory, workspace,
+      variables: { ...(input.env ?? defaultRunVariables()), ...credentialValues(runner.credentialVariables) },
     });
     home = resolveFilesystemPath(environment.HOME!);
     serviceDirectory = resolveFilesystemPath(servicePiAgentDirectory(input.env));
@@ -319,7 +334,7 @@ export async function runPi(input: PiRunInput): Promise<RunEnvelope> {
     const agentDirectory = await preparePiAgentDirectory({
       home,
       serviceDirectory,
-      settings: piSettings({ shell: environment.SHELL!, credentialVariables: runner.credentialVariables, provider: runner.provider, commandEnvironment }),
+      settings: piSettings({ shell: environment.SHELL!, programVariables, provider: runner.provider, commandEnvironment }),
       mcp: piMcpConfiguration(input, commandEnvironment ? { shell: environment.SHELL!, commandEnvironment } : undefined),
       resumeSessionId: input.resumeSessionId,
     });
@@ -359,7 +374,7 @@ export async function runPi(input: PiRunInput): Promise<RunEnvelope> {
       // Fails closed: without the namespace and its proxies pi is never started.
       const egressLaunch = await piLaunch({
         environment: resolvedEnvironment, artifactsDirectory, egress: input.egress, controlPlaneHosts,
-        filesystem: filesystemOptions, argv, unset: piProcessVariables(runner.credentialVariables),
+        filesystem: filesystemOptions, argv, unset: piProcessVariables(programVariables),
       });
       network = egressLaunch.network;
       launch = egressLaunch;
