@@ -329,6 +329,13 @@ running, and 5 means it refused the request (the reason is printed).
   (conveyor#629 stopped as blocked this way). Allow them for bwrap, for example
   `sysctl kernel.apparmor_restrict_unprivileged_userns=0` or an AppArmor profile for bwrap, then check
   `conveyor doctor`.
+- An agent's command or a script fails because a variable or tool is missing (a token, `SSH_AUTH_SOCK`,
+  a deploy setting, or a program found through a variable): runs get only the variables their
+  configuration lists, never the service's whole environment. List the variable in the
+  `settings.environment` of the level that needs it (an empty value takes the service's), and check
+  that `PATH` in the root default reaches the tool. A harness login variable such as
+  `ANTHROPIC_API_KEY` goes in the harness entry's `settings.environment`. See
+  [Settings and run environments](configuration.md#settings-and-run-environments).
 - The service does not start: check `conveyor service status` and `journalctl -u conveyor -n 100`.
   "another Conveyor is already running for this home" means a second instance (for example a
   foreground `serve`) holds the control socket.
