@@ -10,6 +10,37 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.23.0] - 2026-11-13
+
+Agents can now run on the pi coding agent, and the operator's configuration alone decides what every run sees. Agent egress is a pure whitelist with no hosts refused by Conveyor itself, and every level of the configuration (root, repository, stage, harness entry, agent and script step) takes one `settings` block whose `settings.environment` lists exactly the environment variables a run gets. **Before upgrading**, check the two breaking changes below: harness login variables, credential-looking agent variables and scripts' inherited variables now follow only what `settings.environment` lists. Agents' `env`, `harnessSettings` and `codexConfig` keep working with a deprecation warning.
+
+### Added
+
+- Agents can run on the pi coding agent (the npm package `@earendil-works/pi-coding-agent`) through a harness entry with `type: pi`: `command` (default `pi`), `configDir` (the service's pi agent directory, default `~/.pi/agent`), and an optional `provider`. A provider API key goes in the harness entry's `settings.environment`, which the pi process receives and its commands never do. A pi agent runs `agent.run` stages in the same Bubblewrap filesystem sandbox as Codex and Claude Code, with a private copy of pi's login, Conveyor's own pi settings and MCP servers, no project-local `.pi/` configuration, tools that follow its access and `shell`, and session resume after an answered question. A pi agent at a usage or rate limit hands the stage to the next listed agent, and an invalid result goes back to the same session once for correction. `conveyor doctor` checks that each pi runner's command is pi's npm package with Node.js on `PATH`.
+
+- pi agents now run in repositories with `agentEgress`. The pi process reaches only its runner's `controlPlaneHosts` through the run's control-plane proxy; its bash commands and the MCP servers it starts reach only the repository's `httpsHosts` and never receive pi's agent directory or the variables of the harness entry's `settings.environment`. A pi runner without `controlPlaneHosts` uses its `provider`'s hosts (`anthropic`, `openai`, `openai-codex`, `google` and `openrouter` are known); a pi runner used under `agentEgress` with neither fails configuration loading, naming the runner, so set `controlPlaneHosts` for other providers such as `azure`. `scripts/check-agent-egress.ts --runner <id> [--live]` now also verifies a pi runner. A pi runner's `command` may also be the launcher of pi's official installer (`~/.pi/agent/bin/pi`): Conveyor runs its current release with the installer's Node and mounts only that release, never the rest of `~/.pi/agent`, and `conveyor doctor` reports the release.
+
+### Changed
+
+- Agent egress is now a pure whitelist. Conveyor no longer refuses `api.github.com` and `uploads.github.com` on its own: agents reach a host only when you list it, in a repository's `agentEgress.httpsHosts` for their commands or in a runner's `controlPlaneHosts` for the harness itself, and nothing else. Configurations that worked before reach exactly the same hosts. Leave your code host's API out of the lists to keep agents acting on it only through Conveyor's tools. A pi runner with a GitHub Copilot login can now run under `agentEgress` by listing `api.github.com` and its plan's Copilot host in `controlPlaneHosts`. `scripts/check-agent-egress.ts` now probes a host the configuration does not list (`api.github.com` unless listed, else `example.com`).
+
+- **Breaking:** Every level of the configuration may now hold a `settings` block with the same keys, inherited down to each run: the root `settings`, a repository's, a native stage's, a harness entry's and an agent's. Its first key, `settings.environment`, decides exactly which environment variables an agent run gets: each level's variables, the last definition of a name winning (root, repository, stage, harness, agent), a value as written or, when empty, the service's own value. Conveyor no longer filters variable names, and passes nothing it was not told to.
+
+  What operators must check before upgrading:
+
+  - **Harness login variables are no longer passed on their own.** Claude Code used to receive `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` from the service's environment. A login stored by the harness's own login command keeps working with nothing to change. If you sign a harness in through a variable, list it in that harness entry's `settings.environment` (an empty value takes the service's); it reaches the harness only, never the commands it runs.
+  - **An agent's `env` is no longer filtered.** A variable whose name looked like a credential (`*_TOKEN`, `*_SECRET`, `GH_*` and the like) used to be dropped silently; it now reaches the agent. Review your agents' `env` and remove anything the agent should not see.
+  - **Reserved names are now errors.** `HOME`, `SHELL`, `TMPDIR`, any `CONVEYOR_*` name, and a harness's private directory (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`) may not be set at any level; `configDir` chooses a harness's directory.
+  - **Proxy variables are passed as written.** The root default includes `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` from the service, now including any credentials in their URLs.
+
+  Each agent run also gets `CONVEYOR_RUN_ID`, `CONVEYOR_REPOSITORY_ID`, `CONVEYOR_ITEM_ID`, `CONVEYOR_STAGE_ID` and `CONVEYOR_AGENT_ID`. Claude Code's commands now lose its own variables without `agentEgress` too.
+
+- **Breaking:** Script runs (`script.run` steps, legacy script stages and legacy check scripts) no longer inherit the service's whole environment. A script now gets the root's, the repository's, the stage's and its step's `settings.environment` (the step's under `with: { settings: { environment } }`), the service's `HOME` and `TMPDIR`, and `CONVEYOR_RUN_ID`, `CONVEYOR_REPOSITORY_ID`, `CONVEYOR_ITEM_ID` and `CONVEYOR_STAGE_ID`. Before upgrading, check what your scripts read from the environment: a variable outside the root default (`USER`, `LOGNAME`, `PATH`, `TERM`, `COLORTERM`, `LANG`, `LC_ALL` and the proxy variables), such as `SSH_AUTH_SOCK`, `XDG_RUNTIME_DIR`, a token or a deploy setting, must be listed at one of those levels, with an empty value to take the service's.
+
+### Deprecated
+
+- An agent's `env` is now its `settings.environment`, an agent's `harnessSettings` (and the older `codexConfig`) are now the harness keys of its `settings`, and a pi runner's `credentialVariables` is now its harness entry's `settings.environment` (names with empty values). The old names keep working, with a warning from `config check`, `doctor` and the service log. A harness entry's `settings` also hold harness keys every agent of that harness inherits, such as Codex's `model_auto_compact_token_limit`.
+
 ## [0.22.0] - 2026-11-13
 
 Agent harnesses are now fully self-contained plugins: Codex and Claude Code keep their own settings, environment and launch in their plugin folders, and the core no longer names either of them. This prepares Conveyor for further harnesses. Agent settings are now `harnessSettings` (`codexConfig` still works, with a deprecation warning), and `conveyor doctor`'s sandbox checks are renamed and apply to every harness.
