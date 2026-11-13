@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { agentFilesystemPlan } from "../../src/isolation/sandbox";
-import { agentToolchainPathsSchema, resolveToolchainPaths } from "../../src/isolation/toolchain-paths";
+import { agentToolchainPathsSchema, protectedServiceLocations, resolveToolchainPaths } from "../../src/isolation/toolchain-paths";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -57,6 +57,17 @@ describe("resolveToolchainPaths", () => {
     const link = path.join(root, "sdk-link");
     await symlink(sdk, link);
     expect(resolveToolchainPaths([link], [path.join(root, "data")])).toEqual([sdk]);
+  });
+});
+
+describe("protectedServiceLocations", () => {
+  test("protects every agent harness's own state under the service home, pi's agent directory included", () => {
+    const locations = protectedServiceLocations({
+      root: "/srv/conveyor", settings: { database: "/srv/conveyor/db/conveyor.db", logs: "/srv/logs", workspaces: "/srv/ws", artifacts: "/srv/art" },
+      repositories: {}, runners: {},
+    });
+    for (const name of [".codex", ".claude", ".pi"]) expect(locations).toContain(path.join(homedir(), name));
+    expect(() => resolveToolchainPaths([path.join(homedir(), ".pi", "agent")], locations)).toThrow("protected service location");
   });
 });
 

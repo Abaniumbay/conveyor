@@ -740,7 +740,7 @@ describe("harness runners", () => {
   });
 
   test("a runner type no harness plugin provides is an error naming the known types", async () => {
-    await expect(loadWith("runners:\n  pi: { type: pi }\n")).rejects.toThrow(/runners\.pi\.type.*no harness plugin provides type "pi" \(known: codex, claude-code, json-process\)/s);
+    await expect(loadWith("runners:\n  opencode: { type: opencode }\n")).rejects.toThrow(/runners\.opencode\.type.*no harness plugin provides type "opencode" \(known: codex, claude-code, pi, json-process\)/s);
     await expect(loadWith("runners:\n  codex: { type: \" codex\" }\n")).rejects.toThrow(/runners\.codex\.type.*no harness plugin provides type " codex"/s);
   });
 
@@ -773,5 +773,26 @@ describe("harness runners", () => {
     expect((await loadWith(agentOn("codex", "harnessSettings: { model_auto_compact_token_limit: 1 }"))).agents.worker?.harnessSettings).toEqual({ model_auto_compact_token_limit: 1 });
     expect((await loadWith(agentOn("codex", "codexConfig: { model_auto_compact_token_limit: 1 }"))).agents.worker?.harnessSettings).toEqual({ model_auto_compact_token_limit: 1 });
     expect((await loadWith(agentOn("claude", "workspaceAccess: read-only", "harnessSettings: {}"))).agents.worker?.harnessSettings).toEqual({});
+  });
+
+  test("the pi plugin completes a pi runner and validates its credential variables", async () => {
+    const config = await loadWith("runners:\n  pi: { type: pi }\n  azure: { type: pi, command: /opt/pi/bin/pi, configDir: /srv/pi-agent, provider: azure, credentialVariables: [AZURE_OPENAI_API_KEY] }\n");
+    const pi: unknown = config.runners.pi;
+    expect(pi).toEqual({ type: "pi", command: "pi", credentialVariables: [] });
+    const azure: unknown = config.runners.azure;
+    expect(azure).toMatchObject({ type: "pi", command: "/opt/pi/bin/pi", provider: "azure", credentialVariables: ["AZURE_OPENAI_API_KEY"] });
+    await expect(loadWith("runners:\n  pi: { type: pi, credentialVariables: [\"NOT A NAME\"] }\n")).rejects.toThrow(/runners\.pi\.credentialVariables\.0.*must be an environment variable name/s);
+    await expect(loadWith("runners:\n  pi: { type: pi, credentialVariables: [GH_TOKEN] }\n")).rejects.toThrow(/runners\.pi\.credentialVariables\.0.*is reserved/s);
+    await expect(loadWith("runners:\n  pi: { type: pi, credentialVariables: [PI_CODING_AGENT_DIR] }\n")).rejects.toThrow(/runners\.pi\.credentialVariables\.0.*is reserved/s);
+    await expect(loadWith("runners:\n  pi: { type: pi, sandbox: read-only }\n")).rejects.toThrow(/runners\.pi.*Unrecognized key: "sandbox"/s);
+  });
+
+  test("a pi agent may withhold its shell, and a workspace-write one needs the network", async () => {
+    const pi = (...lines: string[]) => agentOn("pi", ...lines).replace(RUNNERS, `${RUNNERS}  pi: { type: pi }\n`);
+    expect((await loadWith(pi("workspaceAccess: read-only", "shell: false"))).agents.worker?.shell).toBe(false);
+    expect((await loadWith(pi("workspaceAccess: workspace-write", "network: true"))).agents.worker?.network).toBe(true);
+    await expect(loadWith(pi("workspaceAccess: workspace-write"))).rejects.toThrow("agents.worker runs on pi with access: workspace-write, which needs network: true");
+    await expect(loadWith(pi("workspaceAccess: confined"))).rejects.toThrow("agents.worker uses access: confined, which requires the Codex runner");
+    await expect(loadWith(pi("workspaceAccess: read-only", "harnessSettings: { x: 1 }"))).rejects.toThrow("agents.worker runs on pi, which does not take harnessSettings");
   });
 });

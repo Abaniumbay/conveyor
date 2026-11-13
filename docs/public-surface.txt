@@ -235,6 +235,8 @@ config runners.<name>.automaticApprovals
 config runners.<name>.command
 config runners.<name>.configDir
 config runners.<name>.controlPlaneHosts
+config runners.<name>.credentialVariables
+config runners.<name>.provider
 config runners.<name>.sandbox
 config runners.<name>.type
 config settings
