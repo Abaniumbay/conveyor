@@ -176,8 +176,8 @@ refused.
 
 For a Claude Code runner add `--runner <runner-id>`: it launches probes the way the runner does and
 reports that the process reaches its control-plane host (`controlPlaneHosts` on the runner, default
-Anthropic's hosts) and no other, that its commands reach only `httpsHosts`, and that `api.github.com`
-and direct IP connections are refused. Commands are launched as `"$CLAUDE_CODE_SHELL_PREFIX" '<command string>'`,
+Anthropic's hosts) and no other, that its commands reach only `httpsHosts`, and that a host the configuration does not list
+(`api.github.com` unless listed, else `example.com`) and direct IP connections are refused. Commands are launched as `"$CLAUDE_CODE_SHELL_PREFIX" '<command string>'`,
 the way Claude Code runs them: the prefix is the path of one per-run wrapper script, never a command line,
 and it receives exactly one argument, a command string, which it runs with `$SHELL -c`; Conveyor
 sets `SHELL` to bash for every agent run. Claude Code launches MCP servers the same way.
@@ -202,7 +202,7 @@ For a pi runner, `--runner <runner-id>` launches the probes the way the pi runne
 process must reach its control-plane host (the runner's `controlPlaneHosts`, else its `provider`'s
 default hosts; the check stops if it has neither) and no other, and its commands, run as pi 1.5 runs
 its bash tool (`"$SHELL" -c "<shellCommandPrefix>"'<newline><command>'`), must reach only `httpsHosts`,
-be refused `api.github.com`, direct IPs and the control plane, and see neither `PI_CODING_AGENT_DIR`,
+be refused an unlisted host, direct IPs and the control plane, and see neither `PI_CODING_AGENT_DIR`,
 the runner's `credentialVariables` nor the control-plane credential. **Before turning on `agentEgress`
 for pi agents, run it with `--live`** as the account the service runs as: it starts the real pi CLI
 in the run's namespace with the runner's sign-in, as a real run does (a private copy of the `auth.json`

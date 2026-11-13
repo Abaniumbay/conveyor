@@ -4,14 +4,15 @@
 //
 // Clones the repository locally, runs its dependency restore inside the network sandbox with an empty
 // task-scoped cache and only the repository's `agentEgress.httpsHosts` reachable, then proves that
-// api.github.com, direct IP connections and the Docker socket are refused, and that every configured
+// a host the configuration does not list (api.github.com unless listed, else example.com), direct IP
+// connections and the Docker socket are refused, and that every configured
 // local service answers at its sandbox endpoint. Prints every refused host so the allowlist
 // can be completed.
 //
 // With `--runner <id>` naming a Claude Code runner, it also launches probes the way the Claude Code
 // runner does: the process itself may reach only the runner's `controlPlaneHosts` (through the
 // token-protected control-plane proxy), its commands (`CLAUDE_CODE_SHELL_PREFIX`) only `httpsHosts`,
-// and neither may reach api.github.com or a direct IP. Commands are run exactly as Claude Code runs
+// and neither may reach an unlisted host or a direct IP. Commands are run exactly as Claude Code runs
 // them: the prefix gets ONE argument, a command string.
 //
 // With `--live` (needs a Claude Code runner, its CLI and credentials) it also starts the real Claude
@@ -99,6 +100,11 @@ export function localServiceChecks(services: readonly { name: string; endpoint: 
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 const CURL = "curl -sS --max-time 15 -o /dev/null";
 
+/** A host the configuration lists nowhere, which the sandbox must refuse: api.github.com unless it is listed, else example.com. */
+export function unlistedHost(options: { httpsHosts: readonly string[]; controlPlaneHosts: readonly string[] }): string | undefined {
+  return ["api.github.com", "example.com"].find((host) => !options.httpsHosts.includes(host) && !options.controlPlaneHosts.includes(host));
+}
+
 /**
  * Probes for a Claude Code run, executed by `sh -c` as the Claude Code process would be: plain `curl`
  * is the process (control-plane proxy), `"$CLAUDE_CODE_SHELL_PREFIX" '<command string>'` (one executable path, one argument, as Claude Code runs it) is one of its `Bash` commands.
@@ -106,6 +112,7 @@ const CURL = "curl -sS --max-time 15 -o /dev/null";
 export function claudeCodeChecks(options: { httpsHosts: readonly string[]; controlPlaneHosts: readonly string[] }): SandboxCheck[] {
   const [control] = options.controlPlaneHosts;
   const allowed = options.httpsHosts.find((host) => !options.controlPlaneHosts.includes(host));
+  const unlisted = unlistedHost(options);
   const command = (name: string, script: string, expectFailure: boolean): SandboxCheck => ({ name, argv: ["sh", "-c", script], expectFailure });
   // One argument: the whole command string, as Claude Code calls the prefix.
   const prefixed = (command: string): string => `"$CLAUDE_CODE_SHELL_PREFIX" ${quote(command)}`;
@@ -118,10 +125,12 @@ export function claudeCodeChecks(options: { httpsHosts: readonly string[]; contr
     checks.push(command(`claude-code command reaches allowed host ${allowed}`, prefixed(`${CURL} ${quote(`https://${allowed}`)}`), false));
     checks.push(command(`claude-code process is refused non-control host ${allowed}`, `${CURL} ${quote(`https://${allowed}`)}`, true));
   }
+  if (unlisted) {
+    checks.push(command(`claude-code command: unlisted ${unlisted} is refused`, prefixed(`${CURL} https://${unlisted}`), true));
+    checks.push(command(`claude-code process: unlisted ${unlisted} is refused`, `${CURL} https://${unlisted}`, true));
+  }
   checks.push(
-    command("claude-code command: api.github.com is refused", prefixed(`${CURL} https://api.github.com`), true),
     command("claude-code command: direct IP connection is refused", prefixed(`${CURL} --noproxy '*' https://1.1.1.1`), true),
-    command("claude-code process: api.github.com is refused", `${CURL} https://api.github.com`, true),
     command("claude-code command does not receive the control-plane credential", prefixed(`case "$HTTPS_PROXY" in *conveyor:*) exit 1;; esac`), false),
   );
   return checks;
@@ -143,6 +152,7 @@ export function piCredentialCommand(unset: readonly string[]): string {
 export function piChecks(options: { httpsHosts: readonly string[]; controlPlaneHosts: readonly string[]; unset: readonly string[] }): SandboxCheck[] {
   const [control] = options.controlPlaneHosts;
   const allowed = options.httpsHosts.find((host) => !options.controlPlaneHosts.includes(host));
+  const unlisted = unlistedHost(options);
   const check = (name: string, script: string, expectFailure: boolean): SandboxCheck => ({ name, argv: ["sh", "-c", script], expectFailure });
   // pi joins its prefix and the command with a newline and hands both to its shell as one -c argument.
   const prefixed = (command: string): string => `"$SHELL" -c "$${PI_PROBE_PREFIX}"${quote(`\n${command}`)}`;
@@ -155,10 +165,12 @@ export function piChecks(options: { httpsHosts: readonly string[]; controlPlaneH
     checks.push(check(`pi command reaches allowed host ${allowed}`, prefixed(`${CURL} ${quote(`https://${allowed}`)}`), false));
     checks.push(check(`pi process is refused non-control host ${allowed}`, `${CURL} ${quote(`https://${allowed}`)}`, true));
   }
+  if (unlisted) {
+    checks.push(check(`pi command: unlisted ${unlisted} is refused`, prefixed(`${CURL} https://${unlisted}`), true));
+    checks.push(check(`pi process: unlisted ${unlisted} is refused`, `${CURL} https://${unlisted}`, true));
+  }
   checks.push(
-    check("pi command: api.github.com is refused", prefixed(`${CURL} https://api.github.com`), true),
     check("pi command: direct IP connection is refused", prefixed(`${CURL} --noproxy '*' https://1.1.1.1`), true),
-    check("pi process: api.github.com is refused", `${CURL} https://api.github.com`, true),
     check("pi command does not receive the agent directory, credentials or control-plane credential", prefixed(piCredentialCommand(options.unset)), false),
   );
   return checks;
@@ -306,7 +318,7 @@ export function liveModeNote(live: boolean, harness = "Claude Code"): string | u
 export function liveHosts(options: { httpsHosts: readonly string[]; controlPlaneHosts: readonly string[] }): LiveHosts | undefined {
   const allowed = options.httpsHosts.find((host) => !options.controlPlaneHosts.includes(host));
   if (!allowed) return undefined;
-  const refused = ["api.github.com", "example.com"].find((host) => !options.httpsHosts.includes(host) && !options.controlPlaneHosts.includes(host));
+  const refused = unlistedHost(options);
   return refused ? { allowed, refused } : undefined;
 }
 
@@ -599,7 +611,8 @@ async function main(): Promise<number> {
     const steps = restoreSteps(await readdir(work), path.join(scratch, "cache"));
     if (steps.length === 0) console.log("no restore commands detected for this repository");
     for (const step of steps) await run(`restore: ${step.name}`, step.argv, step.env);
-    await run("api.github.com is refused", ["curl", "-sS", "--max-time", "15", "https://api.github.com"], {}, true);
+    const unlisted = unlistedHost({ httpsHosts: repository.agentEgress.httpsHosts, controlPlaneHosts: [] });
+    if (unlisted) await run(`unlisted ${unlisted} is refused`, ["curl", "-sS", "--max-time", "15", `https://${unlisted}`], {}, true);
     await run("direct IP connection is refused", ["curl", "-sS", "--noproxy", "*", "--max-time", "10", "https://1.1.1.1"], {}, true);
     if (runner?.type === "claude-code") {
       const egress = agentEgressFor(config, repositoryId, runner)!;

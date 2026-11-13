@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 
 import {
   claudeCodeChecks, judgeLiveOutput, judgePiLiveOutput, liveCommand, liveArguments, liveFilesystemOptions, NOT_SIGNED_IN, liveHosts, liveModeNote, livePrompt, loadCheckConfig,
-  PI_PROBE_PREFIX, piChecks, piCredentialCommand, piLiveArguments, piLiveCommands, piLivePrompt, runLiveClaudeCheck, runLivePiCheck, runPiCheck,
+  PI_PROBE_PREFIX, piChecks, piCredentialCommand, piLiveArguments, piLiveCommands, piLivePrompt, runLiveClaudeCheck, runLivePiCheck, runPiCheck, unlistedHost,
   dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck,
 } from "../../scripts/check-agent-egress";
 import { piProcessVariables } from "../../src/plugins/pi/pi";
@@ -83,11 +83,25 @@ describe("claudeCodeChecks", () => {
     expect(find("command is refused the control-plane host")).toMatchObject({ expectFailure: true });
   });
 
-  test("checks the GitHub API and direct IP denials for commands and the credential separation", () => {
-    expect(find("command: api.github.com is refused").expectFailure).toBe(true);
+  test("checks an unlisted host and direct IP denials for commands and the credential separation", () => {
+    expect(find("command: unlisted api.github.com is refused").expectFailure).toBe(true);
     expect(find("command: direct IP connection is refused").argv[2]).toContain("--noproxy");
-    expect(find("process: api.github.com is refused").expectFailure).toBe(true);
+    expect(find("process: unlisted api.github.com is refused").expectFailure).toBe(true);
     expect(find("does not receive the control-plane credential").expectFailure).toBe(false);
+  });
+});
+
+describe("unlistedHost", () => {
+  test("is api.github.com unless the configuration lists it, then example.com", () => {
+    expect(unlistedHost({ httpsHosts: ["registry.npmjs.org"], controlPlaneHosts: [] })).toBe("api.github.com");
+    expect(unlistedHost({ httpsHosts: ["api.github.com"], controlPlaneHosts: [] })).toBe("example.com");
+    expect(unlistedHost({ httpsHosts: [], controlPlaneHosts: ["api.github.com"] })).toBe("example.com");
+  });
+
+  test("probes the host the operator did not list", () => {
+    const checks = piChecks({ httpsHosts: ["registry.npmjs.org"], controlPlaneHosts: ["api.github.com", "api.githubcopilot.com"], unset: [] });
+    expect(checks.find((check) => check.name === "pi process: unlisted example.com is refused")).toMatchObject({ expectFailure: true });
+    expect(checks.some((check) => check.name.includes("unlisted api.github.com"))).toBe(false);
   });
 });
 
@@ -332,9 +346,9 @@ describe("pi checks", () => {
     expect(find("pi process is refused non-control host registry.npmjs.org")).toMatchObject({ expectFailure: true });
     expect(find("pi command reaches allowed host registry.npmjs.org").argv[2]).toBe(`"$SHELL" -c "$${PI_PROBE_PREFIX}"'\ncurl -sS --max-time 15 -o /dev/null '\\''https://registry.npmjs.org'\\'''`);
     expect(find("pi command is refused the control-plane host")).toMatchObject({ expectFailure: true });
-    expect(find("pi command: api.github.com is refused").expectFailure).toBe(true);
+    expect(find("pi command: unlisted api.github.com is refused").expectFailure).toBe(true);
     expect(find("pi command: direct IP connection is refused").argv[2]).toContain("--noproxy");
-    expect(find("pi process: api.github.com is refused").expectFailure).toBe(true);
+    expect(find("pi process: unlisted api.github.com is refused").expectFailure).toBe(true);
   });
 
   test("a command must lose pi's agent directory, the runner's credentials and the control-plane credential", () => {
