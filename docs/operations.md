@@ -170,7 +170,7 @@ database only through that bridged endpoint; they never receive the Docker socke
 rejects a service that forwards it. If the database runs in a container, publish its Unix socket to
 the host yourself rather than mounting Docker into the sandbox.
 
-Verify with `bun scripts/check-agent-egress.ts <repository-id> --config <dir>`: it requires each
+Verify with `bun scripts/check-agent-egress.ts <repository-id> --config <conveyor.yaml>`: it requires each
 configured service to accept a connection from inside the sandbox and the Docker socket to be
 refused.
 
@@ -186,7 +186,7 @@ Those probes do not start the real CLI, and the output says so. **Before turning
 Claude Code agents, run the check with `--live`:**
 
 ```sh
-bun scripts/check-agent-egress.ts <repository-id> --config <dir> --runner <runner-id> --live
+bun scripts/check-agent-egress.ts <repository-id> --config <conveyor.yaml> --runner <runner-id> --live
 ```
 
 It starts the real Claude Code CLI inside the run's namespace with the runner's sign-in, as a real run
