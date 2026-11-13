@@ -1,4 +1,0 @@
----
-section: Deprecated
----
-An agent's settings for its harness are now `harnessSettings`, defined and validated by the harness plugin its runner's `type` names: Codex takes them as extra `-c key=value` settings with the same key rules as before, and Claude Code takes none, so any entry on a Claude Code agent is refused with an error naming the harness. `codexConfig` is deprecated: it keeps working as another name for `harnessSettings`, and `config check`, `doctor` and the service log warn about each agent that still uses it. Rename it to `harnessSettings`; an agent may not set both. The packaged agents use `harnessSettings`. Steering, the scheduled Operator, legacy stages and legacy checks now refuse a runner whose harness cannot run them with a message naming that harness, and only Codex agents are told how Codex code execution names Conveyor's tools.

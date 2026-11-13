@@ -10,6 +10,18 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.22.0] - 2026-11-13
+
+Agent harnesses are now fully self-contained plugins: Codex and Claude Code keep their own settings, environment and launch in their plugin folders, and the core no longer names either of them. This prepares Conveyor for further harnesses. Agent settings are now `harnessSettings` (`codexConfig` still works, with a deprecation warning), and `conveyor doctor`'s sandbox checks are renamed and apply to every harness.
+
+### Changed
+
+- **Breaking:** Each agent harness now inherits only its own variables from the service: Claude Code agents no longer receive the service's `CODEX_HOME`. Codex agents get the same environment, private Codex home, mounts and network policy as before. `conveyor doctor` now checks the bubblewrap namespaces and mounts that `agentEgress` needs whenever any agent runs on a harness, Claude Code included, not only when a Codex agent is configured, and the checks are renamed from `Codex egress namespaces` and `Codex egress mounts` to `Agent sandbox namespaces` and `Agent sandbox mounts` (their details now say "agent egress isolation"). **What to change:** a script that reads `conveyor doctor` output (for example `--json`) and matches the old check names must match the new ones.
+
+### Deprecated
+
+- An agent's settings for its harness are now `harnessSettings`, defined and validated by the harness plugin its runner's `type` names: Codex takes them as extra `-c key=value` settings with the same key rules as before, and Claude Code takes none, so any entry on a Claude Code agent is refused with an error naming the harness. `codexConfig` is deprecated: it keeps working as another name for `harnessSettings`, and `config check`, `doctor` and the service log warn about each agent that still uses it. Rename it to `harnessSettings`; an agent may not set both. The packaged agents use `harnessSettings`. Steering, the scheduled Operator, legacy stages and legacy checks now refuse a runner whose harness cannot run them with a message naming that harness, and only Codex agents are told how Codex code execution names Conveyor's tools.
+
 ## [0.21.0] - 2026-11-13
 
 Conveyor is now a small core with replaceable plugins. GitHub (items, code, CI), Codex, Claude Code and the dashboard live in their own plugin folders behind small interfaces, provider and harness settings are validated by their plugins, and every event says whether it is a fact, an observation from a plugin or a trace of the service's own activity, with the event that caused it. Codex runs again where its own sandbox could not nest in Conveyor's, Claude Code agents run commands under agentEgress, and a pull request with a merge conflict no longer waits in the merge stage forever. Event sinks that read the github.* event names must switch to the new itemSource.*, code.* and ci.* names.
