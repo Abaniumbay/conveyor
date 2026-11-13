@@ -1,11 +1,12 @@
 import type { HarnessProfile } from "../../harness/types";
 import { CODEX_CONTROL_PLANE } from "./home";
 import { CODEX_CONTROL_PLANE_HOSTS } from "./launch";
+import { codexToolNameGuidance } from "./guidance";
 
 /**
- * Codex runs with the runner's sandbox and approvals, reaches files only through its shell, takes
- * extra settings and can run confined agents. Its login stays in its own home (`CODEX_HOME`), copied
- * privately for each run.
+ * Codex runs with the runner's sandbox and approvals, reaches files only through its shell and can
+ * run confined agents; its agents call Conveyor's tools by normalized names in code execution. Its
+ * login stays in its own home (`CODEX_HOME`), copied privately for each run.
  */
 export const codexProfile: HarnessProfile = {
   name: "Codex",
@@ -14,7 +15,7 @@ export const codexProfile: HarnessProfile = {
   configDirectoryVariable: null,
   sandbox: "runner",
   optionalShell: false,
-  extraSettings: true,
   confinedAccess: true,
   workspaceWriteNeedsNetwork: false,
+  toolNameGuidance: codexToolNameGuidance,
 };

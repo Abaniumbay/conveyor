@@ -1,6 +1,6 @@
 import type { HarnessPlugin } from "../../core/plugins";
 import { installedCommandCheck } from "../../harness/doctor";
-import { codexRunnerSchema } from "./config";
+import { codexAgentSettingsSchema, codexRunnerSchema } from "./config";
 import { codexHarness } from "./harness";
 import { codexProfile } from "./profile";
 
@@ -10,6 +10,7 @@ export const codexPlugin: HarnessPlugin = {
   type: "codex",
   configSchema: codexRunnerSchema,
   profile: codexProfile,
+  agentSettingsSchema: codexAgentSettingsSchema,
   doctor: installedCommandCheck,
   create: () => codexHarness,
 };

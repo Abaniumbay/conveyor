@@ -110,12 +110,15 @@ the rule new code follows; the current state is tracked by the boundary test.
   `json-process` runner), and loading the configuration validates the rest with the plugin's
   schema. A harness plugin (`src/plugins/codex/`, `src/plugins/claude-code/`) holds its runner and
   declares a `HarnessProfile`: where a run's sandbox mode and approvals come from, whether an agent
-  may withhold the shell, which variable names the runner's config directory, whether it takes
-  extra settings, whether it can run a confined agent, whether a workspace-write agent needs the
-  network, its control-plane hosts and credential variables. The loader checks agents against the
-  profile; the core prepares runs from it and reaches legacy producers, legacy checks, the
+  may withhold the shell, which variable names the runner's config directory, whether it can run a
+  confined agent, whether a workspace-write agent needs the network, its control-plane hosts and
+  credential variables, and the lines its agents' tool guidance adds about how the harness names
+  Conveyor's tools. The plugin's `agentSettingsSchema` validates an agent's `harnessSettings` (a
+  harness without one takes none). The loader checks agents against the profile and the settings
+  schema; the core prepares runs from them and reaches legacy producers, legacy checks, the
   Operator, the harness's usage quota (`Harness.quota`, shown on the dashboard) and its
-  `conveyor doctor` check through the plugin, never by importing a runner. Each plugin keeps
+  `conveyor doctor` check through the plugin, never by importing a runner or checking its type: a
+  harness without the capability is refused with a message naming it. Each plugin keeps
   its own environment handling (Codex's private home in `src/plugins/codex/home.ts`) and launch
   (Codex's shell policy arguments in `src/plugins/codex/launch.ts`, Claude Code's shell prefix in
   `src/plugins/claude-code/launch.ts`), built from the harness-neutral sandbox, run network and
@@ -209,7 +212,7 @@ Every call goes through one dispatcher in the service that re-checks the grant, 
 - Requirement changes do not interrupt an agent run. The exit gate and later review read the latest issue state and send outdated work back.
 - Full run activity is retained independently from the concise shared conversation.
 
-Each agent handoff lists its current Conveyor tool grants and their Codex callable names (for example `change.get` becomes `tools.mcp__conveyor__change_get`). Fallback and resumed runs receive their own current grants; verifier guidance lists only verifier tools. An empty search for dotted operation names does not establish that the MCP tools are missing: inspect the `mcp__conveyor__` prefix and report actual discovery or call errors before declaring a blocker. Native agent failures must use `blocked` or `rejected`; `needs-input` requires a recorded question and `changes-requested` requires an open finding for the item. Reviewers should verify and reference existing findings, including imported human or bot findings and findings from earlier runs, rather than duplicating them. Resolved, dismissed, withdrawn, or other-item findings do not satisfy this requirement.
+Each agent handoff, and the instructions of the run's MCP server, list its current Conveyor tool grants; the agent's harness adds what only its agents need, so a Codex agent also gets the callable names Codex code execution uses (for example `change.get` becomes `tools.mcp__conveyor__change_get`). Fallback and resumed runs receive their own current grants; verifier guidance lists only verifier tools. An empty search for dotted operation names does not establish that the MCP tools are missing: inspect the `mcp__conveyor__` prefix and report actual discovery or call errors before declaring a blocker. Native agent failures must use `blocked` or `rejected`; `needs-input` requires a recorded question and `changes-requested` requires an open finding for the item. Reviewers should verify and reference existing findings, including imported human or bot findings and findings from earlier runs, rather than duplicating them. Resolved, dismissed, withdrawn, or other-item findings do not satisfy this requirement.
 
 To verify the actual Codex tool interface, run `bun scripts/check-codex-tool-discovery.ts --model <configured Codex model>`. This opt-in smoke check uses your existing Codex login and makes a real model run against an isolated, read-only conversation fixture. It succeeds only after the MCP server records an actual `conversation.get` call and the agent returns the fixture message. It does not access the live board or GitHub and is separate from `bun test`.
 

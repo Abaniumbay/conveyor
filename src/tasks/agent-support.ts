@@ -4,7 +4,7 @@
 import type { ConveyorConfig } from "../config/load";
 import type { ConversationStore, RunLogStore } from "../db/ports";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../runner/result";
-import { conveyorToolGuidance } from "../mcp/guidance";
+import { conveyorToolGuidance, type ToolNameGuidance } from "../mcp/guidance";
 
 export { conveyorToolGuidance } from "../mcp/guidance";
 export const AGENT_STOP_STATUSES = ["blocked", "rejected"] as const;
@@ -12,11 +12,11 @@ export const AGENT_STOP_STATUSES = ["blocked", "rejected"] as const;
 export function prompt(
   parts: Record<string, unknown>,
   instructions: string,
-  options: { progressReporting?: boolean; grantedTools?: readonly string[] } = {},
+  options: { progressReporting?: boolean; grantedTools?: readonly string[]; toolNameGuidance?: ToolNameGuidance | undefined } = {},
 ): string {
   return [
     instructions.trim(),
-    ...(options.grantedTools?.length ? ["", conveyorToolGuidance(options.grantedTools)] : []),
+    ...(options.grantedTools?.length ? ["", conveyorToolGuidance(options.grantedTools, options.toolNameGuidance)] : []),
     ...(options.progressReporting
       ? [
           "",

@@ -68,7 +68,7 @@ kaveh:
     BUN_INSTALL_CACHE_DIR: ~/.bun/install/cache
     XDG_CACHE_HOME: ~/.cache
   # Long sessions resend their whole context every turn; compact it before it grows expensive.
-  codexConfig: { model_auto_compact_token_limit: 80000 }
+  harnessSettings: { model_auto_compact_token_limit: 80000 }
   mcpServers: { serena: *serena }        # the same lookup-only code index as Darya
   tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
           agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,

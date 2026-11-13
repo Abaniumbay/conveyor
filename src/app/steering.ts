@@ -20,6 +20,7 @@ import type { TaskDeps } from "../tasks/deps";
 import { criteriaOf } from "../tasks/item";
 import { latestStopReason } from "./item-history";
 import type { ScheduledRetryCheck } from "./retry";
+import type { SteeringLeaseOptions } from "./mcp-grants";
 import type { ScopedMcpLease } from "./runtime";
 import { isHarnessRunner, type HarnessRunnerConfig } from "../config/schema";
 
@@ -39,7 +40,6 @@ type ScheduledOperatorCheck = {
   outcomes: Map<string, ScheduledOperatorOutcome>;
 };
 type ItemReference = { id: string; repositoryId: string; number: number; url: string; title: string };
-type CodexRunner = HarnessRunnerConfig;
 
 export interface SteeringDeps {
   config: ConveyorConfig;
@@ -55,7 +55,7 @@ export interface SteeringDeps {
   /** How long a stop-summary run may take. */
   stopSummaryTimeoutMs: number;
   /** A system-scoped MCP grant for the run, limited to these tools. */
-  lease: (runId: string, workspace: string, allowedTools: readonly string[], stopSummary?: { itemId: string; stopId: string }) => Promise<ScopedMcpLease>;
+  lease: (runId: string, workspace: string, allowedTools: readonly string[], options?: SteeringLeaseOptions) => Promise<ScopedMcpLease>;
   /** When every repository was last reconciled. */
   lastReconciledAt: () => string | null;
   /** Why a repository's last reconcile failed, by repository. */
@@ -166,8 +166,7 @@ export class Steering {
     if (targets.length === 0) return null;
     const agent = config.agents[steering.agent];
     if (!agent) throw new Error(`Unknown steering agent: ${steering.agent}`);
-    const runner = config.runners[agent.runner];
-    if (!runner || runner.type !== "codex") throw new Error("The steering agent must use a Codex runner");
+    const runner = this.#steeringRunner(agent.runner);
     const allowed = agent.tasks.filter((task) => new Set([
       "operator.getBoard", "operator.getItemHistory", "operator.retryStoppedItem", "operator.answerItemQuestion",
       "operator.reportStoppedItemOutcome",
@@ -244,10 +243,7 @@ export class Steering {
     }
     const agent = config.agents[steering.agent];
     if (!agent) throw new Error(`Unknown steering agent: ${steering.agent}`);
-    const runner = config.runners[agent.runner];
-    if (!runner || runner.type !== "codex") {
-      throw new Error("The steering agent must use a Codex runner");
-    }
+    const runner = this.#steeringRunner(agent.runner);
 
     const runId = randomUUID();
     const startedAt = new Date().toISOString();
@@ -323,14 +319,17 @@ export class Steering {
       if (!agent) throw new Error(`Unknown steering agent: ${agentId}`);
       const runner = config.runners[agent.runner];
       if (!runner || !isHarnessRunner(runner)) {
-        throw new Error(`The steering agent ${agentId} must use a Codex or Claude Code runner`);
+        throw new Error(`The steering agent ${agentId} must use a runner with an agent harness`);
       }
       const harness = this.#deps.harnesses[runner.type];
       if (!harness) throw new Error(`No harness is available for runner type ${runner.type}`);
       const instructions = await readFile(agent.instructions, "utf8");
       const scratch = path.join(config.settings.artifacts, runId, "scratch");
       await mkdir(scratch, { recursive: true });
-      lease = await this.#deps.lease(runId, scratch, STOP_SUMMARY_TOOLS, { itemId: issueId, stopId });
+      lease = await this.#deps.lease(runId, scratch, STOP_SUMMARY_TOOLS, {
+        stopSummary: { itemId: issueId, stopId },
+        toolNameGuidance: harness.profile.toolNameGuidance,
+      });
       timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
       const result = await harness.run({
         command: runner.command,
@@ -339,7 +338,7 @@ export class Steering {
         artifactsDirectory: path.join(config.settings.artifacts, runId),
         prompt: [
           instructions.trim(),
-          conveyorToolGuidance([...STOP_SUMMARY_TOOLS]),
+          conveyorToolGuidance([...STOP_SUMMARY_TOOLS], harness.profile.toolNameGuidance),
           "",
           "You are the Conveyor Operator writing a stop summary. This is a read-only run: you cannot retry, answer, reorder or change anything.",
           `Read the history of item ${issueId} with operator.getItemHistory, then record the summary of stop ${stopId} with operator.recordStopSummary (itemId ${issueId}, stopId ${stopId}).`,
@@ -387,11 +386,22 @@ export class Steering {
     });
   }
 
+  /** The steering agent's runner, refused before a run starts unless it can run the Operator. */
+  #steeringRunner(runnerName: string): HarnessRunnerConfig {
+    const runner = this.#deps.config.runners[runnerName];
+    if (!runner || !isHarnessRunner(runner)) throw new Error("The steering agent must use a runner with an agent harness");
+    this.#runner(runner.type);
+    return runner;
+  }
+
   /** The steering agent's harness, unless the service was given its own Operator runner. */
   #runner(runnerType: string): (input: SteeringRunInput) => Promise<SteeringRunResult> {
     if (this.#deps.runSteering) return this.#deps.runSteering;
     const harness = this.#deps.harnesses[runnerType];
-    if (!harness?.steer) throw new Error(`No harness can run the steering agent for runner type ${runnerType}`);
+    if (!harness) throw new Error(`No harness is available for runner type ${runnerType}`);
+    if (!harness.steer) {
+      throw new Error(`The steering agent must use a runner whose harness can run the Operator; ${harness.profile.name} cannot`);
+    }
     return harness.steer.bind(harness);
   }
 
@@ -399,7 +409,7 @@ export class Steering {
     runId: string,
     userPrompt: string,
     agent: ConveyorConfig["agents"][string],
-    runner: CodexRunner,
+    runner: HarnessRunnerConfig,
     workspace: string,
     signal: AbortSignal,
     scheduled = false,
@@ -409,7 +419,9 @@ export class Steering {
     let lease: ScopedMcpLease | null = null;
     try {
       const steer = this.#runner(runner.type);
-      lease = await this.#deps.lease(runId, workspace, agent.tasks);
+      // A service given its own Operator runner may have no harness for the type; its guidance is then the neutral one.
+      const toolNameGuidance = this.#deps.harnesses[runner.type]?.profile.toolNameGuidance;
+      lease = await this.#deps.lease(runId, workspace, agent.tasks, { toolNameGuidance });
       const instructions = await readFile(agent.instructions, "utf8");
       const result = await steer({
         command: runner.command,
@@ -417,7 +429,7 @@ export class Steering {
         artifactsDirectory: path.join(config.settings.artifacts, runId),
         prompt: [
           instructions.trim(),
-          conveyorToolGuidance(agent.tasks),
+          conveyorToolGuidance(agent.tasks, toolNameGuidance),
           "",
           scheduled ? "You are the scheduled Conveyor Operator. Work only within the scheduled check." : "You are the authenticated Conveyor steering agent. Work only within the user's request.",
           "Inspect current state before changing it. Never close source issues. Finish with a concise report of actions, verification, and anything still unresolved.",

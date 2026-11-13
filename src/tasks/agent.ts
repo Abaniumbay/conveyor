@@ -246,7 +246,7 @@ async function runAgent(
   if (!agent) throw new Error(`unknown agent: ${agentId}`);
   const runner = deps.config.runners[agent.runner];
   if (!runner || !isHarnessRunner(runner)) {
-    throw new Error(`agent ${agentId} must use a Codex or Claude Code runner`);
+    throw new Error(`agent ${agentId} must use a runner with an agent harness`);
   }
   const harness: Harness | undefined = deps.harnesses?.[runner.type];
   if (!harness || !deps.mcp) throw new InfrastructureError(`no harness is available for runner type ${runner.type}`);
@@ -278,6 +278,7 @@ async function runAgent(
       },
       allowedTools: agent.tasks,
       actor: agentActor(deps.config, agentId),
+      toolNameGuidance: harness.profile.toolNameGuidance,
     });
     let result: RunEnvelope;
     try {
@@ -288,7 +289,7 @@ async function runAgent(
           workspace: workspace.path,
           env: agent.env,
           readOnly: agent.workspaceAccess === "read-only",
-          writableRoots: (await codexAccess(agent, workspace.path)).writableRoots,
+          writableRoots: (await agentAccess(agent, workspace.path)).writableRoots,
           toolchainPaths: toolchainFor(deps).toolchainPaths,
           egress: egressFor(deps, runner).egress,
         },
@@ -301,13 +302,11 @@ async function runAgent(
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
         ...(Object.keys(agent.env ?? {}).length > 0 ? { env: agent.env } : {}),
-        ...harnessSettings(harness.profile, runner, agent),
+        ...runSettings(harness.profile, runner, agent),
         ...egressFor(deps, runner),
-        ...(await codexAccess(agent, workspace.path)),
+        ...(await agentAccess(agent, workspace.path)),
         temporaryDirectory: workspaceScratchPath(workspace.path),
-        ...(harness.profile.extraSettings
-          ? await codexExtensions(agent, workspace.path)
-          : withoutCodexConfig(await codexExtensions(agent, workspace.path))),
+        ...await agentExtensions(agent, workspace.path),
         ...toolchainFor(deps),
         mcp: lease.configuration,
         interruptGraceMs: deps.config.settings.interruptGraceMs,
@@ -320,7 +319,7 @@ async function runAgent(
           prompt: prompt(
             { handover },
             `Your result was rejected: ${correction.message}\nReturn the required structured result again, corrected.`,
-            { progressReporting: agent.tasks.includes("agent.reportProgress"), grantedTools: agent.tasks },
+            { progressReporting: agent.tasks.includes("agent.reportProgress"), grantedTools: agent.tasks, toolNameGuidance: harness.profile.toolNameGuidance },
           ),
           resumeSessionId: correction.sessionId,
         });
@@ -330,7 +329,7 @@ async function runAgent(
           prompt: prompt(
             { handover, answeredQuestion: { question: answered!.question, answer: answered!.answer } },
             "Your question was answered. Continue the work using this run's refreshed tool grant and return the required structured result.",
-            { progressReporting: agent.tasks.includes("agent.reportProgress"), grantedTools: agent.tasks },
+            { progressReporting: agent.tasks.includes("agent.reportProgress"), grantedTools: agent.tasks, toolNameGuidance: harness.profile.toolNameGuidance },
           ),
           resumeSessionId: answered!.sessionId!,
           answeredQuestion: { question: answered!.question, answer: answered!.answer },
@@ -351,7 +350,7 @@ async function runAgent(
               conversation: conversationForPrompt(store, issue.id),
             },
             instructions,
-            { progressReporting: agent.tasks.includes("agent.reportProgress"), grantedTools: agent.tasks },
+            { progressReporting: agent.tasks.includes("agent.reportProgress"), grantedTools: agent.tasks, toolNameGuidance: harness.profile.toolNameGuidance },
           ),
         });
       }
@@ -465,11 +464,11 @@ export const agentGroup = defineGroup<AgentTaskDeps>("agent", [
 ]);
 
 /**
- * What a Codex agent may reach beyond its sandbox defaults. A workspace-write agent owns its whole
+ * What an agent may reach beyond its sandbox defaults. A workspace-write agent owns its whole
  * worktree, including the git metadata kept under the main repository's .git, plus any configured
  * roots (package caches) that exist on this machine.
  */
-async function codexAccess(
+async function agentAccess(
   agent: { workspaceAccess: string; network?: boolean; writableRoots?: string[] },
   workspace: string,
 ): Promise<{ network?: true; writableRoots?: string[] }> {
@@ -482,20 +481,21 @@ async function codexAccess(
 }
 
 /**
- * The agent's extra Codex settings and MCP servers, with `{workspace}` in server arguments replaced by
- * the run's worktree. Files the servers write inside the worktree are excluded from git first, so they
- * can never be committed or block a clean-tree check.
+ * The agent's harness settings and MCP servers, with `{workspace}` in server arguments replaced by the
+ * run's worktree. Files the servers write inside the worktree are excluded from git first, so they can
+ * never be committed or block a clean-tree check. Settings are non-empty only for a harness whose
+ * plugin takes them: the configuration refuses them otherwise.
  */
-async function codexExtensions(
+async function agentExtensions(
   agent: {
-    codexConfig?: Record<string, string | number | boolean>;
+    harnessSettings?: Record<string, string | number | boolean>;
     mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number | undefined; enabledTools?: string[] | undefined; gitExclude: string[] }>;
   },
   workspace: string,
 ): Promise<{ config?: Record<string, string | number | boolean>; mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number; enabledTools?: string[] }> }> {
   const servers = Object.entries(agent.mcpServers ?? {});
   await ensureGitExcludes(workspace, servers.flatMap(([, server]) => server.gitExclude));
-  const config = agent.codexConfig ?? {};
+  const config = agent.harnessSettings ?? {};
   return {
     ...(Object.keys(config).length > 0 ? { config } : {}),
     ...(servers.length > 0
@@ -528,12 +528,11 @@ async function probeConfiguredMcpServers(
   reportMcpFailures(store, { ...args, failures });
 }
 
-/** Claude Code takes the MCP servers; Codex settings do not apply to it. */
 /**
  * The sandbox mode, approvals, shell and config directory a run starts with, as the harness's profile
  * declares them: from the runner's settings or from the agent's access alone.
  */
-function harnessSettings(
+function runSettings(
   profile: HarnessProfile,
   runner: { sandbox?: HarnessRunInput["sandbox"]; automaticApprovals?: boolean; configDir?: string | undefined },
   agent: { workspaceAccess: string; shell?: boolean; env?: Record<string, string> },
@@ -552,11 +551,6 @@ function harnessSettings(
     ...(profile.optionalShell && agent.shell === false ? { shell: false as const } : {}),
     ...(configDirectory ? { env: { ...(agent.env ?? {}), ...configDirectory } } : {}),
   };
-}
-
-function withoutCodexConfig<T extends { config?: unknown }>(extensions: T): Omit<T, "config"> {
-  const { config: _config, ...rest } = extensions;
-  return rest;
 }
 
 /**

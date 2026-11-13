@@ -342,10 +342,10 @@ repositories:
       const config = await load("    network: true\n    writableRoots: [/var/cache/x, ~/.bun/install/cache]");
       expect(config.agents.worker).toMatchObject({ network: true, writableRoots: ["/var/cache/x", resolveFilesystemPath(path.join(homedir(), ".bun/install/cache"))] });
     });
-    test("codexConfig and mcpServers default empty; server env values and ~/ are expanded", async () => {
-      expect((await load("")).agents.worker).toMatchObject({ codexConfig: {}, mcpServers: {} });
+    test("harnessSettings and mcpServers default empty; server env values and ~/ are expanded", async () => {
+      expect((await load("")).agents.worker).toMatchObject({ harnessSettings: {}, mcpServers: {} });
       const config = await load([
-        "    codexConfig: { model_auto_compact_token_limit: 80000, model_verbosity: low }",
+        "    harnessSettings: { model_auto_compact_token_limit: 80000, model_verbosity: low }",
         "    mcpServers:",
         "      serena:",
         "        command: serena",
@@ -356,7 +356,7 @@ repositories:
         "        gitExclude: [.serena/]",
       ].join("\n"));
       expect(config.agents.worker).toMatchObject({
-        codexConfig: { model_auto_compact_token_limit: 80000, model_verbosity: "low" },
+        harnessSettings: { model_auto_compact_token_limit: 80000, model_verbosity: "low" },
         mcpServers: {
           serena: {
             command: "serena", args: ["start-mcp-server", "--project-from-cwd"],
@@ -365,11 +365,21 @@ repositories:
         },
       });
     });
-    test("codexConfig cannot override what Conveyor sets, and the conveyor MCP server name is reserved", async () => {
-      await expect(load("    codexConfig: { sandbox_mode: danger-full-access }")).rejects.toThrow("set by Conveyor");
-      await expect(load("    codexConfig: { mcp_servers.x.command: evil }")).rejects.toThrow("set by Conveyor");
-      await expect(load("    codexConfig: { \"bad key\": 1 }")).rejects.toThrow("dotted Codex config key");
+    test("a Codex agent's harnessSettings cannot override what Conveyor sets, and the conveyor MCP server name is reserved", async () => {
+      await expect(load("    harnessSettings: { sandbox_mode: danger-full-access }")).rejects.toThrow("agents.worker.harnessSettings.sandbox_mode: is set by Conveyor");
+      await expect(load("    harnessSettings: { mcp_servers.x.command: evil }")).rejects.toThrow("set by Conveyor");
+      await expect(load("    harnessSettings: { \"bad key\": 1 }")).rejects.toThrow("dotted Codex config key");
+      await expect(load("    codexConfig: { sandbox_mode: danger-full-access }")).rejects.toThrow("agents.worker.codexConfig.sandbox_mode: is set by Conveyor");
       await expect(load("    mcpServers: { conveyor: { command: x } }")).rejects.toThrow("reserved");
+    });
+    test("the deprecated codexConfig loads as harnessSettings, with a warning naming the agent", async () => {
+      const config = await load("    codexConfig: { model_auto_compact_token_limit: 80000 }");
+      expect(config.agents.worker?.harnessSettings).toEqual({ model_auto_compact_token_limit: 80000 });
+      expect(config.warnings).toContain("agent codexConfig is deprecated, used by worker: rename it to harnessSettings (same keys and values)");
+      expect((await load("    harnessSettings: { model_auto_compact_token_limit: 80000 }")).warnings?.filter((warning) => warning.includes("codexConfig"))).toEqual([]);
+    });
+    test("an agent may not set both harnessSettings and the deprecated codexConfig", async () => {
+      await expect(load("    harnessSettings: { model_verbosity: low }\n    codexConfig: { model_verbosity: high }")).rejects.toThrow("is the deprecated name of harnessSettings");
     });
     test("shell: false is refused on a Codex agent, naming it; shell: true or absent passes", async () => {
       const message = await rejectionMessage(configWith("    shell: false"));
@@ -751,6 +761,7 @@ describe("harness runners", () => {
     await expect(loadWith(agentOn("claude", "workspaceAccess: read-only", "writableRoots: [/tmp/cache]"))).rejects.toThrow("agents.worker is read-only, so writableRoots does not apply");
     await expect(loadWith(agentOn("codex", "shell: false"))).rejects.toThrow('agents.worker sets shell: false, but Codex reaches files only through its shell, so agent "worker" cannot run without one');
     await expect(loadWith(agentOn("claude", "workspaceAccess: read-only", "codexConfig: { model_auto_compact_token_limit: 1 }"))).rejects.toThrow("agents.worker runs on Claude Code, which does not take codexConfig");
+    await expect(loadWith(agentOn("claude", "workspaceAccess: read-only", "harnessSettings: { effort: 1 }"))).rejects.toThrow("agents.worker runs on Claude Code, which does not take harnessSettings");
   });
 
   test("an agent its runner's harness can run is accepted", async () => {
@@ -759,6 +770,8 @@ describe("harness runners", () => {
     expect((await loadWith(agentOn("codex", "workspaceAccess: read-only", "writableRoots: [/tmp/cache]"))).agents.worker?.writableRoots).toEqual(["/tmp/cache"]);
     expect((await loadWith(agentOn("claude", "workspaceAccess: workspace-write", "network: true"))).agents.worker?.network).toBe(true);
     expect((await loadWith(agentOn("claude", "workspaceAccess: read-only", "shell: false"))).agents.worker?.shell).toBe(false);
-    expect((await loadWith(agentOn("codex", "codexConfig: { model_auto_compact_token_limit: 1 }"))).agents.worker?.codexConfig).toEqual({ model_auto_compact_token_limit: 1 });
+    expect((await loadWith(agentOn("codex", "harnessSettings: { model_auto_compact_token_limit: 1 }"))).agents.worker?.harnessSettings).toEqual({ model_auto_compact_token_limit: 1 });
+    expect((await loadWith(agentOn("codex", "codexConfig: { model_auto_compact_token_limit: 1 }"))).agents.worker?.harnessSettings).toEqual({ model_auto_compact_token_limit: 1 });
+    expect((await loadWith(agentOn("claude", "workspaceAccess: read-only", "harnessSettings: {}"))).agents.worker?.harnessSettings).toEqual({});
   });
 });
