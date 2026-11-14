@@ -648,10 +648,26 @@ export class ConveyorService {
     }
     this.#steering.interruptAll();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
-    while (this.#active.size > 0 || this.#steering.busy || this.#purges.busy || this.#statusComments.busy || this.#answers.busy || this.#sync.busy || this.#tickRunning || this.#advisoryPolling || this.#retentionActive > 0) {
+    while (this.busyConditions().length > 0) {
       await Bun.sleep(25);
     }
     this.store.close();
+  }
+
+  /** The names (only) of the conditions close() still waits on; empty when it may close the store. */
+  busyConditions(): string[] {
+    const busy: Array<[string, boolean]> = [
+      ["active stages", this.#active.size > 0],
+      ["steering", this.#steering.busy],
+      ["purges", this.#purges.busy],
+      ["status comments", this.#statusComments.busy],
+      ["answers", this.#answers.busy],
+      ["sync", this.#sync.busy],
+      ["tick", this.#tickRunning],
+      ["advisory polling", this.#advisoryPolling],
+      ["retention", this.#retentionActive > 0],
+    ];
+    return busy.filter(([, set]) => set).map(([name]) => name);
   }
 
   async tick(): Promise<void> {

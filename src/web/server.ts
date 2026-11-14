@@ -77,6 +77,8 @@ export interface WebHandlerDependencies {
   getReport?: (input: { period: ReportPeriod; repository: string | null }) => ReportViewModel | null | Promise<ReportViewModel | null>;
   getAgentProfile: (agentId: string) => AgentProfileViewModel | null | Promise<AgentProfileViewModel | null>;
   maxBodyBytes?: number;
+  /** Aborted when the service shuts down: open event streams end, and new ones end at once. */
+  shutdown?: AbortSignal;
 }
 
 /** The dashboard's reads: what the dashboard plugin serves to these routes. */
@@ -398,11 +400,19 @@ function steeringEventStream(
   dependencies: WebHandlerDependencies,
   runId: string,
   initialAfter: number,
+  shutdown?: AbortSignal,
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let cancelled = false;
   return new ReadableStream<Uint8Array>({
     start(controller) {
+      const end = () => {
+        if (cancelled) return;
+        cancelled = true;
+        try { controller.close(); } catch { /* already closed */ }
+      };
+      if (shutdown?.aborted) return end();
+      shutdown?.addEventListener("abort", end, { once: true });
       void (async () => {
         let after = initialAfter;
         let lastHeartbeat = Date.now();
@@ -453,12 +463,17 @@ function dashboardPatchStream(
   subscribe: NonNullable<WebHandlerDependencies["subscribeDashboardFeed"]>,
   superuser: boolean,
   after: number | null,
+  shutdown?: AbortSignal,
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let stop = () => {};
   return new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      if (shutdown?.aborted) {
+        controller.close();
+        return;
+      }
       const send = (text: string) => {
         if (closed) return;
         try {
@@ -484,7 +499,13 @@ function dashboardPatchStream(
         closed = true;
         clearInterval(heartbeat);
         subscription.unsubscribe();
+        shutdown?.removeEventListener("abort", onShutdown);
       };
+      const onShutdown = () => {
+        stop();
+        try { controller.close(); } catch { /* already closed */ }
+      };
+      shutdown?.addEventListener("abort", onShutdown, { once: true });
     },
     cancel() {
       stop();
@@ -991,7 +1012,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (!subscribe) return json({ error: "unavailable" }, 503);
       const requested = request.headers.get("last-event-id") ?? url.searchParams.get("after") ?? "";
       const after = /^\d{1,15}$/.test(requested) ? Number(requested) : null;
-      return response(dashboardPatchStream(subscribe, currentSession.account.role === "superuser", after), 200, "text/event-stream; charset=utf-8", {
+      return response(dashboardPatchStream(subscribe, currentSession.account.role === "superuser", after, dependencies.shutdown), 200, "text/event-stream; charset=utf-8", {
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
         "x-accel-buffering": "no",
@@ -1334,7 +1355,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const run = await dependencies.getSteeringRun(runId);
       if (!run) return text("Steering run not found", 404);
       return response(
-        steeringEventStream(dependencies, runId, after),
+        steeringEventStream(dependencies, runId, after, dependencies.shutdown),
         200,
         "text/event-stream; charset=utf-8",
         { "x-accel-buffering": "no", connection: "keep-alive" },
