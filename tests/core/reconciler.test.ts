@@ -461,6 +461,66 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
+  describe("an advance whose label reconcile ran before the executor committed", () => {
+    const setup = async () => {
+      const store = await openStore();
+      const common = {
+        store,
+        configHash: "hash-1",
+        repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+        stages: ["refinement", "review"],
+        labels,
+      };
+      const id = "github:owner/repo#1";
+      const list = (labelSet: string[]) => ({ async listIssues() { return [issue(1, labelSet)]; } });
+      await reconcileRepository({ ...common, source: list(["conveyor", "conveyor:refinement"]) });
+      store.setStageState({ issueId: id, stageId: "refinement", status: "running", feedbackCycle: 0, configHash: "hash-1" });
+      return { store, common, id, list };
+    };
+    const awaiting = (store: Awaited<ReturnType<typeof openStore>>, id: string) =>
+      store.setStageState({ issueId: id, stageId: "review", status: "awaiting-source", feedbackCycle: 0, configHash: "hash-1" });
+
+    test("the item ends ready when the reconcile ran while the previous stage was still running", async () => {
+      const { store, common, id, list } = await setup();
+      await reconcileRepository({ ...common, source: list(["conveyor", "conveyor:review"]) });
+      expect(store.getStageState(id)).toMatchObject({ stageId: "refinement", status: "running" });
+      awaiting(store, id);
+
+      // The periodic pass lists nothing: the source did not change again.
+      await reconcileRepository({ ...common, source: { async listIssues() { return []; } }, since: "2026-01-01T00:00:00Z" });
+
+      expect(store.getStageState(id)).toMatchObject({ stageId: "review", status: "ready" });
+      store.close();
+    });
+
+    test("the item becomes ready when the reconcile runs after awaiting-source was stored", async () => {
+      const { store, common, id, list } = await setup();
+      awaiting(store, id);
+      await reconcileRepository({ ...common, source: list(["conveyor", "conveyor:review"]) });
+      expect(store.getStageState(id)).toMatchObject({ stageId: "review", status: "ready" });
+      store.close();
+    });
+
+    test("a periodic pass with no source change readies an item whose labels show its target stage", async () => {
+      const { store, common, id, list } = await setup();
+      await reconcileRepository({ ...common, source: list(["conveyor", "conveyor:review"]) });
+      awaiting(store, id);
+      expect(store.getStageState(id)).toMatchObject({ stageId: "review", status: "awaiting-source" });
+      // Nothing changed at the source: the periodic listing returns no issues.
+      await reconcileRepository({ ...common, source: { async listIssues() { return []; } }, since: "2026-01-01T00:00:00Z" });
+      expect(store.getStageState(id)).toMatchObject({ stageId: "review", status: "ready" });
+      store.close();
+    });
+
+    test("a periodic pass leaves awaiting-source alone while the labels do not show the target stage", async () => {
+      const { store, common, id } = await setup();
+      awaiting(store, id);
+      await reconcileRepository({ ...common, source: { async listIssues() { return []; } }, since: "2026-01-01T00:00:00Z" });
+      expect(store.getStageState(id)).toMatchObject({ stageId: "review", status: "awaiting-source" });
+      store.close();
+    });
+  });
+
   test("closes unfinished todos when reconciliation recovers a source-only advance", async () => {
     const store = await openStore();
     const common = {

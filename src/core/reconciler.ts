@@ -388,6 +388,25 @@ export async function reconcileRepository(
     }
   }
 
+  // An advance can commit `awaiting-source` after the source's label change was already reconciled
+  // (the reconcile saw the previous stage still running), and the source then never changes again.
+  // A pass that lists only changed issues does not revisit such an item, so settle it from the
+  // projection of the labels already read: when they show its target stage, it is ready.
+  const openQuestionIssues = new Set(input.store.listOpenQuestions().map((question) => question.issueId));
+  for (const stored of input.store.listIssues(input.repository.id)) {
+    if (seen.has(stored.id) || stored.projectedState !== "active" || !stored.projectedStage) continue;
+    if (input.store.isPurging(stored.id) || openQuestionIssues.has(stored.id)) continue;
+    const stageState = input.store.getStageState(stored.id);
+    if (stageState?.status !== "awaiting-source" || stageState.stageId !== stored.projectedStage) continue;
+    input.store.setStageState({
+      issueId: stored.id,
+      stageId: stored.projectedStage,
+      status: "ready",
+      feedbackCycle: 0,
+      configHash: input.configHash,
+    });
+  }
+
   // A full listing that omits a stored issue proves nothing: confirm it by number. Only 404/410 purges;
   // any other failure leaves the item as it is, and nothing is ever marked missing.
   if (fullListing && input.source.getIssue) {
