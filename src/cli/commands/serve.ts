@@ -56,14 +56,30 @@ export function listenAddress(value: string): { hostname: string; port: number }
   return { hostname, port };
 }
 
-/** Keep every agent-control transport alive until active stages have settled. */
+/** The shutdown step in progress, so a timeout can say what it was waiting for. */
+export type ShutdownStep = "service close" | "web server stop" | "MCP socket stop";
+
+/** What a timed-out shutdown was still waiting for: the step, and in service close the busy conditions. */
+export function stalledShutdownFields(step: ShutdownStep | null, service: Pick<ConveyorService, "busyConditions">): { step: ShutdownStep | null; busy?: string[] } {
+  return step === "service close" ? { step, busy: service.busyConditions() } : { step };
+}
+
+/**
+ * Keep every agent-control transport alive until active stages have settled. Open event streams
+ * end when shutdown begins: the web server stop waits for open requests, and a live stream never ends alone.
+ */
 export async function stopAgentTransportsAfterService(
   service: Pick<ConveyorService, "close">,
   server: { stop(closeActiveConnections?: boolean): void | Promise<void> },
   mcpSocket: { stop(): void | Promise<void> } | null,
+  options: { onStep?: (step: ShutdownStep) => void; endStreams?: () => void } = {},
 ): Promise<void> {
+  options.endStreams?.();
+  options.onStep?.("service close");
   await service.close();
+  options.onStep?.("web server stop");
   await server.stop(false);
+  options.onStep?.("MCP socket stop");
   await mcpSocket?.stop();
 }
 
@@ -120,9 +136,11 @@ export const serve: Command = {
       await service.close();
       throw new CliError("this build ships no dashboard plugin", EXIT.failure);
     }
+    const streamsShutdown = new AbortController();
     const webRoutes = {
       ...webDependencies(web, auth, operator, pushConfiguration(config.web.push)),
       ...dashboard.reads,
+      shutdown: streamsShutdown.signal,
       handleOperatorMcp: createOperatorMcpHandler({
         facade: {
           store: control.store,
@@ -184,6 +202,7 @@ export const serve: Command = {
 
     const exitCode = await new Promise<number>((resolve) => {
       let stopping = false;
+      let shutdownStep: ShutdownStep | null = null;
       requestStop = (reason, code = EXIT.ok, afterClose) => {
         if (stopping) return;
         stopping = true;
@@ -193,14 +212,14 @@ export const serve: Command = {
             clearInterval(pushTimer);
             await controlSocket.stop();
             // Keep both transports available until active stages have completed or been interrupted.
-            await stopAgentTransportsAfterService(service, server, mcpSocket);
+            await stopAgentTransportsAfterService(service, server, mcpSocket, { onStep: (step) => { shutdownStep = step; }, endStreams: () => streamsShutdown.abort() });
           })();
           try {
             const result = supervised && code === RESTART_EXIT_CODE
               ? await waitForSupervisedRestartShutdown(cleanup)
               : (await cleanup, { exitCode: code, timedOut: false });
             if (result.timedOut) {
-              log.error("Conveyor shutdown timed out; forcing exit", { reason, timeoutMs: SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS });
+              log.error("Conveyor shutdown timed out; forcing exit", { reason, timeoutMs: SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS, ...stalledShutdownFields(shutdownStep, service) });
               process.exit(EXIT.failure);
               return resolve(EXIT.failure);
             }
