@@ -404,15 +404,18 @@ function steeringEventStream(
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let cancelled = false;
+  let stopListening = () => {};
   return new ReadableStream<Uint8Array>({
     start(controller) {
       const end = () => {
         if (cancelled) return;
         cancelled = true;
+        stopListening();
         try { controller.close(); } catch { /* already closed */ }
       };
       if (shutdown?.aborted) return end();
       shutdown?.addEventListener("abort", end, { once: true });
+      stopListening = () => shutdown?.removeEventListener("abort", end);
       void (async () => {
         let after = initialAfter;
         let lastHeartbeat = Date.now();
@@ -428,6 +431,7 @@ function steeringEventStream(
           const run = await dependencies.getSteeringRun(runId);
           if (!run) {
             controller.enqueue(encoder.encode("event: done\ndata: {\"status\":\"missing\"}\n\n"));
+            stopListening();
             controller.close();
             return;
           }
@@ -435,6 +439,7 @@ function steeringEventStream(
             controller.enqueue(encoder.encode(
               `event: done\ndata: ${JSON.stringify({ status: run.status })}\n\n`,
             ));
+            stopListening();
             controller.close();
             return;
           }
@@ -445,11 +450,13 @@ function steeringEventStream(
           await Bun.sleep(500);
         }
       })().catch((error) => {
+        stopListening();
         if (!cancelled) controller.error(error);
       });
     },
     cancel() {
       cancelled = true;
+      stopListening();
     },
   });
 }

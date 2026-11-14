@@ -41,10 +41,42 @@ function liveServer() {
     sessionVersion: 1,
     passwordHash: hashPassword("pw", { salt: "0123456789abcdef" }),
   };
-  const board = {
+  const emptyColumn = (id: string, name: string) => ({
+    id,
+    name,
+    actors: [],
+    cost: null,
+    totalIssues: 0,
+    page: 1,
+    totalPages: 1,
+    issues: [],
+  });
+  const board: DashboardViewModel = {
+    title: "Test board",
+    project: "org/repo",
+    totalUsage: "0 in · 0 out",
+    harnessUsage: [],
+    draining: null,
+    updatedAt: "2026-11-14T12:00:00Z",
+    revision: "revision-1",
+    view: "board",
+    repositoryId: null,
+    graph: { nodes: [], relationships: [] },
+    counts: { board: 0, attention: 0 },
+    activeWork: { runnerCount: 0, runnerCapacity: 2, runs: [] },
+    selectedIssue: null,
+    stages: [],
     backlog: [],
+    done: emptyColumn("done", "Done"),
+    attention: emptyColumn("attention", "Label problems"),
+    questions: [],
+    needsYou: [],
+    systemWarnings: [],
+    repositories: [],
     restrictedRepositories: [],
-  } as unknown as DashboardViewModel;
+    steering: { enabled: false, agent: null, selected: null, recent: [] },
+    csrfToken: "filled-by-handler",
+  };
   const feed = new DashboardFeed({ build: () => normalizeDashboard(board) });
   const shutdown = new AbortController();
   const { dependencies } = withCommands({
@@ -243,6 +275,44 @@ describe("a timed-out shutdown names what it waited on", () => {
       expect(busy.every((name) => names.includes(name))).toBe(true);
       release();
       await tick;
+      await closing;
+      expect(service.busyConditions()).toEqual([]);
+    } finally {
+      release();
+    }
+  });
+
+  test("close() reports a running retention pass until it ends", async () => {
+    const { directory, base } = await referenceConfigDirectory();
+    bases.push(base);
+    const config = await loadConfig(directory);
+    const store = await ConveyorStore.open(path.join(base, "conveyor.sqlite"));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const service = new ConveyorService(config, store, {
+      async repositoryVisibility() {
+        return "private" as const;
+      },
+      async ensureLabels() {},
+      async listIssues() {
+        await held;
+        return [];
+      },
+      async listSubIssues() {
+        return [];
+      },
+      async listDependencies() {
+        return [];
+      },
+    } as never);
+    try {
+      service.start();
+      expect(service.busyConditions()).toContain("retention");
+      const closing = service.close();
+      expect(service.busyConditions()).toContain("retention");
+      release();
       await closing;
       expect(service.busyConditions()).toEqual([]);
     } finally {
