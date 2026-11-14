@@ -505,7 +505,9 @@ describe("reconcileRepository", () => {
       const { store, common, id, list } = await setup();
       await reconcileRepository({ ...common, source: list(["conveyor", "conveyor:review"]) });
       awaiting(store, id);
-      await reconcileRepository({ ...common, source: list(["conveyor", "conveyor:review"]) });
+      expect(store.getStageState(id)).toMatchObject({ stageId: "review", status: "awaiting-source" });
+      // Nothing changed at the source: the periodic listing returns no issues.
+      await reconcileRepository({ ...common, source: { async listIssues() { return []; } }, since: "2026-01-01T00:00:00Z" });
       expect(store.getStageState(id)).toMatchObject({ stageId: "review", status: "ready" });
       store.close();
     });
