@@ -232,4 +232,12 @@ describe("account and admin views", () => {
     const view = boardViewModel({ model: model([]), account, csrfToken: "token", selection: selection("/settings/notifications"), viewData: { notifications: { questions: true, stopped: false, done: true } } });
     expect(view).toMatchObject({ view: "notifications", notifications: { questions: true, stopped: false, done: true } });
   });
+
+  test("says whether a view's own data is loading or failed", () => {
+    const of = (path: string, viewStatus: "loading" | "failed" | null) => boardViewModel({ model: model([]), account, csrfToken: "token", selection: selection(path), viewStatus }).viewStatus;
+    expect(of("/reports", "loading")).toBe("loading");
+    expect(of("/team", "failed")).toBe("failed");
+    expect(of("/reports", null)).toBeUndefined();
+    expect(of("/", "loading")).toBeUndefined();
+  });
 });

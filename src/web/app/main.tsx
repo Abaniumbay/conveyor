@@ -75,24 +75,46 @@ function syncRecent(view: string, seq: number): void {
 }
 
 /** What the shown view loaded for itself (Team, Reports, Operator, …), by the address it was loaded for. */
-const viewData: { url: string | null; data: ViewData | null } = { url: null, data: null };
+const viewData: { url: string | null; data: ViewData | null; failed: boolean; stale: boolean } = { url: null, data: null, failed: false, stale: false };
 
 function syncViewData(url: string | null): void {
-  if (url === viewData.url) return;
+  if (url === viewData.url && !viewData.stale) return;
+  // Reading the shown address again keeps its data on the page until the new data arrives.
+  if (url !== viewData.url || viewData.failed) viewData.data = null;
   viewData.url = url;
-  viewData.data = null;
+  viewData.failed = false;
+  viewData.stale = false;
   stopSteering();
   if (url === null) return;
+  const failed = () => {
+    if (viewData.url !== url) return;
+    viewData.data = {};
+    viewData.failed = true;
+    schedule();
+    setTimeout(() => {
+      if (viewData.url !== url || !viewData.failed) return;
+      viewData.stale = true;
+      schedule();
+    }, 5_000);
+  };
   void fetch(url, { headers: { accept: "application/json" }, cache: "no-store" })
     .then(async (response) => {
       if (response.status === 401) return location.assign(`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`);
       if (viewData.url !== url) return;
       const body: unknown = await response.json().catch(() => null);
-      viewData.data = response.ok && body && typeof body === "object" ? body as ViewData : {};
+      if (!response.ok || !body || typeof body !== "object") return failed();
+      viewData.data = body as ViewData;
       followSteering();
       schedule();
     })
-    .catch(() => { /* The view stays empty; reopening it tries again. */ });
+    .catch(failed);
+}
+
+/** Whether the shown view's own data is still loading or could not be loaded. */
+function viewDataStatus(): "loading" | "failed" | null {
+  if (viewData.url === null) return null;
+  if (viewData.failed) return "failed";
+  return viewData.data === null ? "loading" : null;
 }
 
 /** A running Operator run streams its conversation; it is appended as it arrives. */
@@ -124,7 +146,7 @@ function followSteering(): void {
     stopSteering();
     // The finished run's status and final report come with a fresh read.
     if (viewData.url === url) {
-      viewData.url = null;
+      viewData.stale = true;
       setTimeout(schedule, 500);
     }
   });
@@ -204,6 +226,7 @@ function draw(): void {
     olderDone: state.olderDone,
     recent: recent.page,
     viewData: viewData.data,
+    viewStatus: viewDataStatus(),
     outsideItem: outside.item,
     doneMatches: doneSearch.items,
   });
@@ -242,7 +265,7 @@ function ensureDone(): void {
 }
 
 // A change the view made itself (an account added or removed) reads its data again.
-window.addEventListener("conveyor:view-data-stale", () => { viewData.url = null; });
+window.addEventListener("conveyor:view-data-stale", () => { viewData.stale = true; });
 // An item address can name the tab to open (`/issues/<repository>/<n>/journey`).
 view.tab = itemTabOf(location.pathname);
 store.subscribe(schedule);

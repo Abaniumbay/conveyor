@@ -166,6 +166,8 @@ export function boardViewModel(input: {
   recent?: RecentActivityViewModel | null;
   /** The data the shown view loaded for itself. */
   viewData?: ViewData | null;
+  /** Whether the shown view's own data is still loading or could not be loaded. */
+  viewStatus?: "loading" | "failed" | null;
   /** The open item when the live model does not hold it (finished long ago), loaded on its own. */
   outsideItem?: IssueCardViewModel | null;
   /** Older finished items that match the board's search or repositories, found among all of them. */
@@ -247,6 +249,7 @@ export function boardViewModel(input: {
     account,
     ...(input.viewData ?? {}),
     ...(input.viewData?.steering ? {} : { steering: { ...model.system.steering, selected: null } }),
+    ...(input.viewStatus && VIEW_DATA[selection.view] ? { viewStatus: input.viewStatus } : {}),
   };
 }
 
