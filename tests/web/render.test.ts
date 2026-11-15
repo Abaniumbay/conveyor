@@ -401,6 +401,19 @@ describe("issue type and fields", () => {
 });
 
 describe("renderDashboard", () => {
+  test("shows that a view's own data is loading instead of the Board", () => {
+    const html = renderDashboard({ ...dashboard, view: "reports", viewStatus: "loading" });
+    expect(html).toContain("Loading Reports…");
+    expect(html).toContain("status--loading");
+    expect(html).not.toContain('class="stage"');
+  });
+
+  test("says a view's own data could not be loaded instead of showing the Board", () => {
+    const html = renderDashboard({ ...dashboard, view: "notifications", viewStatus: "failed" });
+    expect(html).toContain("Notifications could not be loaded.");
+    expect(html).not.toContain('class="stage"');
+  });
+
   test("renders a safe draining notice and a release link only for a typed upgrade", () => {
     const ordinary = renderDashboard({
       ...dashboard,

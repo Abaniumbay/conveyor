@@ -532,6 +532,8 @@ export interface DashboardViewModel {
   account?: DashboardAccountViewModel;
   /** The running server's build, for About. */
   build?: { version: string; commit: string; builtAt: string | null; runtime: string };
+  /** Whether the shown view's own data is still loading or could not be loaded, in the browser. */
+  viewStatus?: "loading" | "failed";
 }
 
 export interface HarnessQuotaViewModel {

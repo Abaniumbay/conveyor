@@ -486,6 +486,47 @@ describe("dashboard application", () => {
     }
   }, 30_000);
 
+  test("shows that a view is loading, not the Board, until its own data arrives", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      let release = () => {};
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      await page.route("**/api/v1/views/reports*", async (route) => {
+        await held;
+        await route.continue();
+      });
+
+      await page.locator(".tabs a", { hasText: "Reports" }).click();
+      await page.locator("main [role='status'].status--loading", { hasText: "Loading Reports…" }).waitFor();
+      expect(await page.locator(".stage").count()).toBe(0);
+
+      release();
+      await page.locator("main", { hasText: "sample" }).first().waitFor();
+      expect(await page.locator("main .status--loading").count()).toBe(0);
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("says a view could not be loaded instead of showing the Board", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      await page.route("**/api/v1/views/reports*", (route) => route.fulfill({ status: 500, contentType: "application/json", body: "{}" }));
+
+      await page.locator(".tabs a", { hasText: "Reports" }).click();
+      await page.locator("main [role='alert']", { hasText: "Reports could not be loaded." }).waitFor();
+      expect(await page.locator(".stage").count()).toBe(0);
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
   test("shows the finding report readably at 360 px without sideways page scrolling", async () => {
     const app = startApp();
     try {

@@ -1749,10 +1749,13 @@ function DrainingNotice({ draining }: { draining: DashboardViewModel["draining"]
 export function DashboardBody({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
   let content: ComponentChildren;
-  if (model.view === "graph") content = <Graph model={model} />;
+  // A view that loads its own data shows that it is loading, never another view in the meantime.
+  if (model.viewStatus === "loading") content = <p class="details-empty status--loading" role="status" aria-live="polite">Loading {viewTitle(model)}…</p>;
+  else if (model.viewStatus === "failed") content = <p class="details-empty" role="alert">{viewTitle(model)} could not be loaded. Trying again…</p>;
+  else if (model.view === "graph") content = <Graph model={model} />;
   else if (model.view === "recent" && model.recent) content = <Recent model={model} />;
   // The browser application loads Recent's page after the view appears.
-  else if (model.view === "recent") content = <p class="details-empty" role="status" aria-live="polite">Loading recent activity…</p>;
+  else if (model.view === "recent") content = <p class="details-empty status--loading" role="status" aria-live="polite">Loading recent activity…</p>;
   else if (model.view === "attention") content = <Attention model={model} />;
   else if (model.view === "agent") content = <AgentPanel model={model} />;
   else if (model.view === "team") content = <Team agents={model.team ?? []} />;
