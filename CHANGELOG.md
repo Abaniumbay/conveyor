@@ -10,6 +10,18 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.23.1] - 2026-11-15
+
+A patch release with three fixes. Items whose next stage label was reconciled just before the advance was committed now start their next stage instead of sitting active with no run. Restarts with no stage running no longer wait out the shutdown timeout on open dashboard streams. Dashboard pages that load their own data, such as Reports, now show that they are loading instead of briefly showing the Board.
+
+### Fixed
+
+- An item whose next stage label was reconciled just before Conveyor committed the advance no longer sits `active` with no run. The periodic reconcile now starts any item waiting for its source whose labels already show its stage, without needing another change at the source.
+
+- A restart with no stage running no longer waits out the shutdown timeout on an open dashboard live stream or steering event stream: both end when shutdown begins. When a shutdown does time out, the log now names the step it was in (service close, web server stop or MCP socket stop) and, during service close, the busy conditions still set.
+
+- Opening Reports, Team, Operator, Accounts, Notifications or About on the dashboard now shows a loading indicator until that page's data arrives, instead of briefly showing the Board or an empty list. If the data cannot be loaded, the page says so and tries again.
+
 ## [0.23.0] - 2026-11-13
 
 Agents can now run on the pi coding agent, and the operator's configuration alone decides what every run sees. Agent egress is a pure whitelist with no hosts refused by Conveyor itself, and every level of the configuration (root, repository, stage, harness entry, agent and script step) takes one `settings` block whose `settings.environment` lists exactly the environment variables a run gets. **Before upgrading**, check the two breaking changes below: harness login variables, credential-looking agent variables and scripts' inherited variables now follow only what `settings.environment` lists. Agents' `env`, `harnessSettings` and `codexConfig` keep working with a deprecation warning.
