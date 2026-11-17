@@ -26,6 +26,8 @@ export interface SandboxOptions {
   mcp?: { port: number; socket: string };
   /** Repository-declared services exposed only through their configured loopback ports. */
   localServices?: readonly { port: number; socket: string }[];
+  /** Forward this exact loopback port to the host credential relay's Unix socket. */
+  relay?: { port: number; socket: string };
   /** Narrow filesystem prepared for the agent command. */
   filesystem?: AgentFilesystemPlan;
 }
@@ -417,8 +419,8 @@ function isolationMounts(runTmp: string | undefined, allowedSockets?: readonly s
  */
 export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
   const servicePorts = options.localServices?.map((service) => service.port) ?? [];
-  const taken = new Set<number>([...servicePorts, ...(options.mcp ? [options.mcp.port] : [])]);
-  const loopbackService = Boolean(options.mcp || options.localServices?.length);
+  const taken = new Set<number>([...servicePorts, ...(options.mcp ? [options.mcp.port] : []), ...(options.relay ? [options.relay.port] : [])]);
+  const loopbackService = Boolean(options.mcp || options.relay || options.localServices?.length);
   const freePort = (preferred: number): number => {
     let port = preferred;
     while (taken.has(port)) port += 2;
@@ -443,6 +445,7 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
   }
   if (options.mcp) forwards.push({ port: options.mcp.port, socket: options.mcp.socket });
   if (options.localServices) forwards.push(...options.localServices);
+  if (options.relay) forwards.push(options.relay);
   const spec = JSON.stringify({ forwards, command: options.argv });
   const allowedSockets = forwards.map((forward) => forward.socket);
   const filesystem = options.filesystem;

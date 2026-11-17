@@ -2,7 +2,7 @@ import { resolveFilesystemPath } from "../core/paths";
 import type { ConveyorConfig } from "../config/load";
 import { parseLoopbackTcp } from "./egress-policy";
 import { mcpSocketPath } from "./mcp-socket";
-import type { EgressInput } from "./run-network";
+import type { CredentialRelayPolicy, EgressInput } from "./run-network";
 
 const DOCKER_SOCKETS = ["/var/run/docker.sock", "/run/docker.sock"] as const;
 
@@ -21,15 +21,16 @@ function isDockerSocket(socket: string): boolean {
 
 /**
  * The network policy for an agent run, or undefined when the repository declares no `agentEgress`
- * block (legacy behaviour: sanitized environment only, no sandbox).
+ * block (legacy behaviour: sanitized environment only, no sandbox). A run that asks for a credential
+ * relay is always sandboxed: without an `agentEgress` block it gets the relay and empty host allowlists.
  */
 export function agentEgressFor(
   config: ConveyorConfig,
   repositoryId: string,
-  runner: { controlPlaneHosts?: string[] | undefined },
+  runner: { controlPlaneHosts?: string[] | undefined; relay?: CredentialRelayPolicy | undefined },
 ): EgressInput | undefined {
   const egress = config.repositories?.[repositoryId]?.agentEgress;
-  if (!egress) return undefined;
+  if (!egress) return runner.relay ? { httpsHosts: [], controlPlaneHosts: runner.controlPlaneHosts, relay: runner.relay } : undefined;
   const services = egress.localServices ?? [];
   for (const service of services) {
     if (service.socket !== undefined && isDockerSocket(service.socket)) {
@@ -54,6 +55,7 @@ export function agentEgressFor(
   return {
     httpsHosts: egress.httpsHosts,
     controlPlaneHosts: runner.controlPlaneHosts,
+    ...(runner.relay ? { relay: runner.relay } : {}),
     ...(localServices.length > 0 ? { localServices, localServiceEnvironment } : {}),
     ...(egress.allowLoopbackMcp
       ? { mcp: { port: listenPort(config.web.listen), socket: mcpSocketPath(config.settings.artifacts) } }
