@@ -3,10 +3,10 @@ import { rm } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
-import type { ConveyorConfig } from "../../src/config/load";
 import { agentEgressFor } from "../../src/isolation/agent-egress";
 import { startRunNetwork, type AgentNetworkPolicy, type RunNetwork } from "../../src/isolation/run-network";
 import { bwrapUnavailableReason } from "../support/bwrap";
+import { itemConfig } from "../support/item-world";
 import { startRelayUpstream, throwawayCertificate, type RelayUpstream } from "../support/relay-upstream";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
@@ -242,7 +242,7 @@ describeSandbox("credential relay in a real bubblewrap run", () => {
   });
 
   describe("a run without agentEgress", () => {
-    const config = { web: { listen: "127.0.0.1:8123" }, settings: { artifacts: "/data/artifacts" }, repositories: { legacy: {} } } as unknown as ConveyorConfig;
+    const config = itemConfig("/data", { repositories: { legacy: { source: "github", address: "owner/legacy", folder: "/data", pipeline: "default" } } });
 
     test("gets a policy that carries the relay with empty allowlists, and stays unsandboxed without one", async () => {
       const relay = { upstream: `https://localhost:${server.port}/v1`, credential: () => credential, ca: certificate.cert };
