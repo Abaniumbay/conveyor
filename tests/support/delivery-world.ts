@@ -322,7 +322,7 @@ export async function deliveryWorld(options: {
           await dispatchTool(
             {
               name: "change.recordCriterionTests",
-              input: { criteria: [{ criterionId: "works", tests: [{ name: "feature", file: "feature.txt" }] }] },
+              input: { criteria: [{ criterionId: "works", tests: [{ name: "feature", file: "feature.txt", caseId: "works.1" }] }] },
               actor,
               grant: { runId: run.id, stageId: "implementation", issueScoped: true, actor, tasks: new Set(["change.recordCriterionTests"]) },
             },
