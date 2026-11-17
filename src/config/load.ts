@@ -533,6 +533,14 @@ function crossReferenceErrors(config: ConveyorConfigData, plugins: readonly Plug
     for (const [index, stage] of pipeline.stages.entries()) {
       const prefix = ["pipelines", pipelineName, "stages", index];
       if (isNativeStage(stage)) {
+        const agentRuns = stage.actions.filter((entry) => entry.task === "agent.run");
+        if (agentRuns.length > 1) {
+          const users = Object.entries(config.repositories).filter(([, repository]) => repository.pipeline === pipelineName).map(([id]) => id);
+          error(
+            [...prefix, "actions"],
+            `stage "${stage.id}" in pipeline "${pipelineName}"${users.length > 0 ? ` (used by ${users.map((id) => `repository "${id}"`).join(", ")})` : ""} runs more than one agent.run action (${agentRuns.map((entry) => `"${entry.id ?? entry.task}"`).join(", ")}): a stage is one role with one agent run, so move each further agent into its own stage (an agents: [a, b] fallback list is still one action)`,
+          );
+        }
         for (const [group, entries] of [
           ["actions", stage.actions],
           ["exit-gate", stage.exitGate],
