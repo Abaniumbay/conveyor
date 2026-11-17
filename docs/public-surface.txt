@@ -747,6 +747,7 @@ task-input change.recordCriterionTests criteria
 task-input change.recordCriterionTests criteria[].criterionId
 task-input change.recordCriterionTests criteria[].manual
 task-input change.recordCriterionTests criteria[].tests
+task-input change.recordCriterionTests criteria[].tests[].caseId
 task-input change.recordCriterionTests criteria[].tests[].description
 task-input change.recordCriterionTests criteria[].tests[].file
 task-input change.recordCriterionTests criteria[].tests[].line
