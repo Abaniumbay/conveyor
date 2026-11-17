@@ -13,6 +13,7 @@ import darya from "../../examples/config/instructions/darya.md" with { type: "te
 import kaveh from "../../examples/config/instructions/kaveh.md" with { type: "text" };
 import omid from "../../examples/config/instructions/omid.md" with { type: "text" };
 import reviewer from "../../examples/config/instructions/reviewer.md" with { type: "text" };
+import testPlanner from "../../examples/config/instructions/test-planner.md" with { type: "text" };
 import workBreakdown from "../../examples/config/instructions/work-breakdown.md" with { type: "text" };
 import providers from "../../examples/config/providers.yaml" with { type: "text" };
 import stages from "../../examples/config/stages.yaml" with { type: "text" };
@@ -28,6 +29,7 @@ export const BUILTIN_FILES: Readonly<Record<string, string>> = {
   "instructions/kaveh.md": kaveh,
   "instructions/omid.md": omid,
   "instructions/reviewer.md": reviewer,
+  "instructions/test-planner.md": testPlanner,
   "instructions/work-breakdown.md": workBreakdown,
   "providers.yaml": providers,
   "pipelines.yaml": pipelines,

@@ -20,7 +20,7 @@ async function reference() {
 describe("buildAgentProfiles", () => {
   test("describes every configured agent from the reference configuration", async () => {
     const profiles = await buildAgentProfiles(await reference());
-    expect(profiles.map((profile) => profile.id)).toEqual(["darya", "jamshid", "kaveh", "omid", "parisa", "roya", "shaghayegh", "shirin"]);
+    expect(profiles.map((profile) => profile.id)).toEqual(["darya", "jamshid", "kaveh", "omid", "parisa", "roya", "shaghayegh", "shirin", "tara"]);
 
     const kaveh = profiles.find((profile) => profile.id === "kaveh")!;
     expect(kaveh).toMatchObject({

@@ -23,7 +23,7 @@ import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { codexProfile } from "../../src/plugins/codex/profile";
 import { claudeCodeProfile } from "../../src/plugins/claude-code/profile";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
-import { parseManagedSections, upsertManagedSection } from "../../src/source/managed-sections";
+import { criteriaDigest, parseManagedSections, renderTestPlanSection, upsertManagedSection } from "../../src/source/managed-sections";
 import type { SourceIssue } from "../../src/source/types";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { renderBreakdownPlan } from "../../src/tasks/breakdown";
@@ -298,6 +298,16 @@ export async function deliveryWorld(options: {
       } else if (stage === "refinement-review") {
         const issue = store.getIssue("issue")!;
         const body = upsertManagedSection(issue.body, "breakdown", renderBreakdownPlan({ decision: "no-split", review: "approved" }), parseManagedSections(issue.body).revision);
+        store.upsertIssue({ ...issue, body, sourceUpdatedAt: new Date().toISOString() });
+      } else if (stage === "planning") {
+        // tara: the plan item.setTestPlan would record, one case for the criterion.
+        const issue = store.getIssue("issue")!;
+        const plan = renderTestPlanSection({
+          criteriaDigest: criteriaDigest(criteriaOf(issue.body)),
+          cases: [{ id: "works.1", criterionId: "works", proves: "the pull request explains how it works", boundary: "none", setup: "a change", action: "read the description", expected: "it explains", kind: "behaviour" }],
+          constraints: { mustNotTouch: [], reuse: [], redLines: [] },
+        });
+        const body = upsertManagedSection(issue.body, "test-plan", plan, parseManagedSections(issue.body).revision);
         store.upsertIssue({ ...issue, body, sourceUpdatedAt: new Date().toISOString() });
       } else if (stage === "implementation") {
         implementationRuns += 1;

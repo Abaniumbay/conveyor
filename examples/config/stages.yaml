@@ -37,6 +37,16 @@
   exit-gate:
     - { id: completedBreakdown, task: breakdown.complete, onFail: { return: refinement } }
 
+- id: planning
+  description: "Plans the tests for every acceptance criterion as numbered cases and constraints before any code is written."
+  icon: "📐"
+  concurrency: 2
+  retries: 2
+  actions:
+    - { id: plan, task: agent.run, with: { agent: tara } }
+  exit-gate:
+    - { id: testPlan, task: item.testPlanComplete }   # every non-manual criterion has a planned case
+
 - id: implementation
   description: "Writes the change on its own branch, opens a pull request, and verifies its linked tests passed in CI."
   icon: "🛠️"

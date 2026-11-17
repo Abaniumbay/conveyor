@@ -7,6 +7,7 @@ builtin instructions/darya.md
 builtin instructions/kaveh.md
 builtin instructions/omid.md
 builtin instructions/reviewer.md
+builtin instructions/test-planner.md
 builtin instructions/work-breakdown.md
 builtin pipelines.yaml
 builtin providers.yaml
