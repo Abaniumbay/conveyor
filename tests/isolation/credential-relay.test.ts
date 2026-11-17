@@ -99,6 +99,17 @@ describe("credential relay over a real socket", () => {
   });
 });
 
+describe("credential relay base path", () => {
+  test.each(["/..%2fadmin", "/a/..%2f..%2fadmin", "/x%5c..%5cadmin", "/%2e%2e/admin", "/a/%2E%2E%2Fadmin", "/..\\admin"])("%s is refused and never reaches the upstream", async (requestPath) => {
+    const dir = await directory();
+    const server = await upstream();
+    const started = await relay(dir, { upstream: `https://localhost:${server.port}/v1`, ca: server.cert });
+    const answer = await send(started.socketPath, requestPath);
+    expect(answer.status).toBe(400);
+    expect(server.requests).toEqual([]);
+  });
+});
+
 describe("startRunNetwork with a relay that cannot start", () => {
   test("a socket path that is too long is refused and nothing is left behind", async () => {
     const dir = await directory();

@@ -36,15 +36,14 @@ function presentsPlaceholder(header: string | undefined, placeholder: string): b
 }
 
 function hasDotSegment(rawPath: string): boolean {
-  return rawPath.split("/").some((segment) => {
-    let decoded = segment;
-    try {
-      decoded = decodeURIComponent(segment);
-    } catch {
-      // An undecodable segment cannot be a dot segment.
-    }
-    return decoded === "." || decoded === "..";
-  });
+  if (/%(?:2f|5c)/i.test(rawPath) || rawPath.includes("\\")) return true;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawPath);
+  } catch {
+    return true;
+  }
+  return decoded.split("/").some((segment) => segment === "." || segment === "..");
 }
 
 function respond(response: http.ServerResponse, status: number, body: string): void {
