@@ -16,6 +16,10 @@ afterEach(async () => {
 /** The real sync, relationship reconciliation, scheduler and store; only the item source is a fake. */
 async function setup() {
   const world = await itemWorld();
+  // Room for the blocker and the item at once, so only the dependency can hold the item back.
+  world.config.settings.runners = 2;
+  world.config.pipelines.default!.stages[0]!.concurrency = 2;
+  world.config.repositories.repo!.concurrency = 2;
   const running = new Map<string, RunningStage>();
   const launched: string[] = [];
   const scheduler: Scheduler = new Scheduler({
@@ -82,20 +86,21 @@ async function setup() {
     return blocker;
   };
   const satisfied = (number: number) => scheduler.candidates().find((candidate) => candidate.id === `issue-${number}`)?.dependenciesSatisfied;
-  return { world, scheduler, running, deliver, launched, blocked, satisfied };
+  return { world, scheduler, deliver, launched, blocked, satisfied };
 }
 
 describe("an item discovered through a single delivery", () => {
   test("has its dependencies stored and is not started before its blocker is done", async () => {
-    const { world, scheduler, running, deliver, launched, blocked, satisfied } = await setup();
+    const { world, scheduler, deliver, launched, blocked, satisfied } = await setup();
     const blocker = blocked();
     await deliver(1);
     expect(world.store.listDependencies("issue-1")).toEqual([blocker]);
     expect(satisfied(1)).toBe(false);
     expect(launched).not.toContain("issue-1");
-    // The control: once the blocker is done the same item is selected.
+    // The control: once the blocker is done the same item is selected (admitted and ready, as any item is).
+    world.store.setQueueRank("issue-1", world.store.nextQueueRank());
+    world.store.setStageState({ issueId: "issue-1", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: world.config.hash });
     world.store.upsertIssue({ ...world.store.getIssue(blocker)!, sourceState: "closed" });
-    running.delete(blocker);
     scheduler.schedule();
     expect(satisfied(1)).toBe(true);
     expect(launched).toContain("issue-1");
