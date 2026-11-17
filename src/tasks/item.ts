@@ -244,11 +244,11 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
     });
     // The scheduler's rule: a dependency is satisfied when closed or done. An ancestor's dependencies hold the item too.
     const blockers = [
-      ...store.listDependencies(issue.id).map((blockerId) => ({ blockerId, ancestorId: null as string | null })),
+      ...store.listDependencies(issue.id).map((blockerId) => ({ blockerId, ancestorId: null as string | null, depth: 0 })),
       ...inheritedDependencies(issue.id, { issue: (id) => store.getIssue(id), dependencies: (id) => store.listDependencies(id) })
-        .map((entry) => ({ blockerId: entry.dependencyId, ancestorId: entry.ancestorId as string | null })),
+        .map((entry) => ({ blockerId: entry.dependencyId, ancestorId: entry.ancestorId as string | null, depth: entry.depth })),
     ];
-    const dependencies = blockers.flatMap(({ blockerId, ancestorId }) => {
+    const dependencies = blockers.flatMap(({ blockerId, ancestorId, depth }) => {
       const blocker = store.getIssue(blockerId);
       if (!blocker) return [];
       const address = config.repositories[blocker.repositoryId]?.address;
@@ -256,7 +256,7 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
       return [{
         id: blocker.id, number: blocker.sourceNumber, satisfied: blocker.sourceState === "closed" || blocker.projectedState === "done",
         ...(address !== undefined ? { address } : {}),
-        ...(ancestor !== undefined ? { inheritedFrom: ancestor } : {}),
+        ...(ancestor !== undefined ? { inheritedFrom: ancestor, fromParent: depth === 1 } : {}),
       }];
     });
     const pullRequest = store.getCurrentPullRequest(issue.id);
@@ -365,7 +365,7 @@ const dependenciesMet = check(
     const own = waiting.filter((dependency) => dependency.inheritedFrom === undefined);
     const message = [
       ...(own.length > 0 ? [`Waiting for dependencies: ${own.map((dependency) => `#${dependency.number}`).join(", ")}`] : []),
-      ...inheritedFrom.map((from) => `Waiting for ${waiting.filter((dependency) => dependency.inheritedFrom === from).map((dependency) => `#${dependency.number}`).join(", ")} (dependencies of ancestor #${from})`),
+      ...inheritedFrom.map((from) => `Waiting for ${waiting.filter((dependency) => dependency.inheritedFrom === from).map((dependency) => `#${dependency.number}`).join(", ")} (dependencies of ${waiting.some((dependency) => dependency.inheritedFrom === from && dependency.fromParent) ? "parent" : "ancestor"} #${from})`),
     ].join("; ");
     return pending(message, { waitFor: { topics, kind: "dependencies" } });
   },

@@ -131,6 +131,12 @@ describe("item.dependenciesMet", () => {
     expect(result).toEqual({ status: "pending", message: "Waiting for dependencies: #7; Waiting for #9, #10 (dependencies of ancestor #4)" });
     expect((await run("item.dependenciesMet", { context: ctx({ dependencies: [{ id: "d", number: 11, satisfied: true, inheritedFrom: 4 }] }) })).status).toBe("pass");
   });
+  test("says parent for a dependency inherited from the direct parent", async () => {
+    const result = await run("item.dependenciesMet", {
+      context: ctx({ dependencies: [{ id: "b", number: 9, satisfied: false, inheritedFrom: 4, fromParent: true }, { id: "c", number: 10, satisfied: false, inheritedFrom: 2 }] }),
+    });
+    expect(result).toEqual({ status: "pending", message: "Waiting for #9 (dependencies of parent #4); Waiting for #10 (dependencies of ancestor #2)" });
+  });
   test("passes when all are satisfied or none exist, and waits without a timeout every five minutes", async () => {
     expect((await run("item.dependenciesMet", { context: ctx({ dependencies: [{ id: "a", number: 7, satisfied: true }] }) })).status).toBe("pass");
     expect((await run("item.dependenciesMet", { context: ctx() })).status).toBe("pass");

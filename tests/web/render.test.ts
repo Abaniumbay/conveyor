@@ -647,6 +647,15 @@ describe("renderDashboard", () => {
     expect(unlabelled).not.toContain("No split");
   });
 
+  test("shows inherited dependencies apart from the item's own, each tagged with its ancestor", () => {
+    const issue = { ...backlogIssue, dependencies: [], inheritedDependencies: [{ id: "i", repository: "foundation", number: 388, title: "Inherited foundation", url: "https://github.com/sample/repo/issues/388", satisfied: false, from: 391 }] };
+    const html = renderIssueDetails(issue);
+    expect(html).toContain("Also blocked by (from the parent chain)");
+    expect(html).toContain("#388");
+    expect(html).toContain("(from #391)");
+    expect(html).not.toContain("Blocked by:");
+  });
+
   test("renders visible approved and unapproved criterion states", () => {
     const html = renderDashboard({ ...dashboard, selectedIssue: parent });
 

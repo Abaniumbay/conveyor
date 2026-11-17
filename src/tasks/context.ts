@@ -53,7 +53,7 @@ export interface ItemContext {
     dependsOn?: number[];
   }>;
   /** `address` is the blocker's repository; absent in snapshots stored before it was recorded. */
-  dependencies: Array<{ id: string; number: number; satisfied: boolean; address?: string; /** The number of the ancestor whose dependency this is; absent for the item's own. */ inheritedFrom?: number }>;
+  dependencies: Array<{ id: string; number: number; satisfied: boolean; address?: string; /** The number of the ancestor whose dependency this is; absent for the item's own. */ inheritedFrom?: number; /** Whether that ancestor is the item's direct parent. */ fromParent?: boolean }>;
   systemLabels: string[];
   /** The recorded merge of the item's current change; present only once it merged. `observedAt` is when this snapshot was loaded. */
   merge?: { changeNumber: number; mergedAt: string; observedAt: string };
