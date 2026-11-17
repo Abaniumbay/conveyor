@@ -1179,4 +1179,11 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 51,
+    sql: `
+      -- A linked test may name the planned test case (from the item's test plan) it implements.
+      ALTER TABLE criterion_test_evidence_tests ADD COLUMN case_id TEXT;
+    `,
+  },
 ];
