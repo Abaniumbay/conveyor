@@ -97,7 +97,7 @@ export interface IssueProjection {
 export interface CriterionTestEvidence {
   criterionId: string;
   manual: boolean;
-  tests: Array<{ name: string; file: string; line?: number; description?: string }>;
+  tests: Array<{ name: string; file: string; line?: number; description?: string; caseId?: string }>;
   recordedHead: string | null;
   sourceLinkHead: string | null;
   recordedAt: string;
@@ -545,12 +545,12 @@ export class ConveyorStore {
     const rows = this.#database.query(`
       SELECT e.criterion_id AS criterionId, e.manual AS manual, e.recorded_head_sha AS recordedHead,
              e.source_link_head_sha AS sourceLinkHead, e.recorded_at AS recordedAt,
-             t.ordinal AS ordinal, t.name AS name, t.file AS file, t.line AS line, t.description AS description
+             t.ordinal AS ordinal, t.name AS name, t.file AS file, t.line AS line, t.description AS description, t.case_id AS caseId
         FROM criterion_test_evidence e
         LEFT JOIN criterion_test_evidence_tests t ON t.issue_id = e.issue_id AND t.criterion_id = e.criterion_id
        WHERE e.issue_id = ?
        ORDER BY e.criterion_id, t.ordinal
-    `).all(issueId) as Array<{ criterionId: string; manual: number; recordedHead: string | null; sourceLinkHead: string | null; recordedAt: string; ordinal: number | null; name: string | null; file: string | null; line: number | null; description: string | null }>;
+    `).all(issueId) as Array<{ criterionId: string; manual: number; recordedHead: string | null; sourceLinkHead: string | null; recordedAt: string; ordinal: number | null; name: string | null; file: string | null; line: number | null; description: string | null; caseId: string | null }>;
     const evidence = new Map<string, CriterionTestEvidence>();
     for (const row of rows) {
       let entry = evidence.get(row.criterionId);
@@ -559,9 +559,10 @@ export class ConveyorStore {
         evidence.set(row.criterionId, entry);
       }
       if (row.name !== null && row.file !== null) {
-        const test: { name: string; file: string; line?: number; description?: string } = { name: row.name, file: row.file };
+        const test: { name: string; file: string; line?: number; description?: string; caseId?: string } = { name: row.name, file: row.file };
         if (row.line !== null) test.line = row.line;
         if (row.description !== null) test.description = row.description;
+        if (row.caseId !== null) test.caseId = row.caseId;
         entry.tests.push(test);
       }
     }
@@ -573,12 +574,12 @@ export class ConveyorStore {
       const deleteTests = this.#database.query("DELETE FROM criterion_test_evidence_tests WHERE issue_id = ? AND criterion_id = ?");
       const deleteEvidence = this.#database.query("DELETE FROM criterion_test_evidence WHERE issue_id = ? AND criterion_id = ?");
       const insertEvidence = this.#database.query("INSERT INTO criterion_test_evidence (issue_id, criterion_id, manual, recorded_head_sha, source_link_head_sha, recorded_at) VALUES (?, ?, ?, ?, ?, ?)");
-      const insertTest = this.#database.query("INSERT INTO criterion_test_evidence_tests (issue_id, criterion_id, ordinal, name, file, line, description) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      const insertTest = this.#database.query("INSERT INTO criterion_test_evidence_tests (issue_id, criterion_id, ordinal, name, file, line, description, case_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
       for (const entry of entries) {
         deleteTests.run(issueId, entry.criterionId);
         deleteEvidence.run(issueId, entry.criterionId);
         insertEvidence.run(issueId, entry.criterionId, entry.manual ? 1 : 0, entry.recordedHead, entry.sourceLinkHead, entry.recordedAt);
-        entry.tests.forEach((test, ordinal) => insertTest.run(issueId, entry.criterionId, ordinal, test.name, test.file, test.line ?? null, test.description ?? null));
+        entry.tests.forEach((test, ordinal) => insertTest.run(issueId, entry.criterionId, ordinal, test.name, test.file, test.line ?? null, test.description ?? null, test.caseId ?? null));
       }
       if (entries.length > 0) this.#events.append("criterion.testsRecorded", { criteria: entries.map((entry) => entry.criterionId) }, { issueId });
     });

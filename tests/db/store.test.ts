@@ -49,7 +49,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(50);
+    expect(store.schemaVersion()).toBe(51);
 
     store.close();
   });
@@ -95,7 +95,7 @@ describe("ConveyorStore", () => {
       ${UNDO_EVENT_CLASSES}
       ALTER TABLE findings DROP COLUMN criterion_ids_json;
       ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP TABLE pending_purges; DROP TABLE purged_generations;
-      DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DROP TABLE item_stop_summaries; DELETE FROM schema_migrations WHERE version >= 41;
+      DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DROP TABLE item_stop_summaries; ALTER TABLE criterion_test_evidence_tests DROP COLUMN case_id; DELETE FROM schema_migrations WHERE version >= 41;
       INSERT INTO findings(id, issue_id, run_id, provider_key, author, source, head_sha, state, path, line, url, body, created_at)
       VALUES ('finding', 'issue', NULL, NULL, 'reviewer', 'agent', 'head', 'open', NULL, NULL, '', 'Existing finding', '2026-10-20T00:00:00.000Z');
     `);
@@ -113,7 +113,7 @@ describe("ConveyorStore", () => {
     let store = await ConveyorStore.open(database);
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository", configHash: "config-hash" });
     store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Paused title", body: "Paused body", sourceState: "open", labels: ["conveyor:refinement"], sourceUpdatedAt: "2026-10-16T00:00:00.000Z" });
-    store.sqlite().exec(LEGACY_MANUAL_GATE_REQUIREMENTS + "DROP TABLE ci_gate_observations; DROP TABLE ci_failure_windows; DROP INDEX issues_recovery_candidates_idx; ALTER TABLE issues DROP COLUMN projection_changed_at; DROP TABLE github_mirror; DROP TABLE repository_pauses; DROP TABLE board_approvals; DROP TABLE item_board_approval_requirements; DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP INDEX dependencies_blocker_idx; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; ALTER TABLE issues DROP COLUMN accepted_text_at; ALTER TABLE findings DROP COLUMN criterion_ids_json; ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP TABLE pending_purges; DROP TABLE purged_generations; DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DROP TABLE item_stop_summaries; DELETE FROM schema_migrations WHERE version >= 27;");
+    store.sqlite().exec(LEGACY_MANUAL_GATE_REQUIREMENTS + "DROP TABLE ci_gate_observations; DROP TABLE ci_failure_windows; DROP INDEX issues_recovery_candidates_idx; ALTER TABLE issues DROP COLUMN projection_changed_at; DROP TABLE github_mirror; DROP TABLE repository_pauses; DROP TABLE board_approvals; DROP TABLE item_board_approval_requirements; DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP INDEX dependencies_blocker_idx; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; ALTER TABLE issues DROP COLUMN accepted_text_at; ALTER TABLE findings DROP COLUMN criterion_ids_json; ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP TABLE pending_purges; DROP TABLE purged_generations; DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DROP TABLE item_stop_summaries; ALTER TABLE criterion_test_evidence_tests DROP COLUMN case_id; DELETE FROM schema_migrations WHERE version >= 27;");
     store.close();
 
     store = await ConveyorStore.open(database);
@@ -141,7 +141,7 @@ describe("ConveyorStore", () => {
       DROP TABLE item_board_approval_requirements;
       ALTER TABLE findings DROP COLUMN criterion_ids_json;
       ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP TABLE pending_purges; DROP TABLE purged_generations;
-      DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DROP TABLE item_stop_summaries; DELETE FROM schema_migrations WHERE version >= 33;
+      DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DROP TABLE item_stop_summaries; ALTER TABLE criterion_test_evidence_tests DROP COLUMN case_id; DELETE FROM schema_migrations WHERE version >= 33;
       INSERT INTO item_manual_gate_requirements(issue_id, stage_id, gate_id, changed_at) VALUES
         ('issue', 'implementation', 'ci.passed', '2026-10-16T00:00:00.000Z'),
         ('issue', 'implementation', 'change.findingsResolved', '2026-10-17T00:00:00.000Z'),

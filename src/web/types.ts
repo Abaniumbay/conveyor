@@ -41,6 +41,12 @@ export interface IssueCriterionViewModel {
   tests: readonly IssueCriterionTestViewModel[];
 }
 
+/** The recorded test plan shown beside an item's criteria. */
+export interface IssueTestPlanViewModel {
+  cases: ReadonlyArray<{ id: string; criterionId: string; kind: string; proves: string }>;
+  constraints: { mustNotTouch: readonly string[]; reuse: readonly string[]; redLines: readonly string[] };
+}
+
 /** A test linked to an item acceptance criterion by recorded delivery evidence. */
 export interface IssueCriterionTestViewModel {
   name: string;
@@ -89,6 +95,8 @@ export interface IssueCardViewModel {
   /** The repository-configured organization issue-field values that are set, in configuration order. */
   issueFields: ReadonlyArray<{ name: string; value: string }>;
   acceptanceCriteria: readonly IssueCriterionViewModel[];
+  /** The recorded test plan; null or absent when none exists. */
+  testPlan?: IssueTestPlanViewModel | null;
   /** Current and future native exit gates; absent on older API payloads. */
   manualGates?: readonly ManualGateViewModel[];
   /** Request token copied into superuser forms rendered from this card. */

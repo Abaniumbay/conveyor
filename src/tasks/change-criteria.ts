@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { CiTestReport } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
 import { criterionTextHash, isCriterionApprovedAt, type CriterionApprovals } from "../db/review-records";
-import { formatAcceptanceCriteria, ManagedSectionError, parseManagedSections } from "../source/managed-sections";
+import { formatAcceptanceCriteria, ManagedSectionError, parseManagedSections, testPlanOf } from "../source/managed-sections";
 import type { ChangeContext } from "./context";
 import { fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps, TaskStore } from "./deps";
@@ -27,7 +27,7 @@ const criterionInput = z.object({ criterionId: z.string().min(1), headSha: z.str
 type CriterionInput = z.output<typeof criterionInput>;
 const oneLine = z.string().refine((value) => value.trim().length > 0 && !/[\r\n]/.test(value), "must be non-empty and one line");
 const repositoryFile = z.string().refine((value) => value.length > 0 && !value.startsWith("/") && !value.includes("\\") && !value.includes("\0") && value.split("/").every((part) => part.length > 0 && part !== "." && part !== ".."), "must be a safe repository-relative path");
-const linkedTest = z.object({ name: oneLine, file: repositoryFile, line: z.number().int().positive().optional(), description: oneLine.optional() }).strict();
+const linkedTest = z.object({ name: oneLine, file: repositoryFile, line: z.number().int().positive().optional(), description: oneLine.optional(), caseId: oneLine.optional() }).strict();
 const criterionEvidence = z.union([z.object({ criterionId: z.string().min(1), tests: z.array(linkedTest).min(1) }).strict(), z.object({ criterionId: z.string().min(1), manual: z.literal(true) }).strict()]);
 const recordEvidenceInput = z.object({ headSha: z.string().min(1).optional(), criteria: z.array(criterionEvidence).min(1).superRefine((entries, context) => { const seen = new Set<string>(); entries.forEach((entry, index) => { if (seen.has(entry.criterionId)) context.addIssue({ code: z.ZodIssueCode.custom, path: [index, "criterionId"], message: "criterion ids must be unique" }); seen.add(entry.criterionId); }); }) }).strict();
 type RecordEvidenceInput = z.output<typeof recordEvidenceInput>;
@@ -254,11 +254,19 @@ export const recordCriterionTests: TaskDefinition<unknown, RecordEvidenceInput, 
       if (!criterion) return fail(`Unknown criterion "${entry.criterionId}"; no evidence was recorded`);
       if ("manual" in entry && !criterion.manual) return fail(`Criterion "${entry.criterionId}" is not marked [Manual]; no evidence was recorded`);
     }
+    const planned = new Set((testPlanOf(deps.store.getIssue(deps.issueId)?.body ?? "")?.cases ?? []).map((plannedCase) => plannedCase.id));
+    for (const entry of input!.criteria) {
+      if (!("tests" in entry)) continue;
+      for (const test of entry.tests) {
+        if (test.caseId !== undefined && !planned.has(test.caseId)) return fail(`Case "${test.caseId}" is not in the test plan; no evidence was recorded`);
+      }
+    }
     const evidence = (headSha: string | null) => input!.criteria.map((entry) => ({
       criterionId: entry.criterionId, manual: "manual" in entry, tests: "tests" in entry ? entry.tests.map((test) => {
-        const recorded: { name: string; file: string; line?: number; description?: string } = { name: test.name, file: test.file };
+        const recorded: { name: string; file: string; line?: number; description?: string; caseId?: string } = { name: test.name, file: test.file };
         if (test.line !== undefined) recorded.line = test.line;
         if (test.description !== undefined) recorded.description = test.description;
+        if (test.caseId !== undefined) recorded.caseId = test.caseId;
         return recorded;
       }) : [],
       recordedHead: headSha, sourceLinkHead: headSha, recordedAt: new Date().toISOString(),
@@ -297,6 +305,8 @@ export const criterionTestsVerified: TaskDefinition<unknown, unknown, Deps> = {
     const files = new Map<string, string | null>();
     const gaps: string[] = [];
     const lines = new Map<string, number[]>();
+    const plan = testPlanOf(deps.store.getIssue(deps.issueId)?.body ?? "");
+    const covered = new Set<string>();
     for (const criterion of context.item!.criteria) {
       if (criterion.manual) continue;
       const entry = entries.get(criterion.id);
@@ -310,18 +320,23 @@ export const criterionTestsVerified: TaskDefinition<unknown, unknown, Deps> = {
       }
       const foundLines: number[] = [];
       for (const test of entry.tests) {
+        const label = test.caseId ? `${criterion.id} (case ${test.caseId})` : criterion.id;
         let source = files.get(test.file);
         if (source === undefined) {
           source = await host.readFileAtRevision({ address: deps.repository.address, path: test.file, headSha: live.headSha });
           files.set(test.file, source);
         }
-        if (source === null) { gaps.push(`${criterion.id}: file ${test.file} is missing at ${live.headSha}`); continue; }
+        if (source === null) { gaps.push(`${label}: file ${test.file} is missing at ${live.headSha}`); continue; }
         const match = sourceLineForTest(source, test.name);
-        if ("missing" in match) { gaps.push(`${criterion.id}: test "${match.missing}" must appear in ${test.file} as written at ${live.headSha}`); continue; }
+        if ("missing" in match) { gaps.push(`${label}: test "${match.missing}" must appear in ${test.file} as written at ${live.headSha}`); continue; }
         foundLines.push(match.line);
+        if (test.caseId) covered.add(test.caseId);
       }
       if (foundLines.length === entry.tests.length) lines.set(criterion.id, foundLines);
     }
+    // Cases linked from a manual criterion's entry are not read above; any linked case must still exist at the head.
+    const uncovered = (plan?.cases ?? []).filter((plannedCase) => !covered.has(plannedCase.id) && !gaps.some((gap) => gap.includes(`(case ${plannedCase.id})`))).map((plannedCase) => plannedCase.id);
+    if (uncovered.length > 0) gaps.push(`planned cases without a linked test at ${live.headSha}: ${uncovered.join(", ")}`);
     if (gaps.length > 0) return fail(`Criterion test evidence is incomplete or stale: ${gaps.join("; ")}`);
     deps.store.refreshCriterionTestEvidence(deps.issueId, live.headSha, lines);
     const synced = await syncChecklist(host, deps, change.ref.id);
