@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import { labelDefinitions, RepositorySync } from "../../src/app/repository-sync";
-import { log, type LogRecord } from "../../src/log/logger";
+import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
 import type { EventType, StoredEvent } from "../../src/events/catalogue";
 import type { SourceIssue } from "../../src/source/types";
@@ -445,7 +445,11 @@ describe("loading relationships on a delivery", () => {
     sync.reactToObservation(labeled(5, issue));
     const records: LogRecord[] = [];
     log.configure({ sinks: [{ write: (record) => { records.push(record); } }] });
-    await sync.webhooksSettled();
+    try {
+      await sync.webhooksSettled();
+    } finally {
+      log.configure({ sinks: [new ConsoleSink()] });
+    }
     expect(records.filter((record) => record.level === "error").map((record) => record.message)).toContain("Webhook delivery failed");
     expect(calls.relationships).toEqual([[5]]);
     expect(calls.scheduled).toBe(0);
