@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { Scheduler, type RunningStage } from "../../src/app/scheduler";
 import type { SchedulerCandidate } from "../../src/core/scheduler";
+import { compileRepositories } from "../../src/tasks/plan";
+import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { itemWorld, type ItemWorld } from "../support/item-world";
 
 let opened: { world: ItemWorld; scheduler: Scheduler } | null = null;
@@ -436,5 +438,88 @@ describe("dependencies released at a configured stage", () => {
     expect(satisfied(scheduler, id)).toBe(false);
     world.store.setIssueProjection(blocker, { stage: "ship", state: "done", warning: null });
     expect(satisfied(scheduler, id)).toBe(true);
+  });
+});
+
+describe("dependencies released at a configured stage, on a compiled plan", () => {
+  const native = (id: string, gate: Array<Record<string, unknown>> = [{ id: "criteria", task: "item.criteriaDefined" }]) => ({ id, actions: [], "exit-gate": gate, concurrency: 3 });
+  const extra = (override: boolean) => (root: string) => ({
+    pipelines: {
+      default: {
+        stages: [
+          native("implementation", [{ id: "dependencies", task: "item.dependenciesMet", ...(override ? {} : { with: { after: "merge" } }) }]),
+          native("review"), native("merge"), native("verify"),
+        ],
+      },
+    },
+    repositories: {
+      repo: {
+        source: "github", address: "owner/my-app", folder: root, pipeline: "default", concurrency: 3,
+        ...(override ? { overrides: { stages: { implementation: { "exit-gate": { dependencies: { with: { after: "merge" } } } } } } } : {}),
+      },
+    },
+  });
+  const compiled = async (override: boolean) => {
+    const opened = await setup({ extra: extra(override) });
+    opened.world.config.plans = compileRepositories(opened.world.config, createTaskRegistry());
+    return opened;
+  };
+  const blocker = (world: ItemWorld, stage: string) => {
+    world.store.upsertIssue({
+      id: "issue-2", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.com/2", title: "Issue 2", body: "",
+      sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-10-17T00:00:00Z",
+    });
+    world.store.setIssueProjection("issue-2", { stage, state: "active", warning: null });
+    return "issue-2";
+  };
+  const satisfied = (scheduler: Scheduler, id: string) => scheduler.candidates().find((candidate) => candidate.id === id)!.dependenciesSatisfied;
+
+  for (const override of [false, true]) {
+    const where = override ? "set by a repository override" : "set in the pipeline";
+    test(`AC-7.1 a compiled plan's after, ${where}, releases a dependent past the threshold`, async () => {
+      const { world, scheduler, calls, ready } = await compiled(override);
+      expect(world.config.plans!.length).toBeGreaterThan(0);
+      const id = ready(1);
+      world.store.replaceRelationships(id, null, [blocker(world, "verify")]);
+      expect(satisfied(scheduler, id)).toBe(true);
+      scheduler.schedule();
+      expect(calls.launched).toEqual([id]);
+    });
+
+    test(`AC-7.2 a compiled plan's after, ${where}, holds a dependent at the threshold`, async () => {
+      const { world, scheduler, calls, ready } = await compiled(override);
+      const id = ready(1);
+      world.store.replaceRelationships(id, null, [blocker(world, "merge")]);
+      expect(satisfied(scheduler, id)).toBe(false);
+      scheduler.schedule();
+      expect(calls.launched).toEqual([]);
+    });
+  }
+
+  test("AC-6.2 a dependent already past the dependenciesMet stage is still started when its blocker is sent back", async () => {
+    const { world, scheduler, calls, ready } = await compiled(false);
+    const id = ready(1);
+    const dependency = blocker(world, "verify");
+    world.store.replaceRelationships(id, null, [dependency]);
+    // The dependent passed the check, moved on to review, and then the blocker was sent back.
+    world.store.setStageState({ issueId: id, stageId: "review", status: "ready", feedbackCycle: 0, configHash: world.config.hash });
+    world.store.setIssueProjection(dependency, { stage: "implementation", state: "active", warning: null });
+    const before = { stage: world.store.getStageState(id), issue: world.store.getIssue(id) };
+    expect(satisfied(scheduler, id)).toBe(true);
+    scheduler.schedule();
+    expect(calls.launched).toEqual([id]);
+    expect(scheduler.liveStatusReader()(world.store.getIssue(id)!)?.reason ?? "").not.toContain("Waiting for dependencies");
+    expect(world.store.getStageState(id)).toEqual(before.stage);
+    expect(world.store.getIssue(id)).toEqual(before.issue);
+  });
+
+  test("AC-6.2 a dependent still at the dependenciesMet stage waits again when its blocker is sent back", async () => {
+    const { world, scheduler, calls, ready } = await compiled(false);
+    const id = ready(1);
+    const dependency = blocker(world, "verify");
+    world.store.replaceRelationships(id, null, [dependency]);
+    world.store.setIssueProjection(dependency, { stage: "implementation", state: "active", warning: null });
+    scheduler.schedule();
+    expect(calls.launched).toEqual([]);
   });
 });
