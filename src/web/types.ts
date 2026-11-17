@@ -119,6 +119,8 @@ export interface IssueCardViewModel {
   parentProgress?: { done: number; total: number } | null;
   children: readonly IssueRelationViewModel[];
   dependencies: readonly IssueRelationViewModel[];
+  /** Dependencies of ancestors, which hold the item back too; `from` is the ancestor's number. */
+  inheritedDependencies: ReadonlyArray<IssueRelationViewModel & { from: number }>;
   working: boolean;
   /** True for stopped states and any item surfaced in Needs you. */
   needsAttention: boolean;

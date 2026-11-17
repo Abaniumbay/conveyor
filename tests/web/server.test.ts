@@ -83,6 +83,7 @@ const detailIssue: IssueCardViewModel = {
   parent: null,
   children: [],
   dependencies: [],
+  inheritedDependencies: [],
   working: true,
   needsAttention: false,
   retryable: false,

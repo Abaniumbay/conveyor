@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { inheritedDependencies } from "../../core/inherited-dependencies";
 import { criteriaOf } from "../../tasks/item";
 import { defineOperatorTool, type OperatorReadStore } from "../tool";
 
@@ -50,7 +51,7 @@ export const listItems = defineOperatorTool({
 
 export const getItem = defineOperatorTool({
   name: "get_item",
-  description: "Get one item's details: stage, state, labels, parent, children, dependencies and acceptance criteria.",
+  description: "Get one item's details: stage, state, labels, parent, children, dependencies (its own) and inheritedDependencies (each tagged with the ancestor it comes from, which also hold the item back) and acceptance criteria.",
   inputSchema: itemInput,
   handler: ({ input, facade }) => {
     const { store } = facade;
@@ -72,6 +73,8 @@ export const getItem = defineOperatorTool({
         return { number: row?.sourceNumber ?? null, title: row?.title ?? null, stage: row?.projectedStage ?? null, state: row?.projectedState ?? null };
       }),
       dependencies: store.listDependencies(issue.id).map((id) => numberOf(store, id) ?? id),
+      inheritedDependencies: inheritedDependencies(issue.id, { issue: (id) => store.getIssue(id), dependencies: (id) => store.listDependencies(id) })
+        .map((entry) => ({ number: numberOf(store, entry.dependencyId) ?? entry.dependencyId, from: numberOf(store, entry.ancestorId) ?? entry.ancestorId })),
       criteria: criteriaOf(issue.body).map((criterion) => ({ ...criterion, tests: evidence.get(criterion.id)?.tests ?? [] })),
     };
   },

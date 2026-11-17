@@ -91,7 +91,7 @@ function RelationLink({ relation, showCompletion = false }: { relation: IssueRel
 }
 
 function Relationships({ issue }: { issue: IssueCardViewModel }) {
-  if (!issue.parent && issue.children.length === 0 && issue.dependencies.length === 0) return null;
+  if (!issue.parent && issue.children.length === 0 && issue.dependencies.length === 0 && issue.inheritedDependencies.length === 0) return null;
   return (
     <section class="relationships" aria-label={`Issue relationships for #${issue.number}`}>
       {issue.parent && <p><strong>Parent:</strong> <RelationLink relation={issue.parent} /></p>}
@@ -99,6 +99,12 @@ function Relationships({ issue }: { issue: IssueCardViewModel }) {
         <div>
           <strong>Blocked by:</strong>
           <ul>{issue.dependencies.map((dependency) => <li key={dependency.number}><RelationLink relation={dependency} showCompletion /></li>)}</ul>
+        </div>
+      )}
+      {issue.inheritedDependencies.length > 0 && (
+        <div>
+          <strong>Also blocked by (from the parent chain):</strong>
+          <ul>{issue.inheritedDependencies.map((dependency) => <li key={`${dependency.from}-${dependency.number}`}><RelationLink relation={dependency} showCompletion /> (from #{dependency.from})</li>)}</ul>
         </div>
       )}
       {issue.children.length > 0 && (

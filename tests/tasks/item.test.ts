@@ -124,6 +124,13 @@ describe("item.dependenciesMet", () => {
     });
     expect(result).toEqual({ status: "pending", message: "Waiting for dependencies: #9, #3", waitFor: { kind: "dependencies", topics: ["issue:o/r:9"] } });
   });
+  test("waits for a dependency inherited from an ancestor and names the ancestor", async () => {
+    const result = await run("item.dependenciesMet", {
+      context: ctx({ dependencies: [{ id: "a", number: 7, satisfied: false }, { id: "b", number: 9, satisfied: false, inheritedFrom: 4 }, { id: "c", number: 10, satisfied: false, inheritedFrom: 4 }, { id: "d", number: 11, satisfied: true, inheritedFrom: 4 }] }),
+    });
+    expect(result).toEqual({ status: "pending", message: "Waiting for dependencies: #7; Waiting for #9, #10 (dependencies of ancestor #4)" });
+    expect((await run("item.dependenciesMet", { context: ctx({ dependencies: [{ id: "d", number: 11, satisfied: true, inheritedFrom: 4 }] }) })).status).toBe("pass");
+  });
   test("passes when all are satisfied or none exist, and waits without a timeout every five minutes", async () => {
     expect((await run("item.dependenciesMet", { context: ctx({ dependencies: [{ id: "a", number: 7, satisfied: true }] }) })).status).toBe("pass");
     expect((await run("item.dependenciesMet", { context: ctx() })).status).toBe("pass");
