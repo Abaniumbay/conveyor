@@ -622,6 +622,15 @@ export interface ReportMonthRow {
   avgLeadMs: number | null;
 }
 
+export interface ReportWeekRow {
+  /** UTC ISO week as `YYYY-Www`, of the delivery time. */
+  week: string;
+  delivered: number;
+  /** Share of the week's delivered items with no return. */
+  firstPassRate: number;
+  avgReturnsPerItem: number;
+}
+
 export interface ReportStageRow {
   id: string;
   name: string;
@@ -667,6 +676,8 @@ export interface ReportViewModel {
   totals: ReportTotals;
   byRepository: readonly ReportRepositoryRow[];
   byMonth: readonly ReportMonthRow[];
+  /** Delivered items per UTC ISO week of delivery, newest week first. */
+  byWeek: readonly ReportWeekRow[];
   byStage: readonly ReportStageRow[];
   /** The items of the drilled-into repository with activity in the period (empty for every repository). */
   items: readonly ReportItemRow[];

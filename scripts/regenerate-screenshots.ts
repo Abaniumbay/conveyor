@@ -882,7 +882,7 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
     ["repository detail", `/repositories/${encodeURIComponent(PHONE_OVERFLOW_REPOSITORY)}`],
     ["team", "/team"],
     ["operator", "/operator"],
-    ["reports", "/reports"],
+    ["reports", "/reports?period=all"],
     ["item detail", `/issues/${PHONE_OVERFLOW_REPOSITORY}/6/conversation`],
   ] as const;
 
@@ -1116,7 +1116,7 @@ async function main(): Promise<void> {
       "Operator",
       "Show the latest delivery activity.",
     ]);
-    await capture(page, baseUrl, "reports", "/reports", [
+    await capture(page, baseUrl, "reports", "/reports?period=all", [
       "Reports",
       "16.2K",
       "Runs",

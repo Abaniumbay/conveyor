@@ -916,7 +916,7 @@ describe("createWebHandler", () => {
         totals: { delivered: 0, inProgress: 0, runs: 0, failedRuns: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, agentMs: 0,
           avgTokensPerItem: 0, avgRunsPerItem: 0, avgLeadMs: 0, avgAgentMs: 0, avgChecksWaitMs: 0, avgWaitingForYouMs: 0, avgQueuedMs: 0,
           avgReturnsPerItem: 0, avgStopsPerItem: 0, firstPassRate: null },
-        byRepository: [], byMonth: [], byStage: [], items: [], importedWithoutHistory: 0, generatedAt: "2026-10-03T00:00:00.000Z",
+        byRepository: [], byMonth: [], byWeek: [], byStage: [], items: [], importedWithoutHistory: 0, generatedAt: "2026-10-03T00:00:00.000Z",
       }),
     });
     const created = auth.createSession(account)!;
@@ -1826,6 +1826,22 @@ describe("view data for the dashboard application", () => {
     expect(reports).toEqual([{ period: "30d", repository: "repo" }]);
     expect((await get("/api/v1/views/reports?period=forever")).status).toBe(400);
     expect((await get("/api/v1/views/reports?repository=missing")).status).toBe(404);
+  });
+
+  test("reports default to 30d, keep all and other known periods, and reject bad periods", async () => {
+    const { get, reports } = viewSetup();
+    expect((await get("/api/v1/views/reports")).status).toBe(200);
+    expect((await get("/api/v1/views/reports?repository=repo")).status).toBe(200);
+    expect((await get("/api/v1/views/reports?period=all")).status).toBe(200);
+    expect((await get("/api/v1/views/reports?period=7d")).status).toBe(200);
+    expect(reports).toEqual([
+      { period: "30d", repository: null }, { period: "30d", repository: "repo" },
+      { period: "all", repository: null }, { period: "7d", repository: null },
+    ]);
+    for (const bad of ["forever", "", "ALL"]) expect((await get(`/api/v1/views/reports?period=${bad}`)).status).toBe(400);
+    expect(reports).toHaveLength(4);
+    const body = await (await get("/api/v1/views/reports?period=forever")).json();
+    expect(body).toEqual({ error: "Unknown report period" });
   });
 
   test("returns the Operator for a run or the latest one", async () => {

@@ -946,7 +946,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
           return send({ team: await dependencies.getAgentProfiles() });
         case "reports": {
           if (!dependencies.getReport) return json({ error: "unavailable" }, 503);
-          const period = url.searchParams.get("period") ?? "all";
+          const period = url.searchParams.get("period") ?? "30d";
           if (!(REPORT_PERIOD_VALUES as readonly string[]).includes(period)) return json({ error: "Unknown report period" }, 400);
           const report = await dependencies.getReport({ period: period as ReportPeriod, repository: url.searchParams.get("repository") || null });
           return report ? send({ report }) : json({ error: "Repository not found" }, 404);
