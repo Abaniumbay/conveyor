@@ -131,6 +131,12 @@ in each release:
   value;
 - `instructions/*.md`.
 
+The packaged stages run `refinement`, `refinement-review`, `work-breakdown`, `planning`,
+`implementation`, `review`, `merge`, `deploy`, `verify` and `cleanup`. `planning` runs the packaged
+agent `tara`, who records a test plan with `item.setTestPlan`; its exit gate `item.testPlanComplete`
+passes when every non-manual criterion has a planned case. The implementer and reviewer instructions
+read that plan.
+
 They need no clone of the Conveyor repository. A section either includes a packaged default or is
 your own; defaults are not merged with overrides. To change a default, copy it into your
 configuration (`conveyor config builtin builtin:agents.yaml > agents.yaml`) and include your copy.
@@ -660,6 +666,15 @@ agents:
     tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
             agent.reportProgress, agent.askQuestion, workspace.fetch, workspace.push,
             change.listFindings, change.comment, change.resolveFinding, change.recordCriterionTests]
+  testPlanner:
+    name: Test Planner
+    title: Test Planner
+    harness: codex
+    effort: high
+    instructions: ./instructions/test-planner.md   # plans cases AC-n.m per criterion and records them with item.setTestPlan
+    access: read-only
+    tasks: [item.get, item.guidance, workspace.get, conversation.get, agent.reportProgress, agent.askQuestion,
+            item.setTestPlan]
   reviewer:
     name: Reviewer
     title: Senior Reviewer
@@ -697,6 +712,13 @@ stages:
       - { id: createChildren, task: agent.run, with: { agent: childCreator } }
     exit-gate:
       - { id: complete, task: breakdown.complete, onFail: { return: refinement } }
+  - id: planning
+    description: "Plans the tests for every criterion before code is written."
+    icon: "📐"
+    actions:
+      - { id: plan, task: agent.run, with: { agent: testPlanner } }   # records item.setTestPlan
+    exit-gate:
+      - { id: testPlan, task: item.testPlanComplete }   # every non-manual criterion has a planned case
   - id: implementation
     concurrency: 2
     retries: 3

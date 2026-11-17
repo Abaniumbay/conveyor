@@ -33,7 +33,7 @@ describe("reference configuration", () => {
     const config = await loadReference();
     expect(config.plans.map((plan) => plan.repositoryId)).toEqual(["service"]);
     expect(config.plans[0]!.id).toBe("stages");
-    for (const plan of config.plans) expect(plan.stages.map((stage) => stage.id)).toEqual(["refinement", "refinement-review", "work-breakdown", "implementation", "review", "merge", "deploy", "verify", "cleanup"]);
+    for (const plan of config.plans) expect(plan.stages.map((stage) => stage.id)).toEqual(["refinement", "refinement-review", "work-breakdown", "planning", "implementation", "review", "merge", "deploy", "verify", "cleanup"]);
   });
 
   test("the packaged merge action precedes its merged gate, which inherits the task wait default", async () => {
@@ -66,7 +66,7 @@ describe("reference configuration", () => {
   test("has no AI verifier, no checks and no legacy stages", async () => {
     const config = await loadReference();
     expect(config.checks).toEqual({});
-    expect(Object.keys(config.agents).sort()).toEqual(["darya", "jamshid", "kaveh", "omid", "parisa", "roya", "shaghayegh", "shirin"]);
+    expect(Object.keys(config.agents).sort()).toEqual(["darya", "jamshid", "kaveh", "omid", "parisa", "roya", "shaghayegh", "shirin", "tara"]);
     for (const stage of config.stages!) expect("run" in stage).toBe(false);
     for (const plan of config.plans) {
       for (const stage of plan.stages) {
@@ -102,6 +102,35 @@ describe("reference configuration", () => {
     expect(config.agents.darya!.tasks).not.toContain("item.createChild");
     expect(config.agents.parisa!.tasks).toEqual(expect.arrayContaining(["breakdown.reviewPlan"]));
     expect(config.agents.roya!.tasks).toEqual(expect.arrayContaining(["breakdown.createChildren"]));
+  });
+
+  test("planning runs between work breakdown and implementation, gated on the recorded test plan", async () => {
+    const config = await loadReference();
+    const ids = config.plans[0]!.stages.map((stage) => stage.id);
+    expect(ids.indexOf("planning")).toBe(ids.indexOf("implementation") - 1);
+    expect(ids.indexOf("planning")).toBe(ids.indexOf("work-breakdown") + 1);
+    const planning = config.plans[0]!.stages.find((stage) => stage.id === "planning")!;
+    expect(planning.actions).toMatchObject([{ task: "agent.run", with: { agent: "tara" } }]);
+    expect(planning.exitGate.map((gate) => gate.task)).toContain("item.testPlanComplete");
+    expect(config.agents.tara!.tasks).toContain("item.setTestPlan");
+    expect(config.agents.tara!.instructions).not.toBe(config.agents.kaveh!.instructions);
+  });
+
+  test("the planner, implementer and reviewer instructions use the test plan", async () => {
+    const config = await loadReference();
+    const read = (agent: string) => readFile(config.agents[agent]!.instructions, "utf8");
+    const planner = await read("tara");
+    for (const word of ["item.setTestPlan", "AC-n.m", "proves", "boundary", "setup", "action", "expected", "kind", "mustNotTouch", "reuse", "redLines", "manual"]) expect(planner).toContain(word);
+    const kaveh = await read("kaveh");
+    expect(kaveh).toMatch(/Read the test plan/);
+    expect(kaveh).toMatch(/write the planned tests first/);
+    expect(kaveh).toMatch(/fails for the intended reason before you change the code/);
+    expect(kaveh).toMatch(/change\.recordCriterionTests[^\n]*set `caseId`/);
+    for (const reviewer of ["shaghayegh", "shirin"]) {
+      const text = await read(reviewer);
+      expect(text).toMatch(/check the change against each planned case/);
+      expect(text).toMatch(/constraints/);
+    }
   });
 
   test("Omid receives the allowlisted Operator skill and no broader board controls", async () => {
