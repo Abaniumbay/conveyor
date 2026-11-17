@@ -2044,3 +2044,40 @@ test("styles criterion states with theme variables and removes the generic list 
   expect(dashboardCss).toContain(".criterion-state--tests-linked{color:var(--wait-text)}");
   expect(dashboardCss).toContain(".criterion-state--approved{color:var(--run-text)}");
 });
+
+describe("test plan in item details", () => {
+  const plan = {
+    cases: [
+      { id: "T1", criterionId: "AC-1", kind: "behaviour", proves: "shows <cases>" },
+      { id: "T2", criterionId: "AC-2", kind: "negative", proves: "hides empty" },
+    ],
+    constraints: { mustNotTouch: ["src/engine"], reuse: ["testPlanOf"], redLines: [] },
+  };
+  const criteria = [
+    { id: "AC-1", text: "First", approved: false, manual: false, tests: [] },
+    { id: "AC-2", text: "Second", approved: false, manual: false, tests: [] },
+  ];
+
+  test("shows each case under its criterion with id, kind and what it proves", () => {
+    const html = renderIssueDetails({ ...parent, acceptanceCriteria: criteria, testPlan: plan });
+    const first = html.slice(html.indexOf('data-test-plan-criterion="AC-1"'), html.indexOf('data-test-plan-criterion="AC-2"'));
+    expect(first).toContain("T1");
+    expect(first).toContain("behaviour");
+    expect(first).toContain("shows &lt;cases>");
+    expect(first).not.toContain("T2");
+    expect(html.slice(html.indexOf('data-test-plan-criterion="AC-2"'))).toContain("negative");
+  });
+
+  test("shows the plan's constraints and omits empty groups", () => {
+    const html = renderIssueDetails({ ...parent, acceptanceCriteria: criteria, testPlan: plan });
+    expect(html).toContain("data-test-plan-constraints");
+    expect(html).toContain("src/engine");
+    expect(html).toContain("testPlanOf");
+    expect(html).not.toContain("Red lines");
+  });
+
+  test("shows no test plan section without a plan", () => {
+    expect(renderIssueDetails({ ...parent, acceptanceCriteria: criteria, testPlan: null })).not.toContain("Test plan");
+    expect(renderIssueDetails({ ...parent, acceptanceCriteria: criteria })).not.toContain("Test plan");
+  });
+});

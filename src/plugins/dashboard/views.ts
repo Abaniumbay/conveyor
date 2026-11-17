@@ -15,10 +15,11 @@ import { STOPPED_ISSUE_STATES } from "../../core/issue-state";
 import { boardStageOrder } from "../../core/pipeline";
 import { stopHeadline, type StoredIssue } from "../../db/store";
 import { summarizeTodos, type TodoItem } from "../../db/todos";
+import { testPlanOf } from "../../source/managed-sections";
 import { questionConfigurationError, questionOptions } from "../../questions";
 import { inheritedDependencies } from "../../core/inherited-dependencies";
 import { displayName, formatDuration, formatUsage } from "../../web/format";
-import type { DashboardPageSelection, DashboardViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueStageBadgeViewModel, IssueTodosViewModel, IssueTone, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SteeringViewModel, SystemStatusViewModel } from "../../web/types";
+import type { DashboardPageSelection, DashboardViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueStageBadgeViewModel, IssueTestPlanViewModel, IssueTodosViewModel, IssueTone, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SteeringViewModel, SystemStatusViewModel } from "../../web/types";
 import { collectSystemStatus } from "./system-status";
 
 const DASHBOARD_PAGE_SIZE = 20;
@@ -295,6 +296,7 @@ export class DashboardViews {
         issueType: issue.metadata.type,
         issueFields: this.#issueFieldValues(issue),
         acceptanceCriteria: this.#sources.criterionApprovalStates(issue),
+        testPlan: testPlanView(issue.body),
         manualGates,
         csrfToken,
         todos: todosView(todos.get(issue.id)?.items ?? []),
@@ -1118,6 +1120,7 @@ export class DashboardViews {
       issueType: issue.metadata.type,
       issueFields: this.#issueFieldValues(issue),
       acceptanceCriteria: this.#sources.criterionApprovalStates(issue),
+      testPlan: testPlanView(issue.body),
       manualGates,
       csrfToken,
       todos: todosView(todos.get(issue.id)?.items ?? []),
@@ -1307,4 +1310,15 @@ export class DashboardViews {
     return issue.sourceState === "open" && issue.projectedState === "paused" &&
       issue.labels.includes(this.#config.labels.metadata.paused) && !running;
   }
+}
+
+/** The recorded test plan reduced to what the details show; null when the item has none. */
+function testPlanView(body: string): IssueTestPlanViewModel | null {
+  const plan = testPlanOf(body);
+  if (!plan) return null;
+  const list = (items: unknown): string[] => (Array.isArray(items) ? items.filter((item): item is string => typeof item === "string") : []);
+  return {
+    cases: plan.cases.map(({ id, criterionId, kind, proves }) => ({ id, criterionId, kind, proves })),
+    constraints: { mustNotTouch: list(plan.constraints.mustNotTouch), reuse: list(plan.constraints.reuse), redLines: list(plan.constraints.redLines) },
+  };
 }

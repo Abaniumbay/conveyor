@@ -377,6 +377,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
             })}</ul>
             : <p class="details-empty">No acceptance criteria recorded.</p>}
         </section>
+        {issue.testPlan && <TestPlanSection issue={issue} />}
         {(issue.issueType || issue.issueFields.length > 0) && (
           <section class="source-labels issue-metadata" aria-label="Issue type and fields">
             <h3>Issue type and fields</h3>
@@ -472,6 +473,42 @@ function TodoProgress({ issue }: { issue: IssueCardViewModel }) {
       <span class="todo-progress-count">{todos.finished}/{todos.total}</span>
       {todos.current && <span class="todo-progress-current" title={todos.current}>{todos.current}</span>}
     </div>
+  );
+}
+
+function TestPlanSection({ issue }: { issue: IssueCardViewModel }) {
+  const plan = issue.testPlan;
+  if (!plan) return null;
+  const groups = [
+    { label: "Must not touch", items: plan.constraints.mustNotTouch },
+    { label: "Reuse", items: plan.constraints.reuse },
+    { label: "Red lines", items: plan.constraints.redLines },
+  ].filter((group) => group.items.length > 0);
+  const known = new Set(issue.acceptanceCriteria.map((criterion) => criterion.id));
+  const sections = [
+    ...issue.acceptanceCriteria.map((criterion) => ({ id: criterion.id, text: criterion.text })),
+    ...[...new Set(plan.cases.map((testCase) => testCase.criterionId))].filter((id) => !known.has(id)).map((id) => ({ id, text: "" })),
+  ].map((criterion) => ({ ...criterion, cases: plan.cases.filter((testCase) => testCase.criterionId === criterion.id) })).filter((criterion) => criterion.cases.length > 0);
+  return (
+    <section class="criteria test-plan" aria-label="Test plan" data-test-plan>
+      <h3>Test plan</h3>
+      {sections.map((criterion) => (
+        <div class="test-plan-criterion" key={criterion.id} data-test-plan-criterion={criterion.id}>
+          <h4>{criterion.id}{criterion.text && <span class="criterion-text"> {criterion.text}</span>}</h4>
+          <ul class="criteria-list">{criterion.cases.map((testCase) => (
+            <li key={testCase.id} data-test-case={testCase.id}>
+              <strong>{testCase.id}</strong> <span class="source-label">{testCase.kind}</span> <span>{testCase.proves}</span>
+            </li>
+          ))}</ul>
+        </div>
+      ))}
+      {groups.length > 0 && <div class="test-plan-constraints" data-test-plan-constraints>
+        <h4>Constraints</h4>
+        {groups.map((group) => (
+          <div key={group.label}><strong>{group.label}</strong><ul class="criteria-list">{group.items.map((item, index) => <li key={index}>{item}</li>)}</ul></div>
+        ))}
+      </div>}
+    </section>
   );
 }
 
