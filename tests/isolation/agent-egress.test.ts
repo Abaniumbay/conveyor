@@ -108,4 +108,16 @@ describe("agentEgressFor", () => {
     expect(policy?.localServices).toEqual([{ port: 16379, tcp: { host: "127.0.0.1", port: 6379 } }]);
     expect(policy?.localServiceEnvironment).toEqual({ REDIS_URL: "redis://127.0.0.1:16379" });
   });
+
+  test("a repository without agentEgress that asks for a credential relay gets the relay and empty host allowlists", () => {
+    const relay = { upstream: "https://api.example.com/v1", credential: () => "secret" };
+    expect(agentEgressFor(config({}), "legacy", { relay })).toEqual({ httpsHosts: [], controlPlaneHosts: undefined, relay });
+    expect(agentEgressFor(config({}), "legacy", {})).toBeUndefined();
+  });
+
+  test("a repository with agentEgress carries the relay next to its hosts", () => {
+    const relay = { upstream: "https://api.example.com/v1", credential: () => "secret" };
+    const policy = agentEgressFor(config({ allowLoopbackMcp: false, httpsHosts: ["registry.npmjs.org"] }), "app", { relay });
+    expect(policy).toMatchObject({ httpsHosts: ["registry.npmjs.org"], relay });
+  });
 });
