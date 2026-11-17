@@ -10,6 +10,26 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.24.0] - 2026-11-17
+
+This release adds a planning stage between refinement and implementation. A planning agent records a test plan for every acceptance criterion, implementers write those tests first and link each one to its planned case, and an implementer can return an item to planning when a case is wrong. The dashboard shows the plan beside the criteria. Configuration loading now rejects a stage that runs more than one agent, so each stage is one role; check your stages with `conveyor config check` before upgrading.
+
+### Added
+
+- Planning agents can record a test plan on an item with `item.setTestPlan`: numbered cases per acceptance criterion (`AC-n.m`, each with what it proves, the boundary, setup, action, expected outcome and kind) and constraints (`mustNotTouch`, `reuse`, `redLines`). The plan is kept in a managed Test Plan section of the issue body, `item.get` and the agent handover return it as `testPlan`, and the new `item.testPlanComplete` gate passes when every non-manual criterion has a planned case and the criteria have not changed since the plan was recorded.
+
+- `change.recordCriterionTests` accepts a `caseId` on each linked test, naming the planned case it proves. A `caseId` that is not in the item's test plan is refused, and when an item has a test plan the criterion-test gate reports every planned case that has no linked test at the current head.
+
+- Item details in the dashboard now show the item's recorded test plan beside its acceptance criteria: each planned case appears under its criterion with its id, kind and what it proves, followed by the plan's constraints. Items without a plan show no test plan section.
+
+- An implementer can finish with status `return-to-planning` and a reason when a planned test case is wrong or impossible. Conveyor returns the item to the `planning` stage as a correction carrying that reason. The status is refused without a reason, or when the configured stages have no stage with id `planning`.
+
+### Changed
+
+- **Breaking:** Configuration loading now rejects a stage whose `actions` contain more than one `agent.run`, and `conveyor config check` and `conveyor doctor` report it. A stage is one role: move each further agent into its own stage (route its failures with `onFail`), or list fallbacks as `agents: [a, b]` on a single action. An installation that runs two agents in one stage fails to load until it does.
+
+- The packaged stages now run a `planning` stage between work breakdown and implementation. Its packaged agent `tara` records the test plan, the `item.testPlanComplete` gate checks it, and the packaged implementer and reviewer instructions work from that plan. Installations that use the packaged stages gain the stage on upgrade; installations with their own stages are unchanged until they add one.
+
 ## [0.23.1] - 2026-11-15
 
 A patch release with three fixes. Items whose next stage label was reconciled just before the advance was committed now start their next stage instead of sitting active with no run. Restarts with no stage running no longer wait out the shutdown timeout on open dashboard streams. Dashboard pages that load their own data, such as Reports, now show that they are loading instead of briefly showing the Board.
