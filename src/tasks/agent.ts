@@ -26,7 +26,7 @@ import { assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { resolveFilesystemPath } from "../core/paths";
 import type { RunEnvelope } from "../runner/result";
 import {
-  AGENT_STOP_STATUSES, agentActor, agentMessage, conversationForPrompt, conveyorMessage, reportMcpFailures, failedEnvelope, finishRun,
+  AGENT_STOP_STATUSES, RETURN_TO_PLANNING, agentActor, agentMessage, conversationForPrompt, conveyorMessage, reportMcpFailures, failedEnvelope, finishRun,
   producerConversationMessage, prompt, startRun, warnOnTokenUsage } from "./agent-support";
 import type { AgentContext } from "./context";
 import { buildHandover, type HandoverDeps } from "./handover";
@@ -54,6 +54,7 @@ export type AgentTaskDeps = HandoverDeps
 type Deps = AgentTaskDeps;
 
 const KIND = "producer";
+const PLANNING_STAGE = "planning";
 const runConfig = z
   .object({
     agent: z.string().min(1, "agent must name a configured agent").optional(),
@@ -116,6 +117,14 @@ function outcomeOf(deps: Deps, runIds: string[], agentId: string, result: RunEnv
     }
     return pass(captured);
   }
+  if (status === RETURN_TO_PLANNING) {
+    if (!reason?.trim()) return fail(`Agent asked to return to the ${PLANNING_STAGE} stage without a reason: a reason is required`, { route: { stop: "error" } });
+    const stages = deps.config.pipelines?.[deps.config.repositories?.[deps.repository.id]?.pipeline ?? ""]?.stages ?? [];
+    if (!stages.some((stage) => stage.id === PLANNING_STAGE)) {
+      return fail(`Cannot return to the ${PLANNING_STAGE} stage: the configured stages have no ${PLANNING_STAGE} stage`, { route: { stop: "error" } });
+    }
+    return fail(reason.trim(), { route: { return: PLANNING_STAGE } });
+  }
   if ((AGENT_STOP_STATUSES as readonly string[]).includes(status)) return fail(reason ?? summary, { route: { stop: status } });
   if (outcome === "success") return pass(captured);
   return fail(`Agent returned an invalid result: unexpected failure status "${status}" (${reason ?? summary})`, { route: { stop: "error" } });
@@ -136,7 +145,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
   name: "agent.run",
   kind: "act",
   description:
-    "Runs a configured agent (`agent`, or `agents` in order of preference: the next runs when one's harness cannot) through its harness in the item's workspace (creating or re-attaching it when needed) and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides) when the item has an open finding, including imported findings or findings from earlier runs, and otherwise stops as an error. An invalid structured result is returned to the same agent once, in the same session, with the validation message; a second one ends the attempt as an infrastructure error retried with the executor's backoff. Only a harness that cannot run (usage limit, process failure or missing CLI) falls back to the next agent; workspace, MCP and protocol errors do not.",
+    "Runs a configured agent (`agent`, or `agents` in order of preference: the next runs when one's harness cannot) through its harness in the item's workspace (creating or re-attaching it when needed) and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `return-to-planning` (with a non-empty reason) returns the item to the `planning` stage as a correction carrying the reason (refused when there is no reason or the stages have no `planning` stage), `changes-requested` passes (the exit gate decides) when the item has an open finding, including imported findings or findings from earlier runs, and otherwise stops as an error. An invalid structured result is returned to the same agent once, in the same session, with the validation message; a second one ends the attempt as an infrastructure error retried with the executor's backoff. Only a harness that cannot run (usage limit, process failure or missing CLI) falls back to the next agent; workspace, MCP and protocol errors do not.",
   reads: ["run"],
   writes: ["agent"],
   invalidates: ["workspace"],
