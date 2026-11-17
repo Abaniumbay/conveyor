@@ -687,6 +687,42 @@ describe("agent.run", () => {
     expect(w.calls[0]!.prompt).toContain('"answeredQuestions": {\n      "count": 0');
   });
 
+  describe("return-to-planning", () => {
+    const withPlanning = (w: World, stages: string[]) => {
+      const config = w.deps.config as unknown as Record<string, unknown>;
+      config.repositories = { repo: { pipeline: "p" } };
+      config.pipelines = { p: { stages: stages.map((id) => ({ id })) } };
+    };
+    const returns = (reason: string | null) => ({ outcome: "failure" as const, status: "return-to-planning", summary: "Plan is wrong", reason });
+
+    test("returns the item to the planning stage with the reason", async () => {
+      const w = await world();
+      withPlanning(w, ["planning", "implementation"]);
+      w.setBehaviour(() => returns("AC-1.2 cannot be tested through the public interface"));
+      expect(await w.run(false)).toEqual({
+        status: "fail", message: "AC-1.2 cannot be tested through the public interface", route: { return: "planning" },
+      });
+    });
+
+    test("is refused without a reason, saying a reason is required", async () => {
+      const w = await world();
+      withPlanning(w, ["planning", "implementation"]);
+      w.setBehaviour(() => returns("   "));
+      const result = await w.run(false);
+      expect(result).toMatchObject({ status: "fail", route: { stop: "error" } });
+      expect((result as { message: string }).message).toContain("a reason is required");
+    });
+
+    test("is refused when the stages have no planning stage, naming it", async () => {
+      const w = await world();
+      withPlanning(w, ["implementation"]);
+      w.setBehaviour(() => returns("Wrong case"));
+      const result = await w.run(false);
+      expect(result).toMatchObject({ status: "fail", route: { stop: "error" } });
+      expect((result as { message: string }).message).toContain("planning");
+    });
+  });
+
   test.each([
     ["blocked", "Cannot reach the registry"],
     ["rejected", "Out of scope"],

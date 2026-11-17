@@ -574,6 +574,25 @@ describe("applyStageTransition", () => {
       reason: "Stopped as changes-requested (no label is configured for that state): A seeded win path is not reachable",
       sourceSnapshot: { title: "Feature", body: "" },
     });
+    await applyStageTransition({
+      ...common,
+      transitionId: "run-planning-return",
+      result: {
+        kind: "correction",
+        stageId: "implementation",
+        targetStageId: "planning",
+        reason: "A planned case cannot be reached",
+        requiredFixes: [],
+        evidence: [],
+        result: null,
+      },
+    });
+    expect(store.listStageTransitions("issue").find((transition) => transition.id === "run-planning-return")).toMatchObject({
+      fromStage: "implementation",
+      toStage: "planning",
+      kind: "correction",
+      reason: "A planned case cannot be reached",
+    });
     expect(store.listStageTransitions("issue").find((transition) => transition.id === "run-correction")).toMatchObject({
       id: "run-correction",
       fromStage: "review",

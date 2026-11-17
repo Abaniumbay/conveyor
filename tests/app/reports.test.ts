@@ -108,6 +108,15 @@ describe("buildReport", () => {
     ]);
   });
 
+  test("a return from implementation to planning counts as a return for the item", async () => {
+    const store = await world();
+    store.sqlite().query("INSERT INTO stage_transitions(id, issue_id, from_stage, to_stage, status, created_at, completed_at, kind) VALUES ('p1', 'a2', 'implementation', 'planning', 'completed', ?, ?, 'correction')")
+      .run("2026-10-19T23:00:00.000Z", "2026-10-19T23:00:00.000Z");
+    const report = buildReport({ store, config, period: "all", repository: "alpha", now: NOW });
+    expect(report.items.find((item) => item.number === 2)).toMatchObject({ returns: 1 });
+    expect(report.items.find((item) => item.number === 1)).toMatchObject({ returns: 1 });
+  });
+
   test("a period keeps only what happened in it", async () => {
     const store = await world();
     const report = buildReport({ store, config, period: "30d", repository: null, now: NOW });
