@@ -45,12 +45,16 @@ test("handoff explains pull request descriptions only when the write grant is pr
 
 test("native runs explain supported stops while legacy runs keep their configured statuses", () => {
   expect(prompt({}, "Review.")).toContain("use blocked or rejected");
+  expect(prompt({}, "Review.")).toContain("blocked or rejected or return-to-planning");
+  expect(prompt({}, "Review.")).toContain("planned test case is wrong or impossible");
+  expect(prompt({}, "Review.")).toContain("refused without a non-empty reason");
   expect(prompt({}, "Review.")).toContain("Do not invent status names such as blocked-external");
   expect(prompt({}, "Review.")).toContain("existing finding from change.listFindings that you verified still applies");
   expect(prompt({}, "Review.")).toContain("do not create duplicate findings");
   const legacy = prompt({ allowedFailureStatuses: ["needs-intervention", "error"] }, "Check.");
   expect(legacy).toContain("configured failure statuses: needs-intervention, error");
   expect(legacy).not.toContain("use blocked or rejected");
+  expect(legacy).not.toContain("return-to-planning");
 });
 
 test("a failed MCP server is noted once however often the failure is observed", () => {

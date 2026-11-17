@@ -635,14 +635,16 @@ describe("routing", () => {
     expect(await h2.run(plan2, "implementation")).toMatchObject({ kind: "stopped", state: "paused" });
   });
 
-  test("an action routed to return to planning becomes a correction carrying the reason", async () => {
+  test("a task result routed to return to planning becomes a correction carrying the reason", async () => {
     const h = await harness();
     h.activate();
-    h.world.actResult = failing();
-    const plan = simple(h, [], { actionExtra: { onFail: { return: "planning" } } });
-    expect(await h.run(plan, "implementation")).toMatchObject({
-      kind: "correction", stageId: "implementation", targetStageId: "planning", reason: "boom",
+    h.world.actResult = () => fail("A planned case cannot be reached", { route: { return: "planning" } });
+    const outcome = await h.run(simple(h), "implementation");
+    expect(outcome).toEqual({
+      kind: "correction", stageId: "implementation", targetStageId: "planning", reason: "A planned case cannot be reached",
+      requiredFixes: [], evidence: [], result: null,
     });
+    expect(h.journal.getContext("issue-1")!.context.engine?.returns).toBe(1);
   });
 
   test("an action routed to return becomes a correction", async () => {
