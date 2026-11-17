@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { parseManagedSections, upsertManagedSection } from "../../src/source/managed-sections";
+import { parseManagedSections, renderTestPlanSection, upsertManagedSection } from "../../src/source/managed-sections";
 import { dispatchTool } from "../../src/tasks/dispatch";
 import type { ChangeDelivery, ChangeRequest, CodeHost, MergeChangeResult, ReviewArtifact, ReviewThreadState } from "../../src/codehost/types";
 import { ConveyorStore } from "../../src/db/store";
@@ -1385,5 +1385,63 @@ describe("review thread gate", () => {
     await run("change.load", { context: {}, deps: w.deps });
     expect(w.store.getSourceMutationByKey(key)!.status).toBe("succeeded");
     expect(findings(w).get("i1", findingId)!.state).toBe("dismissed");
+  });
+});
+
+describe("planned test cases", () => {
+  const plan = (ids: string[]) => renderTestPlanSection({
+    criteriaDigest: "d", constraints: { mustNotTouch: [], reuse: [], redLines: [] },
+    cases: ids.map((id) => ({ id, criterionId: "a", proves: "p", boundary: "b", setup: "s", action: "a", expected: "e", kind: "behaviour" as const })),
+  });
+  const bodyWithPlan = (ids: string[]) => upsertManagedSection(BODY, "test-plan", plan(ids), parseManagedSections(BODY).revision);
+  const grant = { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) };
+  const item = { criteria: [{ id: "a", text: "It works", manual: false }] };
+  const record = (w: Awaited<ReturnType<typeof world>>, tests: Array<Record<string, unknown>>) => run("change.recordCriterionTests", { context: {}, deps: w.deps, input: { headSha: "head1", criteria: [{ criterionId: "a", tests }] }, actor: "kaveh", grant }) as Promise<Fail | Pass>;
+  const verify = (w: Awaited<ReturnType<typeof world>>) => run("change.criterionTestsVerified", { context: ctx({ item: item as never }), deps: w.deps }) as Promise<Fail | Pass>;
+  const source = "it(\"does work\", () => {})\nit(\"also works\", () => {})";
+
+  test("recordCriterionTests stores a linked test against a planned case id", async () => {
+    const w = await world({ body: PR_BODY }, true, bodyWithPlan(["AC-1.1"]));
+    expect((await record(w, [{ name: "does work", file: "tests/a.test.ts", caseId: "AC-1.1" }])).status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.caseId).toBe("AC-1.1");
+  });
+
+  test("recordCriterionTests refuses a case id that is not in the test plan and names it", async () => {
+    const w = await world({ body: PR_BODY }, true, bodyWithPlan(["AC-1.1"]));
+    const result = await record(w, [{ name: "does work", file: "tests/a.test.ts", caseId: "AC-9.9" }]) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("AC-9.9");
+    expect(w.store.criterionTestEvidence("i1")).toEqual([]);
+  });
+
+  test("criterionTestsVerified fails listing planned cases that have no linked test", async () => {
+    const w = await world({ body: PR_BODY, files: { "tests/a.test.ts": source } }, true, bodyWithPlan(["AC-1.1", "AC-1.2"]));
+    await record(w, [{ name: "does work", file: "tests/a.test.ts", caseId: "AC-1.1" }]);
+    const result = await verify(w) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("AC-1.2");
+    expect(result.message).not.toContain("AC-1.1");
+  });
+
+  test("criterionTestsVerified fails naming the case when its linked test file is missing at the head", async () => {
+    const w = await world({ body: PR_BODY, files: { "tests/a.test.ts": source } }, true, bodyWithPlan(["AC-1.1", "AC-1.2"]));
+    await record(w, [{ name: "does work", file: "tests/a.test.ts", caseId: "AC-1.1" }, { name: "gone", file: "tests/gone.test.ts", caseId: "AC-1.2" }]);
+    const result = await verify(w) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("AC-1.2");
+    expect(result.message).toContain("tests/gone.test.ts");
+  });
+
+  test("criterionTestsVerified passes when every planned case has a linked test at the head", async () => {
+    const w = await world({ body: PR_BODY, files: { "tests/a.test.ts": source } }, true, bodyWithPlan(["AC-1.1", "AC-1.2"]));
+    await record(w, [{ name: "does work", file: "tests/a.test.ts", caseId: "AC-1.1" }, { name: "also works", file: "tests/a.test.ts", caseId: "AC-1.2" }]);
+    expect((await verify(w)).status).toBe("pass");
+  });
+
+  test("without a test plan, case ids are refused and verification is unchanged", async () => {
+    const w = await world({ body: PR_BODY, files: { "tests/a.test.ts": source } }, true, BODY);
+    expect((await record(w, [{ name: "does work", file: "tests/a.test.ts" }])).status).toBe("pass");
+    expect((await verify(w)).status).toBe("pass");
+    expect(((await record(w, [{ name: "does work", file: "tests/a.test.ts", caseId: "AC-1.1" }])) as Fail).message).toContain("AC-1.1");
   });
 });
