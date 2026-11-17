@@ -223,6 +223,9 @@ describe("account and admin views", () => {
   test("loads each view's own data from its endpoint", () => {
     expect(viewDataUrl(selection("/team/omid"), "")).toBe("/api/v1/views/team");
     expect(viewDataUrl(selection("/reports/repo"), "?period=30d")).toBe("/api/v1/views/reports?period=30d&repository=repo");
+    expect(viewDataUrl(selection("/reports"), "")).toBe("/api/v1/views/reports");
+    expect(viewDataUrl(selection("/reports/repo"), "")).toBe("/api/v1/views/reports?repository=repo");
+    expect(viewDataUrl(selection("/reports"), "?period=all")).toBe("/api/v1/views/reports?period=all");
     expect(viewDataUrl(selection("/operator/runs/run-7"), "")).toBe("/api/v1/views/operator?run=run-7");
     expect(viewDataUrl(selection("/profile"), "")).toBeNull();
     expect(viewDataUrl(selection("/"), "")).toBeNull();

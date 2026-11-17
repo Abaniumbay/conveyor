@@ -108,6 +108,7 @@ function startApp(options: { role?: "user" | "superuser"; runs?: DashboardViewMo
     byAuthor: [{ key: "codex-reviewer[bot]-with-a-long-author-name", count: 5 }],
     byWeek: [{ key: "2026-W43", count: 5 }],
   };
+  const reportWeeks = [{ week: "2026-W43", delivered: 2, firstPassRate: 0.5, avgReturnsPerItem: 0.5 }, { week: "2026-W42", delivered: 1, firstPassRate: 1, avgReturnsPerItem: 0 }];
   const handler = createWebHandler({
     auth,
     username: "operator",
@@ -119,7 +120,7 @@ function startApp(options: { role?: "user" | "superuser"; runs?: DashboardViewMo
       events: [{ id: "e1", occurredAt: "2026-10-20T11:00:00Z", type: "done", repository: "sample", repositoryColor: 1, issueNumber: 19, issueTitle: "Shipped thing", issueUrl: "/issues/sample/19", fromStage: "review", toStage: null, reason: null }],
     }),
     getSteeringView: () => ({ enabled: true, agent: "omid", selected: { id: "run-1", status: "succeeded", startedAt: "2026-10-20T10:00:00Z", finishedAt: "2026-10-20T10:01:00Z", events: [{ sequence: 1, type: "report", text: "Board checked.", createdAt: "2026-10-20T10:01:00Z" }] }, recent: [{ id: "run-1", status: "succeeded", startedAt: "2026-10-20T10:00:00Z" }] }),
-    getReport: ({ period, repository }) => ({ period, since: null, repository, repositories: ["sample"], totals: reportTotals, byRepository: [], byMonth: [], byStage: [], items: [], findings: reportFindings, importedWithoutHistory: 0, generatedAt: "2026-10-20T12:00:00Z" }),
+    getReport: ({ period, repository }) => ({ period, since: null, repository, repositories: ["sample"], totals: reportTotals, byRepository: [], byMonth: [], byWeek: reportWeeks, byStage: [], items: [], findings: reportFindings, importedWithoutHistory: 0, generatedAt: "2026-10-20T12:00:00Z" }),
     listAccounts: () => [{ id: "operator", username: "operator", role: "superuser", avatar: "🐼" }],
     getPushPreferences: () => ({ questions: true, stopped: false, done: false }),
     isReady: () => true,
@@ -574,6 +575,43 @@ describe("dashboard application", () => {
       await page.locator(".tabs a", { hasText: "Reports" }).click();
       await page.locator("main [role='alert']", { hasText: "Reports could not be loaded." }).waitFor();
       expect(await page.locator(".stage").count()).toBe(0);
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("opens Reports on 30 days, loads all time on request, and shows the weekly table without sideways scrolling", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage({ viewport: { width: 360, height: 740 }, isMobile: true });
+      await signIn(page, app.url);
+      const requests: string[] = [];
+      page.on("request", (request) => { if (request.url().includes("/api/v1/views/reports")) requests.push(new URL(request.url()).search); });
+      const periods: string[] = [];
+      page.on("response", async (response) => {
+        if (response.url().includes("/api/v1/views/reports")) periods.push(((await response.json()) as { report: { period: string } }).report.period);
+      });
+      await page.goto(`${app.url}/reports`);
+      const active = page.locator(".report-chip--active").first();
+      await active.waitFor();
+      expect(await active.innerText()).toBe("30 days");
+      expect(requests[0]).toBe("");
+      expect(periods[0]).toBe("30d");
+
+      const table = page.locator('section[aria-labelledby="report-weeks"] table');
+      await table.waitFor();
+      expect(await table.locator("thead th").allInnerTexts()).toEqual(["Week", "Delivered", "First-pass rate", "Average returns per item"]);
+      expect(await table.locator("tbody th").allInnerTexts()).toEqual(["2026-W43", "2026-W42"]);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+
+      await page.locator("nav[aria-label='Period'] a", { hasText: "All time" }).click();
+      await page.waitForURL(/period=all/);
+      await page.locator("nav[aria-label='Period'] a.report-chip--active", { hasText: "All time" }).waitFor();
+      expect(requests.some((search) => search.includes("period=all"))).toBe(true);
+      await page.locator("nav[aria-label='Period'] a", { hasText: "30 days" }).click();
+      await page.locator("nav[aria-label='Period'] a.report-chip--active", { hasText: "30 days" }).waitFor();
+      expect(new URL(page.url()).search).toBe("?period=30d");
     } finally {
       app.stop();
     }

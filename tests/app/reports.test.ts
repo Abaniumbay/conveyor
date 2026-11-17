@@ -201,3 +201,106 @@ describe("buildReport", () => {
     });
   });
 });
+
+describe("buildReport weekly breakdown", () => {
+  const week = (report: ReturnType<typeof buildReport>) => report.byWeek.map((row) => [row.week, row.delivered]);
+
+  async function bare() {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-report-"));
+    directories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
+    for (const id of ["alpha", "beta"]) store.upsertRepository({ id, configName: id, source: "github", address: `o/${id}`, folder: "/f", configHash: "h" });
+    let sequence = 0;
+    const deliver = (id: string, repository: string, finishedAt: string, corrections: { at?: string; status?: string; kind?: string; to?: string }[] = []) => {
+      store.upsertIssue({ id, repositoryId: repository, sourceNumber: ++sequence, sourceUrl: `https://x/${sequence}`, title: id, body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+      store.setIssueProjection(id, { stage: "implementation", state: "done", warning: null });
+      const insert = (kind: string, from: string, to: string, createdAt: string, status = "completed") =>
+        store.sqlite().query("INSERT INTO stage_transitions(id, issue_id, from_stage, to_stage, status, created_at, completed_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(`t${++sequence}`, id, from, to, status, createdAt, createdAt, kind);
+      for (const c of corrections) insert(c.kind ?? "correction", "review", c.to ?? "implementation", c.at ?? at(finishedAt, -2), c.status);
+      insert("advance", "cleanup", "cleanup", finishedAt);
+    };
+    return { store, deliver };
+  }
+  const later = new Date("2027-01-10T00:00:00.000Z");
+
+  test("groups by UTC ISO week of delivery, newest first, with the weekly figures", async () => {
+    const store = await world();
+    const report = buildReport({ store, config, period: "all", repository: null, now: NOW });
+    expect(report.byWeek).toEqual([
+      { week: "2026-W41", delivered: 1, firstPassRate: 0, avgReturnsPerItem: 1 },
+      { week: "2026-W36", delivered: 1, firstPassRate: 1, avgReturnsPerItem: 0 },
+    ]);
+    expect(report.period).toBe("all");
+    expect(report.since).toBeNull();
+    expect(report.totals.delivered).toBe(2);
+    expect(report.byMonth.map((row) => row.month)).toEqual(["2026-09", "2026-10"]);
+    // In-progress and imported items never appear: W43 (a2) is absent and the weekly total is the delivered total.
+    expect(report.byWeek.reduce((sum, row) => sum + row.delivered, 0)).toBe(report.totals.delivered);
+    const alpha = buildReport({ store, config, period: "all", repository: "alpha", now: NOW });
+    expect(alpha.byWeek.reduce((sum, row) => sum + row.delivered, 0)).toBe(1);
+    expect(alpha.importedWithoutHistory).toBe(1);
+  });
+
+  test("only weeks of the period appear, and a repository or period with no deliveries has none", async () => {
+    const store = await world();
+    expect(buildReport({ store, config, period: "30d", repository: null, now: NOW }).byWeek.map((row) => row.week)).toEqual(["2026-W41"]);
+    expect(buildReport({ store, config, period: "7d", repository: null, now: NOW }).byWeek).toEqual([]);
+    expect(buildReport({ store, config, period: "30d", repository: "beta", now: NOW }).byWeek).toEqual([]);
+    expect(buildReport({ store, config, period: "7d", repository: null, now: new Date("2027-06-01T00:00:00Z") }).byWeek).toEqual([]);
+    const { store: empty } = await bare();
+    expect(buildReport({ store: empty, config, period: "all", repository: null, now: NOW }).byWeek).toEqual([]);
+  });
+
+  test("week boundaries are UTC ISO, including the ISO year", async () => {
+    const { store, deliver } = await bare();
+    ["2026-10-11T23:59:59.000Z", "2026-10-12T00:00:00.000Z", "2026-12-31T12:00:00.000Z", "2027-01-03T23:00:00.000Z", "2027-01-04T00:00:00.000Z"]
+      .forEach((time, index) => deliver(`i${index}`, "alpha", time));
+    expect(week(buildReport({ store, config, period: "all", repository: null, now: later }))).toEqual([["2027-W01", 1], ["2026-W53", 2], ["2026-W42", 1], ["2026-W41", 1]]);
+  });
+
+  test("sorts by week key, not insertion or count", async () => {
+    const { store, deliver } = await bare();
+    deliver("a", "alpha", "2026-10-20T10:00:00.000Z");
+    deliver("b", "alpha", "2026-09-01T10:00:00.000Z");
+    deliver("c", "alpha", "2026-10-11T10:00:00.000Z");
+    deliver("d", "alpha", "2026-10-12T10:00:00.000Z");
+    expect(week(buildReport({ store, config, period: "all", repository: null, now: later }))).toEqual([["2026-W43", 1], ["2026-W42", 1], ["2026-W41", 1], ["2026-W36", 1]]);
+  });
+
+  test("first-pass and average returns use the headline definition, counting completed corrections only and by delivery week", async () => {
+    const { store, deliver } = await bare();
+    // Week 41: three items with 0, 1 and 3 returns (one to planning); a stop/resume pair and a failed correction do not count.
+    deliver("zero", "alpha", "2026-10-10T10:00:00.000Z", [{ kind: "stopped" }, { kind: "resumed" }, { status: "failed" }]);
+    deliver("one", "alpha", "2026-10-10T11:00:00.000Z", [{}]);
+    deliver("three", "alpha", "2026-10-10T12:00:00.000Z", [{}, { to: "planning" }, {}]);
+    // Delivered in W37 with its only correction in W36.
+    deliver("early", "beta", "2026-09-08T10:00:00.000Z", [{ at: "2026-09-02T10:00:00.000Z" }]);
+    // Week 36: two items, none with a return; week 38: two items, each returned.
+    deliver("p", "beta", "2026-09-01T10:00:00.000Z");
+    deliver("q", "beta", "2026-09-02T10:00:00.000Z");
+    deliver("r", "beta", "2026-09-15T10:00:00.000Z", [{}, {}]);
+    deliver("s", "beta", "2026-09-16T10:00:00.000Z", [{}]);
+    const report = buildReport({ store, config, period: "all", repository: null, now: later });
+    expect(report.byWeek).toEqual([
+      { week: "2026-W41", delivered: 3, firstPassRate: 1 / 3, avgReturnsPerItem: 4 / 3 },
+      { week: "2026-W38", delivered: 2, firstPassRate: 0, avgReturnsPerItem: 1.5 },
+      { week: "2026-W37", delivered: 1, firstPassRate: 0, avgReturnsPerItem: 1 },
+      { week: "2026-W36", delivered: 2, firstPassRate: 1, avgReturnsPerItem: 0 },
+    ]);
+    const alpha = buildReport({ store, config, period: "all", repository: "alpha", now: later });
+    expect(alpha.byWeek).toEqual([{ week: "2026-W41", delivered: 3, firstPassRate: 1 / 3, avgReturnsPerItem: 4 / 3 }]);
+    expect(alpha.totals.firstPassRate).toBe(alpha.byWeek[0]!.firstPassRate);
+    expect(buildReport({ store, config, period: "all", repository: "beta", now: later }).byWeek.map((row) => row.week)).toEqual(["2026-W38", "2026-W37", "2026-W36"]);
+  });
+
+  test("a week mixes repositories unless drilled into one", async () => {
+    const { store, deliver } = await bare();
+    deliver("a", "alpha", "2026-10-10T10:00:00.000Z", [{}]);
+    deliver("b", "beta", "2026-10-10T11:00:00.000Z");
+    deliver("c", "beta", "2026-09-01T10:00:00.000Z");
+    expect(buildReport({ store, config, period: "all", repository: null, now: later }).byWeek[0]).toEqual({ week: "2026-W41", delivered: 2, firstPassRate: 0.5, avgReturnsPerItem: 0.5 });
+    expect(buildReport({ store, config, period: "all", repository: "alpha", now: later }).byWeek).toEqual([{ week: "2026-W41", delivered: 1, firstPassRate: 0, avgReturnsPerItem: 1 }]);
+    expect(week(buildReport({ store, config, period: "all", repository: "beta", now: later }))).toEqual([["2026-W41", 1], ["2026-W36", 1]]);
+  });
+});

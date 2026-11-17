@@ -10,7 +10,7 @@ const PERIOD_LABELS: Record<ReportPeriod, string> = { "7d": "7 days", "30d": "30
 
 export function reportHref(repository: string | null, period: ReportPeriod): string {
   const base = repository ? `/reports/${encodeURIComponent(repository)}` : "/reports";
-  return period === "all" ? base : `${base}?period=${period}`;
+  return `${base}?period=${period}`;
 }
 
 function issueHref(repository: string, number: number): string {
@@ -171,6 +171,28 @@ function RepositoryTable({ report }: { report: ReportViewModel }) {
   );
 }
 
+function Weeks({ report }: { report: ReportViewModel }) {
+  return (
+    <section class="report-section" aria-labelledby="report-weeks">
+      <h3 id="report-weeks">By week</h3>
+      {report.byWeek.length === 0
+        ? <p class="report-empty">No item was delivered in this period.</p>
+        : (
+          <div class="report-table-wrap" role="group" aria-labelledby="report-weeks" tabIndex={0}>
+            <table class="report-table">
+              <thead><tr><th scope="col">Week</th><th scope="col">Delivered</th><th scope="col">First-pass rate</th><th scope="col">Average returns per item</th></tr></thead>
+              <tbody>
+                {report.byWeek.map((row) => (
+                  <tr key={row.week}><th scope="row">{row.week}</th><td>{row.delivered}</td><td>{percent(row.firstPassRate)}</td><td>{row.avgReturnsPerItem.toFixed(1)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+    </section>
+  );
+}
+
 function Months({ report }: { report: ReportViewModel }) {
   const months = report.byMonth;
   return (
@@ -322,6 +344,7 @@ export function Reports({ report }: { report: ReportViewModel }) {
       {report.repository !== null && <Items report={report} />}
       <TimeAndStages report={report} />
       <Findings report={report} />
+      <Weeks report={report} />
       <Months report={report} />
       <p class="report-notes">
         Agent time is the wall time of runs. Waiting on CI and checks is time a stage spent parked on CI, a deploy or a dependency; waiting for you is time an item spent stopped (blocked, needs input, error) until it resumed; queued and other is the rest of the lead time.
