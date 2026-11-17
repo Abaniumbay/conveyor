@@ -525,6 +525,66 @@ describe("item tools", () => {
     expect(w.store.listDependencies("i1")).toEqual(["github:o/r#7", "github:o/r#8"]);
   });
 
+  describe("test plan", () => {
+    const kase = (id: string, criterionId: string, kind = "behaviour") => ({ id, criterionId, proves: "p", boundary: "b", setup: "s", action: "a", expected: "e", kind });
+    const constraints = { mustNotTouch: ["src/x.ts"], reuse: ["helper"], redLines: ["no mocks"] };
+    const body = [
+      "Human text.", "<!-- conveyor:acceptance-criteria:start -->",
+      "- [ ] One <!-- conveyor:criterion:AC-1 -->", "- [ ] Two <!-- conveyor:criterion:AC-2 -->", "- [ ] [Manual] Three <!-- conveyor:criterion:AC-3 -->",
+      "<!-- conveyor:acceptance-criteria:end -->", "<!-- conveyor:follow-ups:start -->", "Later.", "<!-- conveyor:follow-ups:end -->", "",
+    ].join("\n");
+    const gate = async (w: Awaited<ReturnType<typeof world>>) => {
+      const loaded = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+      return run("item.testPlanComplete", { context: ctx(loaded) });
+    };
+
+    test("setTestPlan writes only its own section and item.get returns the plan", async () => {
+      const w = await world(); w.add("i1", 5, { body });
+      expect(((await tool("item.get", w.deps(), {})).output as { testPlan: unknown }).testPlan).toBeNull();
+      await tool("item.setTestPlan", w.deps(), { cases: [kase("AC-1.1", "AC-1")], constraints });
+      const stored = w.store.getIssue("i1")!.body;
+      expect(stored.startsWith("Human text.\n")).toBe(true);
+      const sections = parseManagedSections(stored).sections;
+      expect(sections["follow-ups"]).toBe("Later.");
+      expect(sections["acceptance-criteria"]).toContain("One");
+      expect(sections["test-plan"]).toContain("AC-1.1");
+      expect(((await tool("item.get", w.deps(), {})).output as { testPlan: { cases: unknown[]; constraints: unknown } }).testPlan).toMatchObject({ cases: [{ id: "AC-1.1", criterionId: "AC-1" }], constraints });
+    });
+
+    test("setTestPlan refuses an unknown criterion id and names it", async () => {
+      const w = await world(); w.add("i1", 5, { body });
+      await expect(tool("item.setTestPlan", w.deps(), { cases: [kase("AC-9.1", "AC-9")], constraints })).rejects.toThrow("AC-9");
+      expect(w.store.getIssue("i1")!.body).toBe(body);
+    });
+
+    test("setTestPlan refuses a repeated case id and names it", async () => {
+      const w = await world(); w.add("i1", 5, { body });
+      await expect(tool("item.setTestPlan", w.deps(), { cases: [kase("AC-1.1", "AC-1"), kase("AC-1.1", "AC-2")], constraints })).rejects.toThrow("AC-1.1");
+      expect(w.store.getIssue("i1")!.body).toBe(body);
+    });
+
+    test("testPlanComplete fails naming uncovered non-manual criteria, then passes when all are covered", async () => {
+      const w = await world(); w.add("i1", 5, { body });
+      expect(await gate(w)).toMatchObject({ status: "fail", message: expect.stringContaining("AC-1, AC-2") });
+      await tool("item.setTestPlan", w.deps(), { cases: [kase("AC-1.1", "AC-1")], constraints });
+      const partial = await gate(w);
+      expect(partial).toMatchObject({ status: "fail", message: expect.stringContaining("AC-2") });
+      expect(partial).not.toMatchObject({ message: expect.stringContaining("AC-1") });
+      await tool("item.setTestPlan", w.deps(), { cases: [kase("AC-1.1", "AC-1"), kase("AC-2.1", "AC-2", "edge")], constraints });
+      expect((await gate(w)).status).toBe("pass");
+    });
+
+    test("testPlanComplete fails after the criteria change until the plan is recorded again", async () => {
+      const w = await world(); w.add("i1", 5, { body });
+      await tool("item.setTestPlan", w.deps(), { cases: [kase("AC-1.1", "AC-1"), kase("AC-2.1", "AC-2")], constraints });
+      expect((await gate(w)).status).toBe("pass");
+      await tool("item.setCriteria", w.deps(), { criteria: [{ id: "AC-1", text: "One" }, { id: "AC-2", text: "Two changed" }] });
+      expect(await gate(w)).toMatchObject({ status: "fail", message: expect.stringContaining("recorded again") });
+      await tool("item.setTestPlan", w.deps(), { cases: [kase("AC-1.1", "AC-1"), kase("AC-2.1", "AC-2")], constraints });
+      expect((await gate(w)).status).toBe("pass");
+    });
+  });
+
   test("keeps successful content writes visible to the next refinement gates", async () => {
     const refinement = { fields: [], require: { type: false, fields: [], section: true } };
     const w = await world({ refinement });

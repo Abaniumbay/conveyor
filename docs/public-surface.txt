@@ -661,8 +661,10 @@ task item.setFields
 task item.setParent
 task item.setRefinement
 task item.setSystemLabels
+task item.setTestPlan
 task item.setTitle
 task item.setType
+task item.testPlanComplete
 task legacy.afterSuccess
 task legacy.enterCheck
 task legacy.exitCheck
@@ -800,6 +802,19 @@ task-input item.setRefinement risks
 task-input item.setRefinement summary
 task-input item.setRefinement verification
 task-input item.setSystemLabels labels
+task-input item.setTestPlan cases
+task-input item.setTestPlan cases[].action
+task-input item.setTestPlan cases[].boundary
+task-input item.setTestPlan cases[].criterionId
+task-input item.setTestPlan cases[].expected
+task-input item.setTestPlan cases[].id
+task-input item.setTestPlan cases[].kind
+task-input item.setTestPlan cases[].proves
+task-input item.setTestPlan cases[].setup
+task-input item.setTestPlan constraints
+task-input item.setTestPlan constraints.mustNotTouch
+task-input item.setTestPlan constraints.redLines
+task-input item.setTestPlan constraints.reuse
 task-input item.setTitle title
 task-input item.setType type
 task-input operator.answerItemQuestion answer

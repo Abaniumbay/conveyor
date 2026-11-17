@@ -17,10 +17,14 @@ import {
   type ResolvedFieldValue,
 } from "../source/item-metadata";
 import {
+  criteriaDigest,
   formatDependencies,
   parseManagedSections,
   renderAcceptanceCriteriaSection,
   renderRefinementSection,
+  renderTestPlanSection,
+  TEST_CASE_KINDS,
+  testPlanOf,
   upsertManagedSection,
 } from "../source/managed-sections";
 import type { ItemComments, ItemMarkers, ItemMetadata, ItemReader, ItemRelations, ItemSections, ItemTitles, SourceIssue } from "../source/types";
@@ -43,6 +47,16 @@ export const refinementInput = z.object({
   parallelChildren: shortList,
   risks: shortList,
   verification: shortList,
+}).strict();
+const nonEmpty = z.string().trim().min(1);
+export const testPlanInput = z.object({
+  cases: z.array(z.object({
+    id: nonEmpty, criterionId: nonEmpty, proves: nonEmpty, boundary: nonEmpty, setup: z.string().trim(),
+    action: nonEmpty, expected: nonEmpty, kind: z.enum(TEST_CASE_KINDS),
+  }).strict()),
+  constraints: z.object({
+    mustNotTouch: z.array(nonEmpty).default([]), reuse: z.array(nonEmpty).default([]), redLines: z.array(nonEmpty).default([]),
+  }).strict().default({ mustNotTouch: [], reuse: [], redLines: [] }),
 }).strict();
 export const issueTypeInput = z.object({ type: z.string().trim().min(1) }).strict();
 const fieldValueInput = z.object({ name: z.string().trim().min(1), value: z.string().trim().min(1) }).strict();
@@ -284,6 +298,15 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
         : {}),
       ...(issue.labels.includes(config.labels.metadata.noSplit) ? { noSplit: noSplitContext(config.labels.metadata.noSplit) } : {}),
       refinement: await loadRefinement(deps, issue),
+      ...(() => {
+        const plan = testPlanOf(issue.body);
+        return plan === null ? {} : {
+          testPlan: {
+            current: plan.criteriaDigest === criteriaDigest(criteriaOf(issue.body)),
+            coveredCriteria: [...new Set(plan.cases.map((planned) => planned.criterionId))],
+          },
+        };
+      })(),
     };
     return pass(item);
   },
@@ -350,6 +373,22 @@ const refinementComplete = check(
       ...(required.section && !refinement.section ? ["Refinement section (write it with item.setRefinement)"] : []),
     ];
     return missing.length === 0 ? pass() : fail(`Refinement outputs are missing: ${missing.join("; ")}`);
+  },
+);
+
+const testPlanComplete = check(
+  "item.testPlanComplete",
+  "Passes when every non-manual acceptance criterion has at least one planned case in the recorded test plan; fails naming the uncovered criterion ids, or when the criteria changed after the plan was recorded (record it again with item.setTestPlan).",
+  ({ context }) => {
+    const item = context.item!;
+    const required = item.criteria.filter((criterion) => !criterion.manual);
+    if (required.length === 0 && item.testPlan === undefined) return pass();
+    if (item.testPlan && !item.testPlan.current) {
+      return fail("The acceptance criteria changed after the test plan was recorded: the test plan must be recorded again with item.setTestPlan");
+    }
+    const covered = new Set(item.testPlan?.coveredCriteria ?? []);
+    const missing = required.filter((criterion) => !covered.has(criterion.id)).map((criterion) => criterion.id);
+    return missing.length === 0 ? pass() : fail(`Test plan is missing cases for criteria: ${missing.join(", ")} (record them with item.setTestPlan)`);
   },
 );
 
@@ -436,7 +475,7 @@ const normalise = (criterion: z.infer<typeof acceptanceCriterionInput>) => ({
   id: criterion.id, text: criterion.text, completed: criterion.completed === true,
 });
 
-const get = tool("item.get", "Read the accepted source snapshot of the current issue, including whether it must remain one item.", emptyInput, false,
+const get = tool("item.get", "Read the accepted source snapshot of the current issue, including whether it must remain one item and its recorded test plan (testPlan, null when none).", emptyInput, false,
   async ({ deps }, issue) => {
     const source: SourceIssue = {
       id: issue.id,
@@ -450,9 +489,10 @@ const get = tool("item.get", "Read the accepted source snapshot of the current i
       updatedAt: issue.sourceUpdatedAt,
       ...(issue.metadata.type !== null ? { type: issue.metadata.type } : {}),
     };
+    const testPlan = testPlanOf(issue.body);
     return issue.labels.includes(deps.config.labels.metadata.noSplit)
-      ? { ...source, noSplit: noSplitContext(deps.config.labels.metadata.noSplit) }
-      : source;
+      ? { ...source, noSplit: noSplitContext(deps.config.labels.metadata.noSplit), testPlan }
+      : { ...source, testPlan };
   });
 
 const guidance = tool("item.guidance", "Read source-specific agent guidance.", emptyInput, false,
@@ -723,6 +763,31 @@ const setRefinement = tool("item.setRefinement",
     return { revision: deps.items.managedRevision(updated.body) };
   });
 
+const setTestPlan = tool("item.setTestPlan",
+  "Record the test plan in the managed Test Plan section of the issue body: cases (id such as AC-2.1, criterionId, proves, boundary, setup, action, expected, kind behaviour|edge|negative|failure|manual) and constraints (mustNotTouch, reuse, redLines). Every case must name an existing criterion; case ids must be unique. Replaces only that section and records the criteria it was written against.",
+  testPlanInput, true,
+  async ({ deps, input }, issue) => {
+    const criteria = criteriaOf(issue.body);
+    const known = new Set(criteria.map((criterion) => criterion.id));
+    const seen = new Set<string>();
+    for (const planned of input!.cases) {
+      if (!known.has(planned.criterionId)) throw new ToolRequestError(`Test case ${planned.id} names criterion ${planned.criterionId}, which is not among the item's criteria (${[...known].join(", ") || "none"}).`);
+      if (seen.has(planned.id)) throw new ToolRequestError(`Test case id ${planned.id} is used more than once; case ids must be unique.`);
+      seen.add(planned.id);
+    }
+    const markdown = renderTestPlanSection({ criteriaDigest: criteriaDigest(criteria), cases: input!.cases, constraints: input!.constraints });
+    const updated = await deps.items.updateManagedSection({
+      address: deps.repository.address,
+      issueNumber: issue.sourceNumber,
+      section: "test-plan",
+      markdown,
+      expectedRevision: deps.items.managedRevision(issue.body),
+      baseBody: issue.body,
+    });
+    persistSourceIssue(deps, updated, issue.id, { body: upsertManagedSection(issue.body, "test-plan", markdown, parseManagedSections(issue.body).revision) });
+    return { revision: deps.items.managedRevision(updated.body) };
+  });
+
 const addFollowUp = tool("item.addFollowUp",
   "Append a non-empty post-release follow-up note without changing existing Follow-ups notes. Use it for work Conveyor will not perform itself, such as a configuration change, manual migration, announcement, or cleanup.",
   addFollowUpInput, true,
@@ -837,7 +902,7 @@ const createChild = tool("item.createChild",
   });
 
 export const itemGroup = defineGroup<ItemTaskDeps>("item", [
-  load, criteriaDefined, labelsValid, childrenValid, refinementComplete, dependenciesMet, followUps, issueClosed,
+  load, criteriaDefined, labelsValid, childrenValid, refinementComplete, testPlanComplete, dependenciesMet, followUps, issueClosed,
   get, guidance, listOpen, comment, setCriteria, setTitle, setSystemLabels, setParent, setDependencies,
-  setType, setFields, setRefinement, addFollowUp, createChild,
+  setType, setFields, setRefinement, setTestPlan, addFollowUp, createChild,
 ]);

@@ -62,6 +62,13 @@ export interface ItemContext {
     label: string;
     instruction: string;
   };
+  /** The recorded test plan against the item's current criteria; absent until one is recorded. */
+  testPlan?: {
+    /** False once the criteria changed after the plan was recorded. */
+    current: boolean;
+    /** Criterion ids with at least one planned case. */
+    coveredCriteria: string[];
+  };
   /** The issue type, field values and Refinement section as stored, and what the organization offers. */
   refinement?: {
     type: string | null;
