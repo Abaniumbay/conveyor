@@ -226,3 +226,113 @@ describe("live status", () => {
     expect(scheduler.itemNow(id)).toMatchObject({ stage: "implementation", state: "stopped" });
   });
 });
+
+describe("dependencies inherited from ancestors", () => {
+  /** A child queued under `parent` with no dependencies of its own; the parent is a roll-up, so it never starts itself. */
+  async function family() {
+    const context = await setup();
+    context.world.items.add(10, ["conveyor", "conveyor:implementation"]);
+    const blocker = context.world.seed(10, { stage: "implementation", state: "active" });
+    const parent = context.ready(1);
+    const leaf = context.ready(4);
+    const child = context.ready(2);
+    context.world.store.replaceRelationships(parent, null, [blocker]);
+    context.world.store.replaceRelationships(leaf, { parentId: parent, siblingOrder: null }, []);
+    context.world.store.replaceRelationships(child, { parentId: parent, siblingOrder: null }, []);
+    const grandchild = context.ready(3);
+    context.world.store.replaceRelationships(grandchild, { parentId: child, siblingOrder: null }, []);
+    const close = (id: string) => context.world.store.upsertIssue({ ...context.world.store.getIssue(id)!, sourceState: "closed" });
+    const candidate = (id: string) => context.scheduler.candidates().find((entry) => entry.id === id)!;
+    return { ...context, blocker, parent, leaf, child, grandchild, close, candidate };
+  }
+
+  test("a child of a parent with an open dependency is not selected, and starts once it closes", async () => {
+    const { scheduler, calls, blocker, leaf, close, candidate } = await family();
+    expect(candidate(leaf).dependenciesSatisfied).toBe(false);
+    scheduler.schedule();
+    expect(calls.launched).toEqual([]);
+    close(blocker);
+    expect(candidate(leaf).dependenciesSatisfied).toBe(true);
+    scheduler.schedule();
+    expect(calls.launched).toContain(leaf);
+  });
+
+  test("a child is released when the parent's dependency is marked done", async () => {
+    const { blocker, leaf, candidate, world } = await family();
+    expect(candidate(leaf).dependenciesSatisfied).toBe(false);
+    world.store.setIssueProjection(blocker, { stage: "implementation", state: "done", warning: null });
+    expect(candidate(leaf).dependenciesSatisfied).toBe(true);
+  });
+
+  test("a grandchild waits for a dependency of its parent", async () => {
+    const { world, scheduler, ready, child, grandchild, candidate } = await family();
+    const own = ready(20);
+    world.store.replaceRelationships(child, { parentId: world.store.getIssue(child)!.parentId!, siblingOrder: null }, [own]);
+    expect(candidate(grandchild).dependenciesSatisfied).toBe(false);
+    world.store.upsertIssue({ ...world.store.getIssue(own)!, sourceState: "closed" });
+    // The grandparent's dependency still holds it back.
+    expect(candidate(grandchild).dependenciesSatisfied).toBe(false);
+    expect(scheduler.liveStatusReader()(world.store.getIssue(grandchild)!)?.reason).toContain("(dependencies of ancestor #1)");
+  });
+
+  test("a grandchild waits for a dependency of its grandparent", async () => {
+    const { grandchild, child, blocker, close, candidate, scheduler, world } = await family();
+    expect(world.store.listDependencies(child)).toEqual([]);
+    expect(candidate(grandchild).dependenciesSatisfied).toBe(false);
+    expect(scheduler.status(world.store.getIssue(grandchild)!)?.reason).toBe("Waiting for #10 (dependencies of ancestor #1)");
+    close(blocker);
+    expect(candidate(grandchild).dependenciesSatisfied).toBe(true);
+  });
+
+  test("a dependency added to the parent after the child exists applies at the next pass", async () => {
+    const { world, scheduler, calls, parent, leaf, blocker, close, candidate } = await family();
+    close(blocker);
+    expect(candidate(leaf).dependenciesSatisfied).toBe(true);
+    world.items.add(30, ["conveyor", "conveyor:implementation"]);
+    const later = world.seed(30, { stage: "implementation", state: "active" });
+    world.store.replaceRelationships(parent, null, [blocker, later]);
+    scheduler.schedule();
+    expect(calls.launched).not.toContain(leaf);
+    expect(scheduler.status(world.store.getIssue(leaf)!)?.reason).toBe("Waiting for #30 (dependencies of parent #1)");
+    close(later);
+    scheduler.schedule();
+    expect(calls.launched).toContain(leaf);
+  });
+
+  test("an item's own dependencies still hold it back and release it when met", async () => {
+    const { world, scheduler, ready } = await setup();
+    const blocker = ready(2);
+    const id = ready(1);
+    world.store.replaceRelationships(id, null, [blocker]);
+    expect(scheduler.candidates().find((entry) => entry.id === id)!.dependenciesSatisfied).toBe(false);
+    world.store.upsertIssue({ ...world.store.getIssue(blocker)!, sourceState: "closed" });
+    expect(scheduler.candidates().find((entry) => entry.id === id)!.dependenciesSatisfied).toBe(true);
+  });
+
+  test("a parent link recorded without a plan or tool applies the same way", async () => {
+    // A sub-issue added on GitHub reaches the store as the issue's parent link and nothing else.
+    const { world, ready, scheduler, parent } = await family();
+    const added = ready(5);
+    world.store.upsertIssue({ ...world.store.getIssue(added)!, parentId: parent });
+    expect(scheduler.candidates().find((entry) => entry.id === added)!.dependenciesSatisfied).toBe(false);
+  });
+
+  test("admission leaves an item waiting, not stopped, when an inherited dependency is unmet", async () => {
+    const { world, scheduler, calls, ready, parent } = await family();
+    const racing = ready(6);
+    // The parent link lands after the candidates are built: the recheck at admission still holds the item.
+    const original = world.store.listChildren.bind(world.store);
+    let linked = false;
+    world.store.listChildren = (id: string) => {
+      if (!linked && id === racing) {
+        linked = true;
+        world.store.upsertIssue({ ...world.store.getIssue(racing)!, parentId: parent });
+      }
+      return original(id);
+    };
+    scheduler.schedule();
+    expect(calls.launched).not.toContain(racing);
+    expect(world.store.getIssue(racing)!.projectedState).toBe("active");
+    expect(world.store.getStageState(racing)?.status).toBe("ready");
+  });
+});

@@ -16,6 +16,7 @@ import { boardStageOrder } from "../../core/pipeline";
 import { stopHeadline, type StoredIssue } from "../../db/store";
 import { summarizeTodos, type TodoItem } from "../../db/todos";
 import { questionConfigurationError, questionOptions } from "../../questions";
+import { inheritedDependencies } from "../../core/inherited-dependencies";
 import { displayName, formatDuration, formatUsage } from "../../web/format";
 import type { DashboardPageSelection, DashboardViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueStageBadgeViewModel, IssueTodosViewModel, IssueTone, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SteeringViewModel, SystemStatusViewModel } from "../../web/types";
 import { collectSystemStatus } from "./system-status";
@@ -243,6 +244,12 @@ export class DashboardViews {
           const dependency = listedById.get(issueId);
           return dependency ? [withProgress(dependency, relation(dependency))] : [];
         });
+      const inheritedList = inheritedDependencies(issue.id, { issue: (id) => byId.get(id) ?? this.#store.getIssue(id), dependencies: dependenciesFor })
+        .flatMap(({ dependencyId, ancestorId }) => {
+          const dependency = listedById.get(dependencyId);
+          const from = (byId.get(ancestorId) ?? this.#store.getIssue(ancestorId))?.sourceNumber;
+          return dependency && from !== undefined ? [{ ...withProgress(dependency, relation(dependency)), from }] : [];
+        });
       const projectedState = options.state ?? issue.projectedState ?? issue.sourceState;
       const parent = issue.parentId ? byId.get(issue.parentId) : null;
       const siblings = parent
@@ -322,6 +329,7 @@ export class DashboardViews {
           : null,
         children,
         dependencies,
+        inheritedDependencies: inheritedList,
         working: activeIssueIds.has(issue.id),
         needsAttention: questionIssueIds.has(issue.id) || manualWaiting !== null || [
           "blocked", "error", "needs-input", "needs-intervention", "rejected",
@@ -1009,6 +1017,11 @@ export class DashboardViews {
       const dependency = relatedIssue(dependencyId);
       return dependency ? [withProgress(dependency, relation(dependency))] : [];
     });
+    const inheritedList = inheritedDependencies(issue.id, { issue: relatedIssue, dependencies: dependenciesFor }).flatMap(({ dependencyId, ancestorId }) => {
+      const dependency = relatedIssue(dependencyId);
+      const from = relatedIssue(ancestorId)?.sourceNumber;
+      return dependency && from !== undefined ? [{ ...withProgress(dependency, relation(dependency)), from }] : [];
+    });
     const parent = issue.parentId ? boardIssue(issue.parentId) : null;
     const siblings = parent
       ? childrenFor(parent.id).flatMap(({ issueId: siblingId }) => {
@@ -1131,6 +1144,7 @@ export class DashboardViews {
       parentProgress: parent && siblings.length > 0 ? { done: siblings.filter((sibling) => sibling.satisfied).length, total: siblings.length } : null,
       children,
       dependencies,
+      inheritedDependencies: inheritedList,
       working: activeIssueIds.has(issue.id),
       needsAttention: questionIssueIds.has(issue.id) || manualWaiting !== null ||
         ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(projectedState),

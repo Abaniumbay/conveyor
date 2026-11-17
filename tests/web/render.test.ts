@@ -40,6 +40,7 @@ const parent: IssueCardViewModel = {
     { id: "dependency", repository: "foundation", number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40", satisfied: true },
     { id: "dependency-open", repository: "foundation", number: 39, title: "Open foundation", url: "https://github.com/sample/repo/issues/39", satisfied: false },
   ],
+  inheritedDependencies: [],
   working: true,
   needsAttention: true,
   retryable: false,
@@ -79,6 +80,7 @@ const backlogIssue: IssueCardViewModel = {
   parent: null,
   children: [],
   dependencies: [],
+  inheritedDependencies: [],
   working: false,
   needsAttention: false,
   retryable: false,
@@ -643,6 +645,15 @@ describe("renderDashboard", () => {
 
     expect(labelled.match(/No split/g)).toHaveLength(2);
     expect(unlabelled).not.toContain("No split");
+  });
+
+  test("shows inherited dependencies apart from the item's own, each tagged with its ancestor", () => {
+    const issue = { ...backlogIssue, dependencies: [], inheritedDependencies: [{ id: "i", repository: "foundation", number: 388, title: "Inherited foundation", url: "https://github.com/sample/repo/issues/388", satisfied: false, from: 391 }] };
+    const html = renderIssueDetails(issue);
+    expect(html).toContain("Also blocked by (from the parent chain)");
+    expect(html).toContain("#388");
+    expect(html).toContain("(from #391)");
+    expect(html).not.toContain("Blocked by:");
   });
 
   test("renders visible approved and unapproved criterion states", () => {

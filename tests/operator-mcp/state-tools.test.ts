@@ -106,4 +106,16 @@ describe("operator state tools", () => {
     expect(repository.value).toContain("nope/none");
     expect((await call("get_conversation", { repository: "nope/none", number: 1 })).value).toContain("nope/none");
   });
+
+  // Last: it adds an item the earlier tests do not expect.
+  test("get_item lists inherited dependencies apart from its own, each tagged with its ancestor", async () => {
+    issue("i3", 3, { parentId: "i2" });
+    store.replaceRelationships("i3", { parentId: "i2", siblingOrder: 1 }, []);
+    const grandchild = (await call("get_item", { repository: "repo", number: 3 })).value;
+    expect(grandchild.dependencies).toEqual([]);
+    expect(grandchild.inheritedDependencies).toEqual([{ number: 1, from: 2 }]);
+    const child = (await call("get_item", { repository: "repo", number: 2 })).value;
+    expect(child.dependencies).toEqual([1]);
+    expect(child.inheritedDependencies).toEqual([]);
+  });
 });

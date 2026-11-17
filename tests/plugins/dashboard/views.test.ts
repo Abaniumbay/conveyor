@@ -1019,6 +1019,12 @@ describe("ConveyorService dashboard", () => {
     const refreshed = dashboardViews(new ConveyorService(config, store, {} as never)).dashboard("csrf");
     expect(refreshed.graph.relationships).not.toContainEqual(expect.objectContaining({ kind: "dependency", from: "stopped", to: "unrelated" }));
     expect(refreshed.graph.relationships).toContainEqual(expect.objectContaining({ kind: "dependency", from: "finished", to: "unrelated", status: "satisfied" }));
+    // The parent's own dependency shows on its children apart from their own, tagged with the parent's number.
+    store.replaceRelationships("parent", null, ["mislabelled"]);
+    const inherited = dashboardViews(new ConveyorService(config, store, {} as never)).dashboard("csrf");
+    const inheritedCard = [...inherited.stages.flatMap((column) => column.issues), ...inherited.done.issues].find((candidate) => candidate.id === "working")!;
+    expect(inheritedCard.dependencies).toEqual([]);
+    expect(inheritedCard.inheritedDependencies.map(({ id, satisfied, from }) => ({ id, satisfied, from }))).toEqual([{ id: "mislabelled", satisfied: false, from: 1 }]);
     store.close();
   });
 

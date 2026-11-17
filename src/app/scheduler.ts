@@ -19,6 +19,12 @@ import type { IssueJourneyViewModel } from "../web/types";
 import type { LiveIssueStatus, SchedulerLookups } from "./dashboard-sources";
 import { CI_INDICATOR_ID, type StoredIndicator } from "./indicators";
 import { latestStopReason } from "./item-history";
+import { inheritedDependencies, type InheritanceReads } from "../core/inherited-dependencies";
+
+/** A dependency is met when its issue is closed or done. */
+function dependencyMet(blocker: Pick<StoredIssue, "sourceState" | "projectedState"> | null): boolean {
+  return Boolean(blocker && (blocker.sourceState === "closed" || blocker.projectedState === "done"));
+}
 
 /** A stage this process runs now, as the scheduler counts it. */
 export interface RunningStage {
@@ -118,6 +124,10 @@ export class Scheduler {
         !this.#deps.hasResumableQuestionExecution(issue.id) &&
         !this.#deps.childCreationRetryQueued(issue, candidate.stageId)
       ) continue;
+      // Dependencies, an ancestor's included, can change after the candidates were built. An item
+      // whose dependency is unmet waits here; it is neither launched nor stopped, and a later pass starts it.
+      const reads = { dependencies: (id: string) => store.listDependencies(id), issue: (id: string) => store.getIssue(id) };
+      if (this.#allDependencies(issue.id, reads).some(({ dependencyId }) => !dependencyMet(store.getIssue(dependencyId)))) continue;
       // The retry marker is only an admission permit. Restore the executor's
       // ordinary ready state immediately before it claims the stage.
       const stage = store.getStageState(issue.id);
@@ -207,10 +217,8 @@ export class Scheduler {
       const state = stageState(issue.id);
       if (!state?.stageId || issue.queueRank === null) return [];
       const lightweight = this.#deps.isLightweightStage(issue.repositoryId, state.stageId);
-      const dependenciesSatisfied = dependencies(issue.id).every((id) => {
-        const blocker = getIssue(id);
-        return Boolean(blocker && (blocker.sourceState === "closed" || blocker.projectedState === "done"));
-      });
+      const dependenciesSatisfied = this.#allDependencies(issue.id, { dependencies, issue: getIssue })
+        .every(({ dependencyId }) => dependencyMet(getIssue(dependencyId)));
       return [{
         id: issue.id,
         repositoryId: issue.repositoryId,
@@ -234,6 +242,14 @@ export class Scheduler {
         gateOnly: !lightweight && this.#deps.isGateOnlyExecution(issue.id, issue.repositoryId, state.stageId),
       }];
     });
+  }
+
+  /** An item's own dependencies, then those of every ancestor. */
+  #allDependencies(issueId: string, reads: InheritanceReads): Array<{ dependencyId: string; ancestorId: string | null; depth: number }> {
+    return [
+      ...reads.dependencies(issueId).map((dependencyId) => ({ dependencyId, ancestorId: null, depth: 0 })),
+      ...inheritedDependencies(issueId, reads),
+    ];
   }
 
   /** The configured runner, stage and repository limits. */
@@ -345,14 +361,24 @@ export class Scheduler {
     const candidate = queue().candidates.find((item) => item.id === issue.id);
     if (!candidate || !candidate.eligible || candidate.rollupOnly) return null;
     if (!candidate.dependenciesSatisfied) {
-      const dependencies = store.listDependencies(issue.id)
-        .map((dependencyId) => store.getIssue(dependencyId))
-        .filter((dependency): dependency is StoredIssue => dependency !== null)
-        .filter((dependency) => dependency.sourceState !== "closed" && dependency.projectedState !== "done")
-        .map((dependency) => `#${dependency.sourceNumber}`);
+      const unmet = this.#allDependencies(issue.id, { dependencies: (id) => store.listDependencies(id), issue: (id) => store.getIssue(id) })
+        .flatMap((entry) => {
+          const dependency = store.getIssue(entry.dependencyId);
+          return dependency && dependencyMet(dependency) ? [] : [{ ...entry, label: dependency ? `#${dependency.sourceNumber}` : entry.dependencyId }];
+        });
+      const reasons = [
+        ...(unmet.some((entry) => entry.ancestorId === null)
+          ? [`Waiting for dependencies: ${unmet.filter((entry) => entry.ancestorId === null).map((entry) => entry.label).join(", ")}`]
+          : []),
+        ...[...new Set(unmet.flatMap((entry) => (entry.ancestorId === null ? [] : [entry.ancestorId])))].map((ancestorId) => {
+          const entries = unmet.filter((entry) => entry.ancestorId === ancestorId);
+          const number = store.getIssue(ancestorId)?.sourceNumber;
+          return `Waiting for ${entries.map((entry) => entry.label).join(", ")} (dependencies of ${entries[0]!.depth === 1 ? "parent" : "ancestor"} ${number === undefined ? ancestorId : `#${number}`})`;
+        }),
+      ];
       return {
         kind: "waiting",
-        reason: `Waiting for dependencies: ${dependencies.join(", ")}`,
+        reason: reasons.join("; "),
         since: store.getStageState(issue.id)?.updatedAt ?? issue.sourceUpdatedAt,
         nextCheckAt: null,
         deadline: null,

@@ -9,7 +9,7 @@ function item(number: number, title = `Item ${number}`): DashboardItem {
     id: `item-${number}`, repository: "repo", repositoryPaused: false, repositoryColor: 1, number, title, url: null,
     state: "active", labels: [], issueType: null, issueFields: [], acceptanceCriteria: [], todos: null, indicators: [],
     activity: null, reason: null, cost: null, duration: null, stateChangedAt: null, waiting: null, blocked: false,
-    inconsistent: false, closable: false, noSplit: false, tone: "active", parent: null, children: [], dependencies: [],
+    inconsistent: false, closable: false, noSplit: false, tone: "active", parent: null, children: [], dependencies: [], inheritedDependencies: [],
     working: false, needsAttention: false, retryable: false, paused: false, pausable: false, resumable: false, resumableRollup: false, stoppedRollup: false,
     placement: "backlog", column: null, order: number, needsYou: false, conversation: null,
   };

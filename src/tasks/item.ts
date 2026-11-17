@@ -24,6 +24,7 @@ import {
   upsertManagedSection,
 } from "../source/managed-sections";
 import type { ItemComments, ItemMarkers, ItemMetadata, ItemReader, ItemRelations, ItemSections, ItemTitles, SourceIssue } from "../source/types";
+import { inheritedDependencies } from "../core/inherited-dependencies";
 
 export const acceptanceCriterionInput = z.object({
   id: z.string().min(1),
@@ -241,14 +242,21 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
           .sort((left, right) => left - right),
       }];
     });
-    const dependencies = store.listDependencies(issue.id).flatMap((blockerId) => {
+    // The scheduler's rule: a dependency is satisfied when closed or done. An ancestor's dependencies hold the item too.
+    const blockers = [
+      ...store.listDependencies(issue.id).map((blockerId) => ({ blockerId, ancestorId: null as string | null, depth: 0 })),
+      ...inheritedDependencies(issue.id, { issue: (id) => store.getIssue(id), dependencies: (id) => store.listDependencies(id) })
+        .map((entry) => ({ blockerId: entry.dependencyId, ancestorId: entry.ancestorId as string | null, depth: entry.depth })),
+    ];
+    const dependencies = blockers.flatMap(({ blockerId, ancestorId, depth }) => {
       const blocker = store.getIssue(blockerId);
       if (!blocker) return [];
-      // The scheduler's rule: a dependency is satisfied when closed or done.
       const address = config.repositories[blocker.repositoryId]?.address;
+      const ancestor = ancestorId === null ? undefined : store.getIssue(ancestorId)?.sourceNumber;
       return [{
         id: blocker.id, number: blocker.sourceNumber, satisfied: blocker.sourceState === "closed" || blocker.projectedState === "done",
         ...(address !== undefined ? { address } : {}),
+        ...(ancestor !== undefined ? { inheritedFrom: ancestor, fromParent: depth === 1 } : {}),
       }];
     });
     const pullRequest = store.getCurrentPullRequest(issue.id);
@@ -351,9 +359,15 @@ const dependenciesMet = check(
   ({ context }) => {
     const waiting = context.item!.dependencies.filter((dependency) => !dependency.satisfied);
     if (waiting.length === 0) return pass();
+    const inheritedFrom = [...new Set(waiting.flatMap((dependency) => dependency.inheritedFrom ?? []))];
     // A blocker of a repository Conveyor does not track sends no event; the fallback covers it.
     const topics = waiting.flatMap((dependency) => (dependency.address ? [issueTopic(dependency.address, dependency.number)] : []));
-    return pending(`Waiting for dependencies: ${waiting.map((dependency) => `#${dependency.number}`).join(", ")}`, { waitFor: { topics, kind: "dependencies" } });
+    const own = waiting.filter((dependency) => dependency.inheritedFrom === undefined);
+    const message = [
+      ...(own.length > 0 ? [`Waiting for dependencies: ${own.map((dependency) => `#${dependency.number}`).join(", ")}`] : []),
+      ...inheritedFrom.map((from) => `Waiting for ${waiting.filter((dependency) => dependency.inheritedFrom === from).map((dependency) => `#${dependency.number}`).join(", ")} (dependencies of ${waiting.some((dependency) => dependency.inheritedFrom === from && dependency.fromParent) ? "parent" : "ancestor"} #${from})`),
+    ].join("; ");
+    return pending(message, { waitFor: { topics, kind: "dependencies" } });
   },
   { defaultWait: { timeoutMs: null, pollMs: 5 * 60_000 } },
 );

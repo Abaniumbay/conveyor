@@ -8,7 +8,7 @@ function item(number: number, overrides: Partial<DashboardItem> = {}): Dashboard
     id: `github:owner/repo#${number}`, repository: "repo", repositoryPaused: false, repositoryColor: 1, number, title: `Item ${number}`,
     url: null, state: "active", labels: [], issueType: null, issueFields: [], acceptanceCriteria: [], todos: null, indicators: [],
     activity: null, reason: null, cost: null, duration: null, stateChangedAt: null, waiting: null, blocked: false, inconsistent: false,
-    closable: false, noSplit: false, tone: "active", parent: null, children: [], dependencies: [], working: false,
+    closable: false, noSplit: false, tone: "active", parent: null, children: [], dependencies: [], inheritedDependencies: [], working: false,
     needsAttention: false, retryable: false, paused: false, pausable: false, resumable: false, resumableRollup: false, stoppedRollup: false,
     placement: "backlog", column: null, order: 0, needsYou: false, conversation: null,
     ...overrides,
