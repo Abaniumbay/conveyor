@@ -1031,7 +1031,7 @@ describe("renderDashboard", () => {
       avgTokensPerItem: null, avgRunsPerItem: null, avgLeadMs: null, avgAgentMs: null, avgChecksWaitMs: null, avgWaitingForYouMs: null, avgQueuedMs: null,
       avgReturnsPerItem: null, avgStopsPerItem: null, firstPassRate: null,
     },
-    byRepository: [], byMonth: [], byStage: [], items: [], importedWithoutHistory: 0, generatedAt: "2026-10-03T00:00:00.000Z",
+    byRepository: [], byMonth: [], byWeek: [], byStage: [], items: [], importedWithoutHistory: 0, generatedAt: "2026-10-03T00:00:00.000Z",
     findings: {
       total: 4, reviewRounds: 8,
       byType: [
@@ -1070,6 +1070,48 @@ describe("renderDashboard", () => {
     expect(empty).not.toContain("By UTC ISO week");
   });
 
+  test("the 30 days chip is active by default and All time links to period=all; every link keeps the period", () => {
+    const html = renderDashboard({ ...dashboard, view: "reports", report: findingsReport() });
+    expect(html).toContain('<a href="/reports?period=30d" class="report-chip report-chip--active" aria-current="page">30 days</a>');
+    expect(html).toContain('<a href="/reports?period=all" class="report-chip">All time</a>');
+    const all = renderDashboard({ ...dashboard, view: "reports", report: findingsReport({ period: "all", since: null }) });
+    expect(all).toContain('<a href="/reports?period=all" class="report-chip report-chip--active" aria-current="page">All time</a>');
+    expect(all).toContain('href="/reports/alpha?period=all"');
+    expect(all).toContain('href="/reports/beta?period=all"');
+    const scoped = renderDashboard({ ...dashboard, view: "reports", report: findingsReport({ period: "all", since: null, repository: "alpha" }) });
+    expect(scoped).toContain('href="/reports/alpha?period=all"');
+    expect(scoped).toContain('<a href="/reports?period=all" class="report-chip">All repositories</a>');
+    for (const period of ["7d", "90d", "12m"] as const) {
+      expect(renderDashboard({ ...dashboard, view: "reports", report: findingsReport({ period }) })).toContain(`href="/reports/beta?period=${period}"`);
+    }
+  });
+
+  const weeks = [
+    { week: "2026-W43", delivered: 2, firstPassRate: 0.5, avgReturnsPerItem: 0.5 },
+    { week: "2026-W42", delivered: 1, firstPassRate: 1, avgReturnsPerItem: 0 },
+    { week: "2026-W41", delivered: 3, firstPassRate: 0, avgReturnsPerItem: 1.3333 },
+  ];
+
+  test("renders the weekly table newest first with percent and decimal figures, also for a drilled-in repository", () => {
+    for (const repository of [null, "alpha"]) {
+      const html = renderDashboard({ ...dashboard, view: "reports", report: findingsReport({ repository, byWeek: weeks }) });
+      const section = html.slice(html.indexOf('id="report-weeks"'));
+      for (const header of ["Week", "Delivered", "First-pass rate", "Average returns per item"]) expect(section).toContain(`<th scope="col">${header}</th>`);
+      expect(section).toContain('<tr><th scope="row">2026-W43</th><td>2</td><td>50%</td><td>0.5</td></tr>');
+      expect(section).toContain('<tr><th scope="row">2026-W42</th><td>1</td><td>100%</td><td>0.0</td></tr>');
+      expect(section).toContain('<tr><th scope="row">2026-W41</th><td>3</td><td>0%</td><td>1.3</td></tr>');
+      expect(section.indexOf("2026-W43")).toBeLessThan(section.indexOf("2026-W42"));
+      expect(section.indexOf("2026-W42")).toBeLessThan(section.indexOf("2026-W41"));
+    }
+  });
+
+  test("an empty weekly list renders an empty-state message and no rows", () => {
+    const html = renderDashboard({ ...dashboard, view: "reports", report: findingsReport() });
+    const section = html.slice(html.indexOf('id="report-weeks"'), html.indexOf('id="report-months"'));
+    expect(section).toContain('<p class="report-empty">No item was delivered in this period.</p>');
+    expect(section).not.toContain("<tbody>");
+  });
+
   test("renders the Reports view: tab, filters, figures, drill-through links, escaped items and only non-zero bars", () => {
     const totals = {
       delivered: 2, inProgress: 1, runs: 5, failedRuns: 1, inputTokens: 4_900_000, outputTokens: 100_000, cachedTokens: 2_450_000, agentMs: 9 * 3_600_000,
@@ -1084,6 +1126,7 @@ describe("renderDashboard", () => {
         totals,
         byRepository: [{ id: "sample", ...totals }],
         byMonth: [{ month: "2026-10", delivered: 2, runs: 5, tokens: 5_000_000, agentMs: 9 * 3_600_000, avgTokensPerItem: 2_500_000, avgLeadMs: 8 * 3_600_000 }],
+        byWeek: [],
         byStage: [
           { id: "implementation", name: "Implementation", runs: 4, failedRuns: 1, tokens: 5_000_000, agentMs: 8 * 3_600_000, avgRunMs: 7_200_000 },
           { id: "deploy", name: "Deploy", runs: 1, failedRuns: 0, tokens: 0, agentMs: 600_000, avgRunMs: 600_000 },
@@ -1097,6 +1140,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('<a href="/reports" class="tab tab--active" aria-current="page">Reports</a>');
     expect(html).toContain("Reports · sample");
     expect(html).toContain('href="/reports/sample?period=7d"');
+    expect(html).toContain('href="/reports/sample?period=all"');
     expect(html).toContain('href="/reports?period=30d"');
     expect(html).toContain('<a href="/reports/sample?period=30d" class="report-chip report-chip--active" aria-current="page">30 days</a>');
     expect(html).toContain("<span class=\"report-tile-value\">5.0M</span>");

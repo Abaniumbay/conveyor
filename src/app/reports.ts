@@ -6,7 +6,7 @@
 import type { ConveyorConfig } from "../config/load";
 import type { ReportStore } from "../db/ports";
 import type { ReportIssueRow, ReportRunRow } from "../db/reports";
-import { buildFindingReport } from "./finding-report";
+import { buildFindingReport, isoWeek } from "./finding-report";
 import { displayName } from "../tasks/agent-support";
 import type {
   ReportFindingCountRow,
@@ -17,6 +17,7 @@ import type {
   ReportRepositoryRow,
   ReportStageRow,
   ReportTotals,
+  ReportWeekRow,
   ReportViewModel,
 } from "../web/types";
 
@@ -150,6 +151,21 @@ function months(items: readonly ItemFacts[], since: string | null, now: number):
   }));
 }
 
+function weeks(items: readonly ItemFacts[], since: string | null): ReportWeekRow[] {
+  const grouped = new Map<string, ItemFacts[]>();
+  for (const item of items) {
+    if (!item.finishedAt || (since !== null && item.finishedAt < since)) continue;
+    const key = isoWeek(item.finishedAt);
+    grouped.set(key, [...(grouped.get(key) ?? []), item]);
+  }
+  return [...grouped.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([week, delivered]) => ({
+    week,
+    delivered: delivered.length,
+    firstPassRate: delivered.filter((item) => item.returns === 0).length / delivered.length,
+    avgReturnsPerItem: delivered.reduce((sum, item) => sum + item.returns, 0) / delivered.length,
+  }));
+}
+
 function stages(items: readonly ItemFacts[], since: string | null, now: number, config: ConveyorConfig, repositoryIds: readonly string[]): ReportStageRow[] {
   const order: string[] = [];
   const names = new Map<string, string>();
@@ -246,6 +262,7 @@ export function buildReport(input: {
     totals: totals(scope, since, now),
     byRepository: repositories.map((id) => ({ id, ...totals(counted.filter((item) => item.issue.repository_id === id), since, now) })),
     byMonth: months(scope, since, now),
+    byWeek: weeks(scope, since),
     byStage: stages(scope, since, now, input.config, scopeRepositories),
     items: input.repository ? itemRows(scope, since) : [],
     findings: findings(input.store, input.repository, since),
