@@ -635,6 +635,16 @@ describe("routing", () => {
     expect(await h2.run(plan2, "implementation")).toMatchObject({ kind: "stopped", state: "paused" });
   });
 
+  test("an action routed to return to planning becomes a correction carrying the reason", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.actResult = failing();
+    const plan = simple(h, [], { actionExtra: { onFail: { return: "planning" } } });
+    expect(await h.run(plan, "implementation")).toMatchObject({
+      kind: "correction", stageId: "implementation", targetStageId: "planning", reason: "boom",
+    });
+  });
+
   test("an action routed to return becomes a correction", async () => {
     const h = await harness();
     h.activate();
