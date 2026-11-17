@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { configSchema, type ConveyorConfigData } from "../../src/config/schema";
 import { defineGroup, pass, TaskRegistry, type TaskDefinition } from "../../src/tasks/contract";
+import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { legacyGroup } from "../../src/tasks/legacy";
 import { compilePipeline, PlanError, renderPlan, stagePlanHash } from "../../src/tasks/plan";
 
@@ -438,5 +439,38 @@ describe("renderPlan", () => {
     expect(text).toContain("gate: ci.passed");
     expect(text).toContain("timeout unlimited, poll 30s");
     expect(text).toContain("onFail retry (default)");
+  });
+});
+
+describe("item.dependenciesMet after", () => {
+  const deps = (entry: unknown, id = "a") => ({
+    stages: [
+      stage(id, [], [{ id: "deps", task: "item.dependenciesMet", ...(entry === undefined ? {} : { with: entry }) }]),
+      stage("b", [], [{ task: "item.criteriaDefined" }]),
+      stage("c", [], [{ task: "item.criteriaDefined" }]),
+    ],
+  });
+  const real = (pipeline: unknown) => compilePipeline({ config: build(pipeline), repositoryId: "sample", registry: createTaskRegistry() });
+  const realErrors = (pipeline: unknown): string => {
+    try { real(pipeline); } catch (error) { expect(error).toBeInstanceOf(PlanError); return (error as PlanError).message; }
+    throw new Error("expected PlanError");
+  };
+
+  test("AC-1.1 an existing stage compiles and is kept on the task", () => {
+    expect(real(deps({ after: "b" })).stages[0]!.exitGate[0]!.with).toEqual({ after: "b" });
+  });
+
+  test("AC-1.2 an unknown stage is rejected naming the stage and the entry", () => {
+    const message = realErrors(deps({ after: "ghost" }));
+    expect(message).toMatch(/stages\[0\].exit-gate\[0\].*after.*unknown stage "ghost"/);
+    expect(message).not.toContain("stages[1]");
+  });
+
+  test("AC-1.3 an empty, non-string or extra value is rejected, and a stage of another pipeline is unknown", () => {
+    for (const entry of [{ after: "" }, { after: 3 }, { after: "x", extra: 1 }]) {
+      expect(realErrors(deps(entry))).toMatch(/item\.dependenciesMet.*(after|extra)/);
+    }
+    expect(realErrors(deps({ after: "merge" }))).toContain('"merge"');
+    expect(real({ stages: [stage("merge", [], [{ id: "deps", task: "item.dependenciesMet", with: { after: "merge" } }])] }).stages[0]!.exitGate[0]!.with).toEqual({ after: "merge" });
   });
 });

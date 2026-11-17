@@ -28,6 +28,7 @@ import {
   upsertManagedSection,
 } from "../source/managed-sections";
 import type { ItemComments, ItemMarkers, ItemMetadata, ItemReader, ItemRelations, ItemSections, ItemTitles, SourceIssue } from "../source/types";
+import { stagePassed } from "../core/dependency-rule";
 import { inheritedDependencies } from "../core/inherited-dependencies";
 
 export const acceptanceCriterionInput = z.object({
@@ -267,8 +268,11 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
       if (!blocker) return [];
       const address = config.repositories[blocker.repositoryId]?.address;
       const ancestor = ancestorId === null ? undefined : store.getIssue(ancestorId)?.sourceNumber;
+      const pipeline = config.repositories[blocker.repositoryId]?.pipeline;
+      const stages = pipeline === undefined ? undefined : config.pipelines[pipeline]?.stages.map((stage) => stage.id);
       return [{
         id: blocker.id, number: blocker.sourceNumber, satisfied: blocker.sourceState === "closed" || blocker.projectedState === "done",
+        ...(blocker.projectedStage !== null && stages !== undefined ? { stage: blocker.projectedStage, stages } : {}),
         ...(address !== undefined ? { address } : {}),
         ...(ancestor !== undefined ? { inheritedFrom: ancestor, fromParent: depth === 1 } : {}),
       }];
@@ -392,11 +396,15 @@ const testPlanComplete = check(
   },
 );
 
+const dependenciesMetConfig = z.object({ after: z.string().min(1).optional() }).strict();
+
 const dependenciesMet = check(
   "item.dependenciesMet",
-  "Pending while any dependency is neither closed nor done; the message lists them. A blocker of a tracked repository closing or reaching done wakes it at once.",
-  ({ context }) => {
-    const waiting = context.item!.dependencies.filter((dependency) => !dependency.satisfied);
+  "Pending while any dependency is neither closed nor done; the message lists them. With `after`, a dependency also counts once its own pipeline is past that stage (a dependency whose pipeline lacks the stage counts only when closed or done). A blocker of a tracked repository changing stage, closing or reaching done wakes it at once.",
+  ({ context, config }) => {
+    const { after } = config as z.output<typeof dependenciesMetConfig>;
+    const waiting = context.item!.dependencies.filter((dependency) =>
+      !dependency.satisfied && !(after !== undefined && stagePassed(dependency.stage ?? null, dependency.stages ?? null, after)));
     if (waiting.length === 0) return pass();
     const inheritedFrom = [...new Set(waiting.flatMap((dependency) => dependency.inheritedFrom ?? []))];
     // A blocker of a repository Conveyor does not track sends no event; the fallback covers it.
@@ -408,7 +416,7 @@ const dependenciesMet = check(
     ].join("; ");
     return pending(message, { waitFor: { topics, kind: "dependencies" } });
   },
-  { defaultWait: { timeoutMs: null, pollMs: 5 * 60_000 } },
+  { defaultWait: { timeoutMs: null, pollMs: 5 * 60_000 }, config: dependenciesMetConfig },
 );
 
 /** Part of the stop reason `item.issueClosed` records; the service recognises it to resume the item once the issue closes. */

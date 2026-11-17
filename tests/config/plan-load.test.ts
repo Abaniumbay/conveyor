@@ -197,3 +197,23 @@ describe("check-config", () => {
     expect(output).toContain("legacy.produce (source action noop)");
   });
 });
+
+describe("item.dependenciesMet after in a loaded config", () => {
+  test("AC-1.2 the loader rejects an after that names a stage the pipeline lacks", async () => {
+    const yaml = (after: string) => `
+    stages:
+      - id: build
+        concurrency: 1
+        actions: []
+        exit-gate: [{ id: deps, task: item.dependenciesMet, with: { after: ${after} } }]
+      - id: ship
+        concurrency: 1
+        actions: []
+        exit-gate: [{ task: item.criteriaDefined }]
+`;
+    const { createTaskRegistry } = await import("../../src/tasks/catalogue");
+    await expect(loadConfig(await write(yaml("ghost")), createTaskRegistry())).rejects.toThrow(/ghost/);
+    await expect(loadConfig(await write(yaml("ghost")), createTaskRegistry())).rejects.toThrow(ConfigError);
+    expect((await loadConfig(await write(yaml("ship")), createTaskRegistry())).plans.length).toBeGreaterThan(0);
+  });
+});

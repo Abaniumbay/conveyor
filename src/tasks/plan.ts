@@ -1,3 +1,4 @@
+import { DEPENDENCIES_TASK } from "../core/dependency-rule";
 import { createHash } from "node:crypto";
 
 import { isNativeStage, type ConveyorConfigData, type NativeStageConfig, type TaskEntryConfig, type TaskOverrideConfig } from "../config/schema";
@@ -286,6 +287,9 @@ function compileTask(
     if (!parsed.success) {
       const detail = parsed.error.issues.map((issue) => `${issue.path.join(".") || "with"}: ${issue.message}`).join("; ");
       errors.push(`${path}: invalid with for ${definition.name}: ${detail}`);
+    } else if (definition.name === DEPENDENCIES_TASK) {
+      const { after } = parsed.data as { after?: string };
+      if (after !== undefined && !stageIds.includes(after)) errors.push(`${path}: after names unknown stage "${after}"`);
     }
   }
 

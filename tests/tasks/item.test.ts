@@ -144,6 +144,119 @@ describe("item.dependenciesMet", () => {
   });
 });
 
+describe("item.dependenciesMet after", () => {
+  const STAGES = ["refinement", "implementation", "review", "merge", "verify"];
+  const blocked = async (blockers: Array<{ number: number; stage?: string; state?: "open" | "closed"; projected?: string }>, options: { after?: string; config?: Record<string, unknown> } = {}) => {
+    const w = await world({ pipelineStages: STAGES });
+    w.add("i1", 1);
+    for (const blocker of blockers) w.add(`b${String(blocker.number).padStart(3, "0")}`, blocker.number, { ...(blocker.stage ? { stage: blocker.stage } : {}), ...(blocker.state ? { state: blocker.state } : {}), ...(blocker.projected ? { projected: blocker.projected } : {}) });
+    w.store.replaceRelationships("i1", null, blockers.map((blocker) => `b${String(blocker.number).padStart(3, "0")}`));
+    const check = async (config: Record<string, unknown> | undefined = options.config ?? (options.after ? { after: options.after } : {})) => {
+      const loaded = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+      return run("item.dependenciesMet", { context: ctx(loaded), config });
+    };
+    return { w, check };
+  };
+
+  test("AC-2.1 without after only closed or done blockers count, whatever their stage", async () => {
+    const { check } = await blocked([
+      { number: 7, stage: "verify", projected: "active" }, { number: 8, state: "closed", stage: "refinement" },
+      { number: 9, projected: "done", stage: "verify" }, { number: 10, stage: "refinement" },
+    ]);
+    expect(await check(undefined)).toMatchObject({ status: "pending", message: "Waiting for dependencies: #7, #10" });
+  });
+
+  test("AC-2.2 an empty config behaves as no config", async () => {
+    const { check } = await blocked([{ number: 7, stage: "verify" }, { number: 10, stage: "refinement" }]);
+    expect(await check({})).toEqual(await check(undefined));
+  });
+
+  test("AC-3.1 a blocker past the stage counts although it is open", async () => {
+    const { check } = await blocked([{ number: 7, stage: "verify" }], { after: "merge" });
+    expect(await check()).toEqual({ status: "pass" });
+  });
+
+  test("AC-3.2 each blocker is judged on its own stage; closed and done count", async () => {
+    const { check } = await blocked([{ number: 7, stage: "verify" }, { number: 8, state: "closed", stage: "refinement" }, { number: 9, projected: "done" }], { after: "merge" });
+    expect(await check()).toEqual({ status: "pass" });
+  });
+
+  test("AC-3.3 an inherited dependency follows the same threshold", async () => {
+    const w = await world({ pipelineStages: STAGES });
+    w.add("p", 5); w.add("c", 6); w.add("b008", 8, { stage: "verify" });
+    w.store.replaceRelationships("c", { parentId: "p", siblingOrder: 1 }, []);
+    w.store.replaceRelationships("p", null, ["b008"]);
+    const load = async () => (await run("item.load", { context: {}, deps: w.deps("c") }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(await run("item.dependenciesMet", { context: ctx(await load()), config: { after: "merge" } })).toEqual({ status: "pass" });
+    expect(await run("item.dependenciesMet", { context: ctx(await load()), config: {} })).toMatchObject({ status: "pending", message: "Waiting for #8 (dependencies of parent #5)" });
+  });
+
+  test("AC-4.1 a blocker exactly at the stage is waited for and subscribed to", async () => {
+    const { check } = await blocked([{ number: 7, stage: "merge" }], { after: "merge" });
+    expect(await check()).toEqual({ status: "pending", message: "Waiting for dependencies: #7", waitFor: { kind: "dependencies", topics: ["issue:o/r:7"] } });
+  });
+
+  test("AC-4.2 and AC-8.2 only blockers not past the stage are listed and subscribed", async () => {
+    const { check } = await blocked([{ number: 7, stage: "implementation" }, { number: 8, stage: "review" }, { number: 9, stage: "verify" }], { after: "merge" });
+    expect(await check()).toEqual({ status: "pending", message: "Waiting for dependencies: #7, #8", waitFor: { kind: "dependencies", topics: ["issue:o/r:7", "issue:o/r:8"] } });
+  });
+
+  test("AC-4.3 the pipeline's order decides, not the names, and the first stage works", async () => {
+    expect(await (await blocked([{ number: 7, stage: "review" }], { after: "implementation" })).check()).toEqual({ status: "pass" });
+    expect((await (await blocked([{ number: 7, stage: "refinement" }], { after: "refinement" })).check()).status).toBe("pending");
+    expect(await (await blocked([{ number: 7, stage: "implementation" }], { after: "refinement" })).check()).toEqual({ status: "pass" });
+  });
+
+  test("AC-4.4 a blocker with no stage is not resolved by after", async () => {
+    const { check } = await blocked([{ number: 7 }], { after: "refinement" });
+    expect(await check()).toMatchObject({ status: "pending", message: "Waiting for dependencies: #7" });
+  });
+
+  test("AC-5.1 a blocker of a pipeline without the stage counts only when closed or done", async () => {
+    const { w, check } = await blocked([{ number: 21, stage: "implementation" }], { after: "merge" });
+    w.store.upsertRepository({ id: "other", configName: "other", source: "github", address: "o/other", folder: "/o", configHash: "h" });
+    (w.config.repositories as Record<string, unknown>).other = { pipeline: "other", address: "o/other" };
+    (w.config.pipelines as Record<string, unknown>).other = { stages: ["plan", "build", "ship"].map((id) => ({ id })) };
+    (w.config.pipelines as Record<string, unknown>).full = { stages: STAGES.map((id) => ({ id })) };
+    const elsewhere = (id: string, number: number, stage: string, repositoryId: string) => {
+      w.store.upsertIssue({ id, repositoryId, sourceNumber: number, sourceUrl: `https://x/${number}`, title: "T", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+      w.store.setIssueProjection(id, { stage, state: "active", warning: null });
+    };
+    elsewhere("x20", 20, "ship", "other");
+    w.store.replaceRelationships("i1", null, ["x20"]);
+    expect(await check()).toMatchObject({ status: "pending", message: "Waiting for dependencies: #20" });
+    w.store.upsertIssue({ ...w.store.getIssue("x20")!, sourceState: "closed" });
+    expect(await check()).toEqual({ status: "pass" });
+    w.store.upsertIssue({ ...w.store.getIssue("x20")!, sourceState: "open" });
+    w.store.setIssueProjection("x20", { stage: "ship", state: "done", warning: null });
+    expect(await check()).toEqual({ status: "pass" });
+    (w.config.repositories as Record<string, { pipeline: string }>).other!.pipeline = "full";
+    w.store.setIssueProjection("x20", { stage: "verify", state: "active", warning: null });
+    expect(await check()).toEqual({ status: "pass" });
+  });
+
+  test("AC-5.2 a blocker of an unknown repository does not crash and counts only when closed or done", async () => {
+    const { w, check } = await blocked([], { after: "merge" });
+    w.store.upsertRepository({ id: "gone", configName: "gone", source: "github", address: "o/gone", folder: "/g", configHash: "h" });
+    w.store.upsertIssue({ id: "g1", repositoryId: "gone", sourceNumber: 30, sourceUrl: "https://x/30", title: "T", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+    w.store.setIssueProjection("g1", { stage: "verify", state: "active", warning: null });
+    w.store.replaceRelationships("i1", null, ["g1"]);
+    expect(await check()).toMatchObject({ status: "pending", message: "Waiting for dependencies: #30" });
+  });
+
+  test("AC-6.1 a blocker sent back is waited for again at the next run", async () => {
+    const { w, check } = await blocked([{ number: 7, stage: "verify" }], { after: "merge" });
+    const results = [];
+    for (const stage of ["verify", "merge", "implementation", "verify"]) {
+      w.store.setIssueProjection("b007", { stage, state: "active", warning: null });
+      results.push(await check());
+    }
+    expect(results.map((result) => result.status)).toEqual(["pass", "pending", "pending", "pass"]);
+    expect(results[1]).toMatchObject({ message: "Waiting for dependencies: #7" });
+    expect(results[2]).toMatchObject({ message: "Waiting for dependencies: #7" });
+  });
+});
+
 describe("criteriaFromBody", () => {
   test("extracts criteria text without markers", () => {
     expect(criteriaFromBody(criteriaBody("- [ ] First <!-- conveyor:criterion:a -->", "- [x] [Manual] Second"))).toEqual(["First", "[Manual] Second"]);
@@ -194,7 +307,7 @@ async function world(options: {
     id: `github:o/r#${number}`, number, url: `https://x/${number}`, title: `Issue ${number}`, body: "",
     state: "open" as const, labels: [], updatedAt: "2026-01-01T00:00:00Z",
   };
-  const add = (id: string, number: number, extra: { body?: string; labels?: string[]; state?: "open" | "closed"; stateReason?: string | null; projected?: string } = {}) => {
+  const add = (id: string, number: number, extra: { body?: string; labels?: string[]; state?: "open" | "closed"; stateReason?: string | null; projected?: string; stage?: string } = {}) => {
     store.upsertIssue({
       id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://x/${number}`, title: `Issue ${number}`,
       body: extra.body ?? "", sourceState: extra.state ?? "open", sourceStateReason: extra.stateReason ?? null, labels: extra.labels ?? ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
@@ -203,7 +316,7 @@ async function world(options: {
       id, number, url: `https://x/${number}`, title: `Issue ${number}`, body: extra.body ?? "",
       state: extra.state ?? "open", stateReason: extra.stateReason ?? null, labels: extra.labels ?? ["conveyor"], updatedAt: "2026-01-01T00:00:00Z",
     });
-    if (extra.projected) store.setIssueProjection(id, { stage: null, state: extra.projected, warning: null });
+    if (extra.projected || extra.stage) store.setIssueProjection(id, { stage: extra.stage ?? null, state: extra.projected ?? "active", warning: null });
   };
   const updateLiveSource = (number: number, extra: Partial<ReturnType<typeof source>>) => {
     sources.set(number, { ...source(number), ...extra });
@@ -301,7 +414,7 @@ async function world(options: {
     store, config, items, repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" }, issueId, sourceGuidance: "GUIDE",
     git: {} as TaskDeps["git"], workspaces: {} as TaskDeps["workspaces"],
   });
-  return { store, add, updateLiveSource, source, sourceIssues: () => [...sources.values()], deps, calls };
+  return { store, config, add, updateLiveSource, source, sourceIssues: () => [...sources.values()], deps, calls };
 }
 
 describe("item.load", () => {
