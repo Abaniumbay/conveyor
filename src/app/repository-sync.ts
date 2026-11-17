@@ -743,8 +743,11 @@ export class RepositorySync {
     const followUpBodies = this.#followUpBodies(repositoryId);
     // Deliveries can arrive out of order: an older state of the issue changes nothing. Timestamps have
     // one-second resolution, so a delivery stamped the same second as the stored state (Conveyor's own
-    // writes land together) is not newer either.
-    if (prior && Date.parse(prior.sourceUpdatedAt) >= Date.parse(change.issue.updatedAt)) return true;
+    // writes land together) is not newer either. An unlisted item (a dependency placeholder carries
+    // its source timestamp) has nothing to protect and is still enrolled by an equal delivery.
+    const stored = prior ? Date.parse(prior.sourceUpdatedAt) : null;
+    const delivered = Date.parse(change.issue.updatedAt);
+    if (stored !== null && (prior!.projectedState === "unlisted" ? stored > delivered : stored >= delivered)) return true;
     await reconcileRepository({
       ...this.#reconcileInput(repositoryId, repository),
       issues: [change.issue],
@@ -758,9 +761,12 @@ export class RepositorySync {
     if (change.issue.state === "closed" && applied) await this.#deps.recoverClosedItem(repositoryId, applied, change.issue);
     if (store.repositoryPause(repositoryId)) return true;
     // A newly discovered or rediscovered item has no parent or dependencies yet: load them before the
-    // scheduler can select it.
+    // scheduler can select it. The source names a parent only through its sub-issue list, so the
+    // listed items are read afresh too: one of them is the parent.
     if (applied && applied.projectedState !== "unlisted" && (!prior || prior.projectedState === "unlisted")) {
-      await this.#deps.reconcileRelationships(repositoryId, repository.address, new Set([number]));
+      const scope = new Set(store.listIssues(repositoryId).filter((issue) => issue.projectedState !== "unlisted").map((issue) => issue.sourceNumber));
+      this.#deps.forgetRelationships(repositoryId, [...scope]);
+      await this.#deps.reconcileRelationships(repositoryId, repository.address, scope);
     }
     this.#deps.wakeClearedFollowUps(repositoryId, followUpBodies);
     this.#deps.restorePendingStatus(repositoryId);

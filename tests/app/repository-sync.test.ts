@@ -339,6 +339,21 @@ describe("observations", () => {
     expect(events("repository.reconciled")).toEqual([]);
   });
 
+  test("a delivery stamped the same second as an unlisted item's stored state still enrols it", async () => {
+    const { world, sync } = await setup();
+    // A dependency placeholder carries the source's timestamp but is unlisted.
+    const issue = world.items.add(2, ["conveyor", "conveyor:implementation"]);
+    world.seed(2, { stage: null, state: "unlisted" });
+    const stored = world.store.getIssueByNumber("repo", 2)!;
+    world.store.upsertIssue({ ...stored, sourceUpdatedAt: issue.updatedAt });
+    sync.reactToObservation(observation("itemSource.itemChanged", {
+      repository: "owner/my-app", number: 2, action: "labeled", pullRequest: false, item: issue,
+      actors: { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } },
+    }));
+    await sync.webhooksSettled();
+    expect(world.store.getIssueByNumber("repo", 2)).toMatchObject({ projectedStage: "implementation" });
+  });
+
   test("a stale delivery keeps the relationships stored for a child created by work breakdown", async () => {
     const { world, sync, calls } = await setup();
     // The stored state breakdown.createChildren's persist() leaves: enrollment labels, parent and blocker.

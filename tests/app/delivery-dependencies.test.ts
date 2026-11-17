@@ -117,4 +117,22 @@ describe("an item discovered through a single delivery", () => {
     expect(satisfied(1)).toBe(false);
     expect(launched).not.toContain("issue-1");
   });
+
+  test("has its parent loaded, whether it is new or rediscovered", async () => {
+    const { world, deliver } = await setup();
+    world.items.add(10, ["conveyor", "conveyor:implementation"]);
+    world.seed(10, { stage: "implementation", state: "active" });
+    world.items.add(11, ["conveyor", "conveyor:implementation"]);
+    world.items.children.set(10, [11]);
+    await deliver(11);
+    expect(world.store.getIssue("issue-11")?.parentId).toBe("issue-10");
+    expect(world.store.listChildren("issue-10").map((child) => child.issueId)).toContain("issue-11");
+    // Rediscovery: unlisted, relationships deleted, then enrolled again.
+    world.seed(11, { stage: null, state: "unlisted" });
+    world.store.replaceRelationships("issue-11", null, []);
+    expect(world.store.listChildren("issue-10")).toEqual([]);
+    await deliver(11, "2026-10-17T00:30:00Z");
+    expect(world.store.getIssue("issue-11")?.parentId).toBe("issue-10");
+    expect(world.store.listChildren("issue-10").map((child) => child.issueId)).toContain("issue-11");
+  });
 });
