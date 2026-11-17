@@ -409,7 +409,7 @@ export class RepositorySync {
       const wanted = new Set(numbers);
       return store.listIssues(repositoryId).filter((issue) => wanted.has(issue.sourceNumber));
     };
-    const work = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withCallSource("webhook", async () => {
+    const work: Promise<void> = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withCallSource("webhook", async () => {
       await this.#deps.applyCiEvent(repositoryId, event)
         .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: event.type }, error));
       if (isEventOf(event, "itemSource.itemChanged")) {
@@ -446,7 +446,7 @@ export class RepositorySync {
       }
       if (isEventOf(event, "itemSource.relationsChanged")) this.#deps.forgetRelationships(repositoryId, event.payload.numbers);
       await this.#queueWebhookReconcile(repositoryId, issueNumbers);
-    }));
+    })).catch((error) => log.error("Webhook delivery failed", { repository: repositoryId, event: event.type }, error));
     this.#webhookWork.add(work);
     void work.finally(() => this.#webhookWork.delete(work));
   }
@@ -741,8 +741,10 @@ export class RepositorySync {
     const number = change.issue.number;
     const prior = store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
     const followUpBodies = this.#followUpBodies(repositoryId);
-    // Deliveries can arrive out of order: an older state of the issue changes nothing.
-    if (prior && Date.parse(prior.sourceUpdatedAt) > Date.parse(change.issue.updatedAt)) return true;
+    // Deliveries can arrive out of order: an older state of the issue changes nothing. Timestamps have
+    // one-second resolution, so a delivery stamped the same second as the stored state (Conveyor's own
+    // writes land together) is not newer either.
+    if (prior && Date.parse(prior.sourceUpdatedAt) >= Date.parse(change.issue.updatedAt)) return true;
     await reconcileRepository({
       ...this.#reconcileInput(repositoryId, repository),
       issues: [change.issue],
@@ -755,6 +757,11 @@ export class RepositorySync {
     const applied = store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
     if (change.issue.state === "closed" && applied) await this.#deps.recoverClosedItem(repositoryId, applied, change.issue);
     if (store.repositoryPause(repositoryId)) return true;
+    // A newly discovered or rediscovered item has no parent or dependencies yet: load them before the
+    // scheduler can select it.
+    if (applied && applied.projectedState !== "unlisted" && (!prior || prior.projectedState === "unlisted")) {
+      await this.#deps.reconcileRelationships(repositoryId, repository.address, new Set([number]));
+    }
     this.#deps.wakeClearedFollowUps(repositoryId, followUpBodies);
     this.#deps.restorePendingStatus(repositoryId);
     this.#deps.interruptIneligibleRuns();
