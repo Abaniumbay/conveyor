@@ -125,7 +125,7 @@ describe("reference configuration", () => {
     expect(kaveh).toMatch(/Read the test plan/);
     expect(kaveh).toMatch(/write the planned tests first/);
     expect(kaveh).toMatch(/fails for the intended reason before you change the code/);
-    expect(kaveh).toMatch(/change\.recordCriterionTests[^\n]*case id/);
+    expect(kaveh).toMatch(/change\.recordCriterionTests[^\n]*set `caseId`/);
     for (const reviewer of ["shaghayegh", "shirin"]) {
       const text = await read(reviewer);
       expect(text).toMatch(/check the change against each planned case/);
