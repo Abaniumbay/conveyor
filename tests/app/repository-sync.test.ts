@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import { labelDefinitions, RepositorySync } from "../../src/app/repository-sync";
+import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
 import type { EventType, StoredEvent } from "../../src/events/catalogue";
 import type { SourceIssue } from "../../src/source/types";
@@ -16,8 +17,9 @@ async function setup(options: { webhook?: boolean } = {}) {
     purged: [] as string[], scheduled: 0, refreshed: [] as string[][], relationships: [] as Array<number[] | null>,
     forgotten: [] as number[][], interrupts: 0, resumedPurges: 0, labels: 0, registered: 0, created: [] as string[],
     recovered: [] as string[], scratch: 0, answers: 0, ciEvents: [] as string[], listings: [] as Array<string | undefined>,
+    order: [] as string[],
   };
-  const failures = { listing: null as Error | null, labels: null as Error | null };
+  const failures = { listing: null as Error | null, labels: null as Error | null, relationships: null as Error | null, relationshipDelay: 0 };
   const source = {
     ...world.items.client,
     listIssues: async (_address: string, listing?: { since?: string }) => {
@@ -54,11 +56,16 @@ async function setup(options: { webhook?: boolean } = {}) {
     resumePurges: () => { calls.resumedPurges += 1; },
     interruptIneligibleRuns: () => { calls.interrupts += 1; return []; },
     runsEnded: async () => {},
-    schedule: () => { calls.scheduled += 1; },
-    refreshStatusComments: (issueIds) => { calls.refreshed.push([...issueIds]); },
+    schedule: () => { calls.scheduled += 1; calls.order.push("schedule"); },
+    refreshStatusComments: (issueIds) => { calls.refreshed.push([...issueIds]); calls.order.push("refresh"); },
     restoreFeedback: () => {},
     relabelOldPausedItems: async () => {},
-    reconcileRelationships: async (_repositoryId, _address, scope) => { calls.relationships.push(scope === null ? null : [...scope]); },
+    reconcileRelationships: async (_repositoryId, _address, scope) => {
+      calls.relationships.push(scope === null ? null : [...scope]);
+      if (failures.relationshipDelay) await Bun.sleep(failures.relationshipDelay);
+      if (failures.relationships) throw failures.relationships;
+      calls.order.push("relationships");
+    },
     forgetRelationships: (_repositoryId, numbers) => { calls.forgotten.push([...numbers]); },
     backfillCiIndicators: async () => {},
     applyCiEvent: async (_repositoryId, event) => { calls.ciEvents.push(event.type); },
@@ -310,6 +317,146 @@ describe("observations", () => {
     expect(events("repository.reconciled")).toEqual([{ issueNumbers: [1] }]);
   });
 
+  test("a delivery stamped the same second as the stored state, or older, with older labels changes nothing", async () => {
+    const { world, sync, calls, events } = await setup();
+    const issue = world.items.add(1, ["conveyor", "conveyor:implementation"]);
+    world.seed(1, { stage: "implementation", state: "active" });
+    const actors = { enrollment: { login: "maintainer" }, title: "unchanged", body: "unchanged" } as const;
+    const deliver = async (item: SourceIssue) => {
+      sync.reactToObservation(observation("itemSource.itemChanged", { repository: "owner/my-app", number: 1, action: "unlabeled", pullRequest: false, item, actors }));
+      await sync.webhooksSettled();
+    };
+    // AC-1.1, AC-2.2: the same updatedAt, no enrollment labels.
+    await deliver({ ...issue, labels: [], updatedAt: issue.updatedAt });
+    expect(world.store.getIssueByNumber("repo", 1)).toMatchObject({ projectedStage: "implementation", labels: ["conveyor", "conveyor:implementation"] });
+    expect(world.store.getIssueByNumber("repo", 1)?.projectedState).not.toBe("unlisted");
+    expect(calls.purged).toEqual([]);
+    expect(calls.forgotten).toEqual([]);
+    // AC-1.2: strictly older.
+    await deliver({ ...issue, labels: [], updatedAt: "2026-10-16T23:59:00Z" });
+    expect(world.store.getIssueByNumber("repo", 1)).toMatchObject({ projectedStage: "implementation", sourceUpdatedAt: issue.updatedAt });
+    expect(calls.purged).toEqual([]);
+    expect(events("repository.reconciled")).toEqual([]);
+  });
+
+  test("a delivery stamped the same second as an unlisted item's stored state still enrols it", async () => {
+    const { world, sync } = await setup();
+    // A dependency placeholder carries the source's timestamp but is unlisted.
+    const issue = world.items.add(2, ["conveyor", "conveyor:implementation"]);
+    world.seed(2, { stage: null, state: "unlisted" });
+    const stored = world.store.getIssueByNumber("repo", 2)!;
+    world.store.upsertIssue({ ...stored, sourceUpdatedAt: issue.updatedAt });
+    sync.reactToObservation(observation("itemSource.itemChanged", {
+      repository: "owner/my-app", number: 2, action: "labeled", pullRequest: false, item: issue,
+      actors: { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } },
+    }));
+    await sync.webhooksSettled();
+    expect(world.store.getIssueByNumber("repo", 2)).toMatchObject({ projectedStage: "implementation" });
+  });
+
+  test("a stale delivery keeps the relationships stored for a child created by work breakdown", async () => {
+    const { world, sync, calls } = await setup();
+    // The stored state breakdown.createChildren's persist() leaves: enrollment labels, parent and blocker.
+    world.items.add(1, ["conveyor", "conveyor:implementation"]);
+    world.items.add(100, ["conveyor", "conveyor:implementation"]);
+    const dependent = world.items.add(101, ["conveyor", "conveyor:implementation"]);
+    world.seed(1, { stage: "implementation", state: "active" });
+    world.seed(100, { stage: "implementation", state: "active" });
+    world.seed(101, { stage: "implementation", state: "active" });
+    world.store.replaceRelationships("issue-100", { parentId: "issue-1", siblingOrder: null }, []);
+    world.store.replaceRelationships("issue-101", { parentId: "issue-1", siblingOrder: null }, ["issue-100"]);
+    const actors = { enrollment: { login: "maintainer" }, title: "unchanged", body: "unchanged" } as const;
+    for (const updatedAt of [dependent.updatedAt, "2026-10-16T00:00:00Z"]) {
+      sync.reactToObservation(observation("itemSource.itemChanged", {
+        repository: "owner/my-app", number: 101, action: "created", pullRequest: false, item: { ...dependent, labels: [], updatedAt }, actors,
+      }));
+      await sync.webhooksSettled();
+    }
+    expect(world.store.listDependencies("issue-101")).toEqual(["issue-100"]);
+    expect(world.store.getIssue("issue-101")?.parentId).toBe("issue-1");
+    expect(world.store.listChildren("issue-1").map((child) => child.issueId)).toEqual(["issue-100", "issue-101"]);
+    expect(calls.purged).toEqual([]);
+  });
+
+  test("a delivery newer than the stored state still unlists the item, and a stage change applies once", async () => {
+    const { world, sync, calls, events } = await setup();
+    const issue = world.items.add(1, ["conveyor", "conveyor:review"]);
+    world.seed(1, { stage: "review", state: "active" });
+    const someone = { enrollment: { login: "someone-else" }, title: "unchanged", body: "unchanged" } as const;
+    const deliver = async (item: SourceIssue, actors: typeof someone) => {
+      sync.reactToObservation(observation("itemSource.itemChanged", { repository: "owner/my-app", number: 1, action: "labeled", pullRequest: false, item, actors }));
+      await sync.webhooksSettled();
+    };
+    // AC-6.2
+    await deliver({ ...issue, labels: ["conveyor", "conveyor:implementation"], updatedAt: "2026-10-17T00:01:00Z" }, someone);
+    expect(world.store.getIssueByNumber("repo", 1)).toMatchObject({ projectedStage: "implementation" });
+    await deliver(issue, someone);
+    expect(world.store.getIssueByNumber("repo", 1)).toMatchObject({ projectedStage: "implementation" });
+    // AC-6.1
+    await deliver({ ...issue, labels: [], updatedAt: "2026-10-17T00:02:00Z" }, someone);
+    expect(calls.purged).toEqual(["issue-1"]);
+    expect(events("repository.reconciled")).toEqual([{ issueNumbers: [1] }, { issueNumbers: [1] }]);
+  });
+});
+
+describe("loading relationships on a delivery", () => {
+  const actors = { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } } as const;
+  const labeled = (number: number, item: SourceIssue) => observation("itemSource.itemChanged", {
+    repository: "owner/my-app", number, action: "labeled", pullRequest: false, item, actors,
+  });
+
+  test("a discovered item has its relationships reloaded, awaited, before the scheduler runs", async () => {
+    const { world, sync, calls, failures } = await setup();
+    const issue = world.items.add(5, ["conveyor", "conveyor:implementation"]);
+    failures.relationshipDelay = 20;
+    sync.reactToObservation(labeled(5, issue));
+    await sync.webhooksSettled();
+    expect(calls.relationships).toEqual([[5]]);
+    expect(calls.order).toEqual(["relationships", "schedule", "refresh"]);
+  });
+
+  test("a rediscovered item has its relationships reloaded before the scheduler runs", async () => {
+    const { world, sync, calls } = await setup();
+    const issue = world.items.add(5, ["conveyor", "conveyor:implementation"]);
+    world.items.issues.get(5)!.labels = [];
+    world.seed(5, { stage: null, state: "unlisted" });
+    world.items.issues.get(5)!.labels = ["conveyor", "conveyor:implementation"];
+    sync.reactToObservation(labeled(5, { ...issue, updatedAt: "2026-10-17T00:09:00Z" }));
+    await sync.webhooksSettled();
+    expect(world.store.getIssueByNumber("repo", 5)).toMatchObject({ projectedStage: "implementation" });
+    expect(world.store.getIssueByNumber("repo", 5)?.projectedState).not.toBe("unlisted");
+    expect(calls.relationships).toEqual([[5]]);
+    expect(calls.order).toEqual(["relationships", "schedule", "refresh"]);
+  });
+
+  test("an item already listed does not reload its relationships on a delivery", async () => {
+    const { world, sync, calls } = await setup();
+    const issue = world.items.add(5, ["conveyor", "conveyor:implementation"]);
+    world.seed(5, { stage: "implementation", state: "active" });
+    sync.reactToObservation(labeled(5, { ...issue, updatedAt: "2026-10-17T00:09:00Z" }));
+    await sync.webhooksSettled();
+    expect(calls.relationships).toEqual([]);
+  });
+
+  test("a failed relationship load surfaces like a failed delivery and the scheduler is not run", async () => {
+    const { world, sync, calls, failures } = await setup();
+    const issue = world.items.add(5, ["conveyor", "conveyor:implementation"]);
+    failures.relationships = new Error("relationships unavailable");
+    sync.reactToObservation(labeled(5, issue));
+    const records: LogRecord[] = [];
+    log.configure({ sinks: [{ write: (record) => { records.push(record); } }] });
+    try {
+      await sync.webhooksSettled();
+    } finally {
+      log.configure({ sinks: [new ConsoleSink()] });
+    }
+    expect(records.filter((record) => record.level === "error").map((record) => record.message)).toContain("Webhook delivery failed");
+    expect(calls.relationships).toEqual([[5]]);
+    expect(calls.scheduled).toBe(0);
+  });
+});
+
+describe("relationship notifications", () => {
   test("changed relationships forget what was read and reconcile the named items once", async () => {
     const { world, sync, calls, events } = await setup();
     world.items.add(1, ["conveyor", "conveyor:implementation"]);
