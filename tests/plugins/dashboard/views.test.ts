@@ -737,6 +737,51 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
+  test("item details carry the recorded test plan, null without one, and drop malformed cases", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-detail-test-plan-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [
+        { id: "build", name: "Build", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] },
+      ] } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    const bodyWith = (plan: unknown) => `## Test Plan\n\n<!-- conveyor:test-plan:start -->\n\`\`\`json\n${JSON.stringify(plan)}\n\`\`\`\n<!-- conveyor:test-plan:end -->`;
+    const good = { id: "T1", criterionId: "AC-1", kind: "behaviour", proves: "shows it", boundary: "b", setup: "s", action: "a", expected: "e" };
+    const add = (id: string, number: number, body: string) => {
+      store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://github.com/owner/repo/issues/${number}`, title: id, body, sourceState: "open", sourceStateReason: null, labels: ["conveyor", "conveyor:build"], sourceUpdatedAt: "2026-10-01T00:00:00Z" });
+      store.setQueueRank(id, number);
+      store.setIssueProjection(id, { stage: "build", state: "active", warning: null });
+      store.setStageState({ issueId: id, stageId: "build", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    };
+    add("planned", 1, bodyWith({ criteriaDigest: "d", cases: [good], constraints: { mustNotTouch: ["src/engine"], reuse: ["testPlanOf"], redLines: [] } }));
+    add("plain", 2, "No plan here");
+    add("malformed", 3, bodyWith({ criteriaDigest: "d", cases: [null, 7, "x", { id: "T9" }, good], constraints: { mustNotTouch: "nope", reuse: [1, "ok"] } }));
+    add("bad-constraints", 4, bodyWith({ criteriaDigest: "d", cases: [good], constraints: 5 }));
+
+    const service = new ConveyorService(config, store, {} as never);
+    const views = dashboardViews(service);
+    expect(views.issueDetails("csrf", "planned")?.testPlan).toEqual({
+      cases: [{ id: "T1", criterionId: "AC-1", kind: "behaviour", proves: "shows it" }],
+      constraints: { mustNotTouch: ["src/engine"], reuse: ["testPlanOf"], redLines: [] },
+    });
+    expect(views.issueDetails("csrf", "plain")?.testPlan).toBeNull();
+    expect(views.issueDetails("csrf", "malformed")?.testPlan).toEqual({
+      cases: [{ id: "T1", criterionId: "AC-1", kind: "behaviour", proves: "shows it" }],
+      constraints: { mustNotTouch: [], reuse: ["ok"], redLines: [] },
+    });
+    expect(views.issueDetails("csrf", "bad-constraints")?.testPlan).toBeNull();
+    expect(views.dashboard("csrf").stages.flatMap((column) => column.issues)).toHaveLength(4);
+    store.close();
+  });
+
   test("projects detail stage badges from board position and recorded stage history", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-detail-stage-badges-"));
     temporaryDirectories.push(root);
