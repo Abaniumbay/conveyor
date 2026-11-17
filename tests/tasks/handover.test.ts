@@ -97,6 +97,14 @@ describe("handover", () => {
     expect(answered.truncated?.omitted).toContain("values beyond");
   });
 
+  test("includes the recorded test plan with case ids and constraints, and states when there is none", async () => {
+    const w = await setup({ ci: "none" });
+    expect((await w.build()).testPlan).toMatchObject({ recorded: false });
+    const plan = { criteriaDigest: "d", cases: [{ id: "AC-1.1", criterionId: "AC-1", proves: "p", boundary: "b", setup: "s", action: "a", expected: "e", kind: "behaviour" }], constraints: { mustNotTouch: ["src/x.ts"], reuse: [], redLines: ["no mocks"] } };
+    w.store.upsertIssue({ ...w.store.getIssue("i1")!, body: `<!-- conveyor:test-plan:start -->\n\`\`\`json\n${JSON.stringify(plan)}\n\`\`\`\n<!-- conveyor:test-plan:end -->\n` } as never);
+    expect((await w.build()).testPlan).toMatchObject({ recorded: true, cases: [{ id: "AC-1.1" }], constraints: { mustNotTouch: ["src/x.ts"], redLines: ["no mocks"] } });
+  });
+
   test("states absence explicitly", async () => {
     const w = await setup({ ci: "none" });
     const h = await w.build();

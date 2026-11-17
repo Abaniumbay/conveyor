@@ -154,7 +154,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `item.criteriaDefined` | check | item, repository | - | Passes when the item has at least one acceptance criterion, or has children that carry the work. |
 | `item.dependenciesMet` | check | item, repository | - | Pending while any dependency is neither closed nor done; the message lists them. A blocker of a tracked repository closing or reaching done wakes it at once. |
 | `item.followUps` | check | item, repository | - | Passes the follow-up stage; notes, when present, require its automatic acknowledgement gate. |
-| `item.get` | tool | - | - | Read the accepted source snapshot of the current issue, including whether it must remain one item. |
+| `item.get` | tool | - | - | Read the accepted source snapshot of the current issue, including whether it must remain one item and its recorded test plan (testPlan, null when none). |
 | `item.guidance` | tool | - | - | Read source-specific agent guidance. |
 | `item.issueClosed` | check | item, repository | - | Passes when the item's issue is closed after its change merged, judged only from the recorded merge and the projected issue state (no model; Conveyor never closes the issue). An item whose change did not merge passes. While the issue is still open within the grace period after the recorded merge (`graceMinutes`, default 10, long enough for GitHub's own auto-close) it is pending and wakes when the issue changes. After it the item stops as needs-intervention, naming the merged change and telling the owner to close the issue as completed, or reopen the work. |
 | `item.labelsValid` | check | item, repository | - | Passes when the repository configures no system labels or the item has at least one of them (the loaded labels are already limited to configured ones). |
@@ -167,8 +167,10 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `item.setParent` | tool | - | invalidates item | Set the parent of the current issue. |
 | `item.setRefinement` | tool | - | invalidates item | Write the managed Refinement section of the issue body: summary, scope, areas and files, coupling and how it was resolved, parallel children (roll-up parents), risks, and verification. Replaces only that section. |
 | `item.setSystemLabels` | tool | - | invalidates item | Replace the issue's configured system-area labels while preserving workflow and unmanaged labels. |
+| `item.setTestPlan` | tool | - | invalidates item | Record the test plan in the managed Test Plan section of the issue body: cases (id such as AC-2.1, criterionId, proves, boundary, setup, action, expected, kind behaviour\|edge\|negative\|failure\|manual) and constraints (mustNotTouch, reuse, redLines). Every case must name an existing criterion; case ids must be unique. Replaces only that section and records the criteria it was written against. |
 | `item.setTitle` | tool | - | invalidates item | Replace the current issue's title so it states the refined scope. |
 | `item.setType` | tool | - | invalidates item | Set the current issue's type (Bug for wrong existing behaviour, Feature for a new capability, Task otherwise). The value must be a type the repository owner's organization defines; an owner without types reports it as unavailable. |
+| `item.testPlanComplete` | check | item, repository | - | Passes when every non-manual acceptance criterion has at least one planned case in the recorded test plan; fails naming the uncovered criterion ids, or when the criteria changed after the plan was recorded (record it again with item.setTestPlan). |
 
 ### legacy
 

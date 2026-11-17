@@ -3,6 +3,7 @@
 // Every part is bounded; a shortened part says what was left out and which tool returns it all.
 
 import type { CiChange, CiRun } from "../app/ci-provider";
+import { testPlanOf } from "../source/managed-sections";
 import { summarizeTodos } from "../db/todos";
 import { inspectWorktree } from "../workspace/git";
 import { importNativeReview, type ChangeFindingsDeps } from "./change-findings";
@@ -24,6 +25,7 @@ export const HANDOVER_LIMITS = {
   findingText: 600,
   checks: 30,
   summary: 1_500,
+  testPlanCases: 100,
   answeredQuestions: 20,
   answeredQuestionText: 1_500,
 } as const;
@@ -91,6 +93,17 @@ function answeredQuestionsPart(deps: HandoverDeps, stageId: string) {
     truncated: textTruncated
       ? { omitted: [truncated?.omitted, textTruncated].filter(Boolean).join("; "), fullState: "conversation.get" }
       : truncated,
+  };
+}
+
+function testPlanPart(deps: HandoverDeps) {
+  const plan = testPlanOf(deps.store.getIssue(deps.issueId)?.body ?? "");
+  if (!plan) return { recorded: false, note: "No test plan is recorded for this item." };
+  const { shown, truncated } = bounded(plan.cases, HANDOVER_LIMITS.testPlanCases, "test cases", "item.get");
+  return {
+    recorded: true,
+    note: "Implement and test against these cases; each case id names what must be proved for its criterion.",
+    cases: shown, constraints: plan.constraints, truncated,
   };
 }
 
@@ -203,6 +216,7 @@ export async function buildHandover(
       },
     } : {}),
     todos: todosPart(deps),
+    testPlan: testPlanPart(deps),
     answeredQuestions: answeredQuestionsPart(deps, input.stageId),
     openFindings: await findingsPart(deps),
     change: await changePart(deps),

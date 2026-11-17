@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 /** The only issue or pull-request body blocks this module considers Conveyor-owned. */
-export type ManagedSectionName = "acceptance-criteria" | "breakdown" | "dependencies" | "description" | "follow-ups" | "refinement";
+export type ManagedSectionName = "acceptance-criteria" | "breakdown" | "dependencies" | "description" | "follow-ups" | "refinement" | "test-plan";
 
 export interface ManagedSectionsSnapshot {
   /** SHA-256 of the entire body; pass this back when writing to reject stale edits. */
@@ -21,6 +21,7 @@ const SECTION_NAMES: readonly ManagedSectionName[] = [
   "description",
   "follow-ups",
   "refinement",
+  "test-plan",
 ];
 
 interface MarkerLine {
@@ -48,7 +49,7 @@ export function parseManagedSections(body: string): ManagedSectionsSnapshot {
     if (raw.length === 0) break;
     const contentEnd = offset + raw.replace(/(?:\r\n|\n|\r)$/, "").length;
     const text = body.slice(offset, contentEnd).trim();
-    const match = /^<!-- conveyor:(acceptance-criteria|breakdown|dependencies|description|follow-ups|refinement):(start|end) -->$/.exec(text);
+    const match = /^<!-- conveyor:(acceptance-criteria|breakdown|dependencies|description|follow-ups|refinement|test-plan):(start|end) -->$/.exec(text);
     if (match) {
       const marker: MarkerLine = {
         name: match[1] as ManagedSectionName,
@@ -78,6 +79,7 @@ export function parseManagedSections(body: string): ManagedSectionsSnapshot {
     description: undefined,
     "follow-ups": undefined,
     refinement: undefined,
+    "test-plan": undefined,
   };
   for (const name of SECTION_NAMES) {
     const found = occurrences.get(name)!;
@@ -310,4 +312,59 @@ export function renderRefinementSection(refinement: RefinementSummary): string {
   ].join("\n");
   if (rendered.includes("<!-- conveyor:")) throw new ManagedSectionError("refinement text must not contain managed-section markers");
   return rendered;
+}
+
+export const TEST_CASE_KINDS = ["behaviour", "edge", "negative", "failure", "manual"] as const;
+
+export interface TestCase {
+  id: string;
+  criterionId: string;
+  proves: string;
+  boundary: string;
+  setup: string;
+  action: string;
+  expected: string;
+  kind: (typeof TEST_CASE_KINDS)[number];
+}
+
+export interface TestPlanConstraints {
+  mustNotTouch: string[];
+  reuse: string[];
+  redLines: string[];
+}
+
+export interface TestPlan {
+  /** Digest of the criteria (ids and texts) the plan was recorded against. */
+  criteriaDigest: string;
+  cases: TestCase[];
+  constraints: TestPlanConstraints;
+}
+
+/** A stable digest of the criteria's ids and texts, in order. */
+export function criteriaDigest(criteria: ReadonlyArray<{ id: string; text: string }>): string {
+  return createHash("sha256").update(JSON.stringify(criteria.map(({ id, text }) => [id, text])), "utf8").digest("hex");
+}
+
+/** The managed Test plan section: a heading above the plan as fenced JSON. */
+export function renderTestPlanSection(plan: TestPlan): string {
+  const json = JSON.stringify(plan, null, 2);
+  if (json.includes("<!-- conveyor:") || json.includes("```")) throw new ManagedSectionError("test plan text must not contain managed-section markers or code fences");
+  return `## Test Plan\n\n\`\`\`json\n${json}\n\`\`\``;
+}
+
+/**
+ * The recorded test plan of an issue body, or null when none was recorded or the section cannot be
+ * read. This is the one reader of the section; implementers, reviewers and the handover use it.
+ */
+export function testPlanOf(body: string): TestPlan | null {
+  try {
+    const markdown = parseManagedSections(body).sections["test-plan"];
+    const json = markdown === undefined ? null : /```json\r?\n([\s\S]*?)\r?\n```/.exec(markdown)?.[1];
+    if (!json) return null;
+    const plan = JSON.parse(json) as Partial<TestPlan>;
+    if (typeof plan.criteriaDigest !== "string" || !Array.isArray(plan.cases) || !plan.constraints) return null;
+    return plan as TestPlan;
+  } catch {
+    return null;
+  }
 }
