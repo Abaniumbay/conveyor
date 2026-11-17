@@ -222,6 +222,42 @@ describe("conveyor config", () => {
     expect(result.err).toContain("- repositories/broken.yaml: ");
   });
 
+  describe("one agent.run per stage", () => {
+    async function withTwoAgents(): Promise<string> {
+      const home = await initialisedHome();
+      const entrypoint = path.join(home, "config/conveyor.yaml");
+      const text = await readFile(entrypoint, "utf8");
+      await writeFile(entrypoint, text.replace(
+        "stages: !include builtin:stages.yaml",
+        "stages:\n  - { id: build, concurrency: 1, actions: [{ id: write, task: agent.run, with: { agent: a } }, { id: check, task: agent.run, with: { agent: b } }], exit-gate: [{ task: item.criteriaDefined }] }",
+      ));
+      return home;
+    }
+
+    test("the packaged default stages pass config check", async () => {
+      const home = await initialisedHome();
+      const result = await cli("config", "check", "--home", home);
+      expect(result.code).toBe(EXIT.ok);
+    });
+
+    test("config check exits non-zero and prints the violation", async () => {
+      const home = await withTwoAgents();
+      const result = await cli("config", "check", "--home", home);
+      expect(result.code).toBe(EXIT.config);
+      expect(result.err).toContain('stage "build"');
+      expect(result.err).toContain('"write", "check"');
+      expect(result.err).toContain("more than one agent.run");
+    });
+
+    test("doctor reports the same violation", async () => {
+      const home = await withTwoAgents();
+      const checks = await doctorChecks(home, path.join(home, "config/conveyor.yaml"), async () => false);
+      const failed = checks.find((check) => check.name === "configuration" && check.status === "fail");
+      expect(failed?.detail).toContain('stage "build"');
+      expect(failed?.detail).toContain("more than one agent.run");
+    });
+  });
+
   describe("pipelines deprecation", () => {
     async function withRepository(): Promise<string> {
       const home = await initialisedHome();
