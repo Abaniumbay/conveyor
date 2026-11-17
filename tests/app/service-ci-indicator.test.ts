@@ -716,3 +716,39 @@ test("a pull request delivery does not reconcile the repository", async () => {
   expect(w.state.issueListings - listings).toBe(0);
   await w.service.close();
 });
+
+const addBlocker = (w: Awaited<ReturnType<typeof setup>>, stage: string) => {
+  w.store.upsertIssue({ id: "blocker", repositoryId: "repo", sourceNumber: 7, sourceUrl: "u", title: "B", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+  w.store.setIssueProjection("blocker", { stage, state: "active", warning: null });
+};
+
+test("AC-8.1 a blocker moving to another stage wakes a dependent parked on dependencies at once", async () => {
+  const w = await setup();
+  addBlocker(w, "merge");
+  const journal = w.store.executions();
+  const epoch = journal.stageEpoch("issue");
+  const { record } = journal.planExecution({ itemId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, list: "exit-gate", taskInstanceId: "dependencies" });
+  const later = new Date(Date.now() + 5 * 60_000).toISOString();
+  journal.markPending(record.id, { wakeAt: later, deadlineAt: null, waitFor: { topics: ["issue:owner/repo:7"], kind: "dependencies" } }, epoch);
+  journal.saveCursor({
+    issueId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate",
+    taskInstanceId: "dependencies", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: later, deadlineAt: null,
+  }, epoch);
+  const moved = Date.now();
+  w.store.setIssueProjection("blocker", { stage: "verify", state: "active", warning: null });
+  await w.service.eventsSettled();
+  expect(Date.parse(journal.getCursor("issue")!.wakeAt!) - moved).toBeLessThan(5_000);
+  await w.service.close();
+});
+
+test("AC-6.2 a dependent already past the check is untouched when its blocker is sent back", async () => {
+  const w = await setup();
+  addBlocker(w, "verify");
+  w.store.replaceRelationships("issue", null, ["blocker"]);
+  const before = { issue: w.store.getIssue("issue")!, stage: w.store.getStageState("issue"), cursor: w.store.executions().getCursor("issue") };
+  w.store.setIssueProjection("blocker", { stage: "implementation", state: "active", warning: null });
+  await w.service.eventsSettled();
+  const after = { issue: w.store.getIssue("issue")!, stage: w.store.getStageState("issue"), cursor: w.store.executions().getCursor("issue") };
+  expect(after).toEqual(before);
+  await w.service.close();
+});

@@ -11,8 +11,8 @@ afterEach(async () => {
   opened = null;
 });
 
-async function setup(options: { runners?: number } = {}) {
-  const world = await itemWorld();
+async function setup(options: { runners?: number; extra?: (root: string) => Record<string, unknown> } = {}) {
+  const world = await itemWorld(options.extra);
   if (options.runners !== undefined) world.config.settings.runners = options.runners;
   const running = new Map<string, RunningStage>();
   const state = { draining: false, shuttingDown: false, unready: new Set<string>() };
@@ -334,5 +334,107 @@ describe("dependencies inherited from ancestors", () => {
     expect(calls.launched).not.toContain(racing);
     expect(world.store.getIssue(racing)!.projectedState).toBe("active");
     expect(world.store.getStageState(racing)?.status).toBe("ready");
+  });
+});
+
+describe("dependencies released at a configured stage", () => {
+  const native = (id: string, gate: Array<Record<string, unknown>> = [{ id: "criteria", task: "item.criteriaDefined" }]) => ({ id, actions: [], "exit-gate": gate, concurrency: 3 });
+  const extra = (after?: string) => (root: string) => ({
+    pipelines: {
+      default: {
+        stages: [
+          native("implementation", [{ id: "dependencies", task: "item.dependenciesMet", ...(after ? { with: { after } } : {}) }]),
+          native("review"), native("merge"), native("verify"),
+        ],
+      },
+      other: { stages: [native("plan"), native("build"), native("ship")] },
+    },
+    repositories: {
+      repo: { source: "github", address: "owner/my-app", folder: root, pipeline: "default", concurrency: 3 },
+      elsewhere: { source: "github", address: "owner/other", folder: root, pipeline: "other" },
+    },
+  });
+  const blockerAt = (world: Awaited<ReturnType<typeof setup>>["world"], number: number, stage: string | null, repositoryId = "repo") => {
+    if (repositoryId !== "repo") world.store.upsertRepository({ id: repositoryId, configName: repositoryId, source: "github", address: "owner/other", folder: world.root, configHash: world.config.hash });
+    world.store.upsertIssue({
+      id: `issue-${number}`, repositoryId, sourceNumber: number, sourceUrl: `https://example.com/${number}`, title: `Issue ${number}`, body: "",
+      sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-10-17T00:00:00Z",
+    });
+    world.store.setIssueProjection(`issue-${number}`, { stage, state: "active", warning: null });
+    return `issue-${number}`;
+  };
+  const satisfied = (scheduler: Scheduler, id: string) => scheduler.candidates().find((candidate) => candidate.id === id)!.dependenciesSatisfied;
+
+  test("AC-7.1 starts a dependent whose blocker is past the threshold", async () => {
+    const { world, scheduler, calls, ready } = await setup({ extra: extra("merge") });
+    const id = ready(1);
+    world.store.replaceRelationships(id, null, [blockerAt(world, 2, "verify")]);
+    expect(satisfied(scheduler, id)).toBe(true);
+    scheduler.schedule();
+    expect(calls.launched).toEqual([id]);
+    expect(scheduler.liveStatusReader()(world.store.getIssue(id)!)?.reason ?? "").not.toContain("Waiting for dependencies");
+  });
+
+  test("AC-7.2 holds a dependent whose blocker is at or before the threshold and says so", async () => {
+    const { world, scheduler, calls, ready } = await setup({ extra: extra("merge") });
+    const id = ready(1);
+    world.store.replaceRelationships(id, null, [blockerAt(world, 2, "merge")]);
+    expect(satisfied(scheduler, id)).toBe(false);
+    scheduler.schedule();
+    expect(calls.launched).toEqual([]);
+    expect(scheduler.liveStatusReader()(world.store.getIssue(id)!)).toMatchObject({ kind: "waiting", reason: "Waiting for dependencies: #2" });
+    world.store.setIssueProjection("issue-2", { stage: "implementation", state: "active", warning: null });
+    expect(satisfied(scheduler, id)).toBe(false);
+  });
+
+  test("AC-7.3 without after a blocker waits for closed or done whatever its stage", async () => {
+    const { world, scheduler, ready } = await setup({ extra: extra() });
+    const id = ready(1);
+    const blocker = blockerAt(world, 2, "verify");
+    world.store.replaceRelationships(id, null, [blocker]);
+    expect(satisfied(scheduler, id)).toBe(false);
+    world.store.setIssueProjection(blocker, { stage: "verify", state: "done", warning: null });
+    expect(satisfied(scheduler, id)).toBe(true);
+    world.store.setIssueProjection(blocker, { stage: "verify", state: "active", warning: null });
+    world.store.upsertIssue({ ...world.store.getIssue(blocker)!, sourceState: "closed" });
+    expect(satisfied(scheduler, id)).toBe(true);
+  });
+
+  test("AC-7.4 the admission recheck and an ancestor's dependency use the same threshold", async () => {
+    const { world, scheduler, calls, ready } = await setup({ extra: extra("merge"), runners: 3 });
+    const direct = ready(1);
+    const child = ready(3);
+    const parent = ready(4);
+    const blocker = blockerAt(world, 2, "verify");
+    world.store.replaceRelationships(direct, null, [blocker]);
+    world.store.replaceRelationships(parent, null, [blocker]);
+    world.store.replaceRelationships(child, { parentId: parent, siblingOrder: 1 }, []);
+    scheduler.schedule();
+    expect(calls.launched).toContain(direct);
+    expect(calls.launched).toContain(child);
+    expect(calls.launched).not.toContain(parent);
+  });
+
+  test("AC-7.4 neither starts while the blocker is still in implementation", async () => {
+    const { world, scheduler, calls, ready } = await setup({ extra: extra("merge"), runners: 3 });
+    const direct = ready(1);
+    const child = ready(3);
+    const parent = ready(4);
+    const blocker = blockerAt(world, 2, "implementation");
+    world.store.replaceRelationships(direct, null, [blocker]);
+    world.store.replaceRelationships(parent, null, [blocker]);
+    world.store.replaceRelationships(child, { parentId: parent, siblingOrder: 1 }, []);
+    scheduler.schedule();
+    expect(calls.launched).toEqual([]);
+  });
+
+  test("AC-7.5 a blocker of a pipeline without the stage counts only when closed or done", async () => {
+    const { world, scheduler, ready } = await setup({ extra: extra("merge") });
+    const id = ready(1);
+    const blocker = blockerAt(world, 20, "ship", "elsewhere");
+    world.store.replaceRelationships(id, null, [blocker]);
+    expect(satisfied(scheduler, id)).toBe(false);
+    world.store.setIssueProjection(blocker, { stage: "ship", state: "done", warning: null });
+    expect(satisfied(scheduler, id)).toBe(true);
   });
 });

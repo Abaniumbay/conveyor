@@ -19,12 +19,8 @@ import type { IssueJourneyViewModel } from "../web/types";
 import type { LiveIssueStatus, SchedulerLookups } from "./dashboard-sources";
 import { CI_INDICATOR_ID, type StoredIndicator } from "./indicators";
 import { latestStopReason } from "./item-history";
+import { DEPENDENCIES_TASK, dependencyResolved } from "../core/dependency-rule";
 import { inheritedDependencies, type InheritanceReads } from "../core/inherited-dependencies";
-
-/** A dependency is met when its issue is closed or done. */
-function dependencyMet(blocker: Pick<StoredIssue, "sourceState" | "projectedState"> | null): boolean {
-  return Boolean(blocker && (blocker.sourceState === "closed" || blocker.projectedState === "done"));
-}
 
 /** A stage this process runs now, as the scheduler counts it. */
 export interface RunningStage {
@@ -127,7 +123,7 @@ export class Scheduler {
       // Dependencies, an ancestor's included, can change after the candidates were built. An item
       // whose dependency is unmet waits here; it is neither launched nor stopped, and a later pass starts it.
       const reads = { dependencies: (id: string) => store.listDependencies(id), issue: (id: string) => store.getIssue(id) };
-      if (this.#allDependencies(issue.id, reads).some(({ dependencyId }) => !dependencyMet(store.getIssue(dependencyId)))) continue;
+      if (this.#allDependencies(issue.id, reads).some(({ dependencyId }) => !this.#dependencyMet(issue, store.getIssue(dependencyId)))) continue;
       // The retry marker is only an admission permit. Restore the executor's
       // ordinary ready state immediately before it claims the stage.
       const stage = store.getStageState(issue.id);
@@ -218,7 +214,7 @@ export class Scheduler {
       if (!state?.stageId || issue.queueRank === null) return [];
       const lightweight = this.#deps.isLightweightStage(issue.repositoryId, state.stageId);
       const dependenciesSatisfied = this.#allDependencies(issue.id, { dependencies, issue: getIssue })
-        .every(({ dependencyId }) => dependencyMet(getIssue(dependencyId)));
+        .every(({ dependencyId }) => this.#dependencyMet(issue, getIssue(dependencyId)));
       return [{
         id: issue.id,
         repositoryId: issue.repositoryId,
@@ -241,6 +237,38 @@ export class Scheduler {
         skipped: this.#deps.isSkippedStage(issue.repositoryId, state.stageId),
         gateOnly: !lightweight && this.#deps.isGateOnlyExecution(issue.id, issue.repositoryId, state.stageId),
       }];
+    });
+  }
+
+  /** The `after` threshold of the dependent's own item.dependenciesMet step, if its pipeline sets one. */
+  #dependencyThreshold(repositoryId: string): string | undefined {
+    const { config } = this.#deps;
+    const plan = (config.plans ?? []).find((candidate) => candidate.repositoryId === repositoryId);
+    if (plan) {
+      for (const stage of plan.stages) {
+        for (const task of [...stage.actions, ...stage.exitGate]) {
+          if (task.task === DEPENDENCIES_TASK && typeof task.with.after === "string") return task.with.after;
+        }
+      }
+      return undefined;
+    }
+    // Without a compiled plan, read the pipeline as written (repository overrides do not apply).
+    const pipeline = config.repositories[repositoryId]?.pipeline;
+    for (const stage of pipeline === undefined ? [] : config.pipelines[pipeline]?.stages ?? []) {
+      if (!isNativeStage(stage)) continue;
+      for (const entry of [...stage.actions, ...stage.exitGate]) {
+        const after = (entry.with as { after?: unknown } | undefined)?.after;
+        if (entry.task === DEPENDENCIES_TASK && typeof after === "string") return after;
+      }
+    }
+    return undefined;
+  }
+
+  #dependencyMet(dependent: StoredIssue, blocker: StoredIssue | null): boolean {
+    const { config } = this.#deps;
+    return dependencyResolved(blocker, this.#dependencyThreshold(dependent.repositoryId), (repositoryId) => {
+      const pipeline = config.repositories[repositoryId]?.pipeline;
+      return pipeline === undefined ? null : config.pipelines[pipeline]?.stages.map((stage) => stage.id) ?? null;
     });
   }
 
@@ -364,7 +392,7 @@ export class Scheduler {
       const unmet = this.#allDependencies(issue.id, { dependencies: (id) => store.listDependencies(id), issue: (id) => store.getIssue(id) })
         .flatMap((entry) => {
           const dependency = store.getIssue(entry.dependencyId);
-          return dependency && dependencyMet(dependency) ? [] : [{ ...entry, label: dependency ? `#${dependency.sourceNumber}` : entry.dependencyId }];
+          return this.#dependencyMet(issue, dependency) ? [] : [{ ...entry, label: dependency ? `#${dependency.sourceNumber}` : entry.dependencyId }];
         });
       const reasons = [
         ...(unmet.some((entry) => entry.ancestorId === null)

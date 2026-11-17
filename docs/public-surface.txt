@@ -703,6 +703,7 @@ task-config ci.passed settleSeconds
 task-config ci.settled logLines
 task-config ci.settled settleSeconds
 task-config ci.start retriggerMinutes
+task-config item.dependenciesMet after
 task-config item.issueClosed graceMinutes
 task-config script.run interpreter
 task-config script.run recovery
