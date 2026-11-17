@@ -28,7 +28,7 @@ function issue(number: number, title: string, overrides: Partial<IssueCardViewMo
   };
 }
 
-function board(title: string): DashboardViewModel {
+function board(title: string, overrides: Partial<IssueCardViewModel> = {}): DashboardViewModel {
   const column = (id: string, name: string, issues: IssueCardViewModel[]) => ({ id, name, actors: [], cost: null, totalIssues: issues.length, page: 1, totalPages: 1, issues });
   return {
     title: "Conveyor", project: "1 repositories", totalUsage: "0 runs", harnessUsage: [], draining: null,
@@ -43,7 +43,7 @@ function board(title: string): DashboardViewModel {
     counts: { board: 2, attention: 0 },
     activeWork: { runnerCount: 0, runnerCapacity: 2, runs: [] },
     stages: [
-      { ...column("stage:implementation", "Implementation", [issue(20, title)]), description: null, icon: "🛠️" },
+      { ...column("stage:implementation", "Implementation", [issue(20, title, overrides)]), description: null, icon: "🛠️" },
       { ...column("stage:review", "Review", [issue(21, "Second item", { stage: "review" })]), description: null, icon: "🔍" },
     ],
     backlog: [], done: column("done", "Done", []), attention: column("attention", "Label problems", []),
@@ -69,7 +69,7 @@ const reportTotals = {
   avgQueuedMs: 0, avgReturnsPerItem: 0, avgStopsPerItem: 0, firstPassRate: 1,
 };
 
-function startApp(options: { role?: "user" | "superuser"; runs?: DashboardViewModel["activeWork"]["runs"] } = {}) {
+function startApp(options: { role?: "user" | "superuser"; runs?: DashboardViewModel["activeWork"]["runs"]; issue?: Partial<IssueCardViewModel> } = {}) {
   const role = options.role ?? "superuser";
   const state = { title: "Before" };
   const reclassified: unknown[][] = [];
@@ -80,7 +80,7 @@ function startApp(options: { role?: "user" | "superuser"; runs?: DashboardViewMo
   }));
   const passwordHash = hashPassword(password, { salt: "0123456789abcdef" });
   const account = { id: "operator", username: "operator", role, avatar: "🐼", sessionVersion: 1 };
-  const feed = new DashboardFeed({ build: () => normalizeDashboard(options.runs ? { ...board(state.title), activeWork: { runnerCount: options.runs.length, runnerCapacity: 4, runs: options.runs } } : board(state.title)), settleMs: 5, maxWaitMs: 20 });
+  const feed = new DashboardFeed({ build: () => normalizeDashboard(options.runs ? { ...board(state.title, options.issue), activeWork: { runnerCount: options.runs.length, runnerCapacity: 4, runs: options.runs } } : board(state.title, options.issue)), settleMs: 5, maxWaitMs: 20 });
   const auth = createWebAuth({
     passwordHash: role === "superuser" ? passwordHash : undefined,
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
@@ -203,6 +203,58 @@ describe("dashboard application", () => {
       // The dialog closes first; its close event then moves the address back to the board.
       await page.waitForURL((url) => url.pathname === "/");
       expect(await page.locator("dialog[open]").count()).toBe(0);
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("shows the test plan beside the criteria in a browser", async () => {
+    const criterion = (id: string, text: string) => ({ id, text, approved: false, manual: false, tests: [] });
+    const app = startApp({ issue: {
+      acceptanceCriteria: [criterion("AC-1", "First criterion"), criterion("AC-2", "Second criterion")],
+      testPlan: {
+        cases: [
+          { id: "T1", criterionId: "AC-1", kind: "behaviour", proves: "the first thing works" },
+          { id: "T2", criterionId: "AC-2", kind: "negative", proves: "the second thing is refused" },
+        ],
+        constraints: { mustNotTouch: ["src/engine"], reuse: ["testPlanOf"], redLines: ["no mocks"] },
+      },
+    } });
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      await page.locator(".issue-title", { hasText: "Before" }).click();
+      await page.locator("dialog[open] .details-header h2").waitFor();
+      const first = page.locator('dialog[open] [data-test-plan-criterion="AC-1"]');
+      await first.waitFor();
+      const firstText = await first.innerText();
+      expect(firstText).toContain("T1");
+      expect(firstText).toContain("behaviour");
+      expect(firstText).toContain("the first thing works");
+      expect(firstText).not.toContain("T2");
+      const secondText = await page.locator('dialog[open] [data-test-plan-criterion="AC-2"]').innerText();
+      expect(secondText).toContain("T2");
+      expect(secondText).toContain("negative");
+      expect(secondText).toContain("the second thing is refused");
+      const constraints = await page.locator("dialog[open] [data-test-plan-constraints]").innerText();
+      for (const text of ["src/engine", "testPlanOf", "no mocks"]) expect(constraints).toContain(text);
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("shows no test plan section for an item without a plan in a browser", async () => {
+    const app = startApp({ issue: { acceptanceCriteria: [{ id: "AC-1", text: "First criterion", approved: false, manual: false, tests: [] }], testPlan: null } });
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      await page.locator(".issue-title", { hasText: "Before" }).click();
+      await page.locator("dialog[open] .details-header h2").waitFor();
+      await page.locator("dialog[open]", { hasText: "First criterion" }).waitFor();
+      expect(await page.locator("dialog[open] [data-test-plan]").count()).toBe(0);
+      expect(await page.locator("dialog[open]").getByText("Test plan").count()).toBe(0);
     } finally {
       app.stop();
     }
