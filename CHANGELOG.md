@@ -10,6 +10,34 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.25.0] - 2026-11-18
+
+Claude Code runs authenticate through a host credential relay, so commands in the sandbox never see the real login. Pipelines can release dependents once a blocker passes a configured stage, planning agents can return an item to refinement, and the criterion test gate no longer requires a linked test for manual planned cases. Reports default to 30 days with a weekly first-pass rate.
+
+### Added
+
+- `item.dependenciesMet` accepts `with: { after: <stage> }`: a blocker counts as resolved once it has moved past that stage of its own pipeline, so dependents can start when a blocker has merged instead of waiting for it to be done. Without `after`, a blocker still counts only when closed or done. A blocker whose pipeline has no such stage counts only when closed or done, and the scheduler applies the same threshold.
+
+- Every sandboxed run can have a host-side credential relay: a loopback endpoint inside the sandbox that forwards requests over verified TLS to one configured upstream, with the real credential (read on the host for each request) substituted for a random per-run placeholder. It works with or without `agentEgress` and adds no hosts to the egress allowlist.
+
+- A planning agent can finish with `return-to-refinement` and a reason naming the criterion and the change it needs; the item returns to the refinement stage as a correction. It is refused without a reason or when the stages have no `refinement` stage.
+
+### Changed
+
+- **Breaking:** The Reports view and its API now default to the last 30 days instead of all time. Scripts or clients that read `/api/v1/views/reports` without a `period` and need the all-time report must pass `?period=all`. A new **By week** table shows delivered items, first-pass rate and average returns per item for each UTC ISO week of the selected period and repository.
+
+- **Breaking:** Claude Code runs authenticate through the host credential relay: the run is always sandboxed with `ANTHROPIC_BASE_URL` set to the relay and only a per-run placeholder in `CLAUDE_CODE_OAUTH_TOKEN`. The real token or API key (or the service user's `.credentials.json`) stays on the host, and commands can no longer read the login file from `configDir` or a real credential from the harness's environment.
+
+  Operators: a Claude Code agent in a repository without `agentEgress` used to run with the host network. It now runs in an isolated network with an empty host allowlist, so its commands cannot reach the internet. Add an `agentEgress` block with the `httpsHosts` its commands need (package registries, for example) to restore that access.
+
+### Fixed
+
+- A child created by work breakdown no longer loses its dependencies to a stale delivery, and an item found through a single delivery has its dependencies loaded before the scheduler can start it.
+
+- Items parked for an in-progress slot advance whatever stage they are parked in, and a waiter whose next stage needs no slot advances at once, so changing the stage list no longer strands them.
+
+- The criterion test gate no longer requires a linked test for planned cases of kind `manual` or planned cases of `[Manual]` criteria; every other planned case still needs one.
+
 ## [0.24.0] - 2026-11-17
 
 This release adds a planning stage between refinement and implementation. A planning agent records a test plan for every acceptance criterion, implementers write those tests first and link each one to its planned case, and an implementer can return an item to planning when a case is wrong. The dashboard shows the plan beside the criteria. Configuration loading now rejects a stage that runs more than one agent, so each stage is one role; check your stages with `conveyor config check` before upgrading.
