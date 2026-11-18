@@ -66,6 +66,7 @@ async function world(options: { sessionResume?: boolean; noWorkspace?: boolean; 
   const config = {
     hash: "cfg",
     settings: { artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, agentRunTokenWarning: 15_000_000 },
+    web: { listen: "127.0.0.1:4310" },
     agents: {
       kaveh: { runner: "codex", instructions, tasks: ["agent.reportProgress"], name: "Kaveh", title: "Implementer", workspaceAccess: "write" },
       shirin: { runner: "codex", instructions, tasks: ["agent.reportProgress"], name: "Shirin", title: "Reviewer", workspaceAccess: "read-only" },
@@ -490,9 +491,14 @@ describe("agent.run", () => {
     config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude", workspaceAccess: "read-only" };
     const harnesses = w.deps.harnesses as Record<string, unknown>;
     harnesses["claude-code"] = { ...harnesses.codex as Harness, profile: claudeCodeProfile };
-    config.web = { listen: "127.0.0.1:4310" };
     await w.run(false, { agent: "jamshid" });
-    expect(w.calls[0]!.egress).toBeUndefined();
+    // No agentEgress: the run is still sandboxed with the relay, so it keeps its route to the MCP server.
+    expect(w.calls[0]!.egress).toMatchObject({
+      httpsHosts: [], controlPlaneHosts: ["model.example.test"], mcp: { port: 4310, socket: path.join(config.settings.artifacts, "mcp.sock") },
+    });
+    // A harness without a relay still gets no policy.
+    await w.run(false, { agent: "kaveh" });
+    expect(w.calls[1]!.egress).toBeUndefined();
 
     config.repositories = { repo: { agentEgress: { httpsHosts: ["registry.example.test"], allowLoopbackMcp: true, localServices: [] } } };
     w.setBehaviour(asks("Which database?"));
@@ -500,7 +506,7 @@ describe("agent.run", () => {
     answer(w, "PostgreSQL");
     w.setBehaviour(() => ({}));
     await w.run(true, { agent: "jamshid" });
-    const [fresh, resumed] = [w.calls[1]!, w.calls[2]!];
+    const [fresh, resumed] = [w.calls[2]!, w.calls[3]!];
     expect(resumed.resumeSessionId).toBe("sess-1");
     for (const call of [fresh, resumed]) {
       expect(call.egress).toMatchObject({
