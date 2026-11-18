@@ -339,6 +339,10 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     if (interrupted) throw new ClaudeCodeRunnerError(`Claude Code was interrupted${detail ? `: ${detail}` : ""}`, "interrupted", exitCode, stderr);
     if (sandboxError) throw new ClaudeCodeRunnerError(`Claude Code sandbox could not start commands: ${sandboxError}`, "sandbox", exitCode, stderr);
     if (exitCode !== 0 || final?.is_error) {
+      // A login the host could not refresh is the failure's cause; the sandbox saw only a generic bad gateway.
+      const loginFailure = credentials.loginFailure();
+      if (loginFailure === "renew") throw new ClaudeCodeRunnerError("the Claude Code login has expired and cannot be refreshed: renew it with `claude login`", "process", exitCode, stderr);
+      if (loginFailure === "unavailable") throw new ClaudeCodeRunnerError("Claude Code could not start: the login refresh endpoint was unreachable or failed; the run is retried", "protocol", exitCode, stderr);
       const kind = USAGE_LIMIT_PATTERN.test(`${detail}\n${raw.slice(-4_000)}`) ? "usage-limit" : "process";
       throw new ClaudeCodeRunnerError(`Claude Code exited with code ${exitCode}${detail ? `: ${detail}` : ""}`, kind, exitCode, stderr);
     }

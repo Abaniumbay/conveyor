@@ -9,6 +9,7 @@ import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { codexProfile } from "../../src/plugins/codex/profile";
+import { ClaudeCodeRunnerError } from "../../src/plugins/claude-code/claude-code";
 import { claudeCodeProfile } from "../../src/plugins/claude-code/profile";
 import { ReviewFindings } from "../../src/db/review-findings";
 import { ItemTodos } from "../../src/db/todos";
@@ -203,6 +204,22 @@ describe("agent.run", () => {
     await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toBeInstanceOf(InfrastructureError);
     expect(w.calls).toHaveLength(1);
     expect(notes(w)).toEqual([]);
+  });
+
+  test("AC-8.2: a Claude Code login that cannot be refreshed is not retried as infrastructure and says to run `claude login`", async () => {
+    const w = await world();
+    const failure = new ClaudeCodeRunnerError("the Claude Code login has expired and cannot be refreshed: renew it with `claude login`", "process", 1, "");
+    w.setBehaviour(() => { throw failure; });
+    const error = await w.run(false, { agents: ["kaveh"] }).catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(InfrastructureError);
+    expect((error as Error).message).toContain("claude login");
+  });
+
+  test("AC-10.1: an unreachable login refresh endpoint is an infrastructure error the executor retries", async () => {
+    const w = await world();
+    const failure = new ClaudeCodeRunnerError("Claude Code could not start: the login refresh endpoint was unreachable or failed; the run is retried", "protocol", 1, "");
+    w.setBehaviour(() => { throw failure; });
+    await expect(w.run(false, { agents: ["kaveh"] })).rejects.toBeInstanceOf(InfrastructureError);
   });
 
   test("a sandbox setup failure does not run the next agent and is an infrastructure error naming the sandbox error", async () => {

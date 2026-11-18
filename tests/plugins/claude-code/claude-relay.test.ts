@@ -7,6 +7,8 @@ import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import { runClaudeCode } from "../../../src/plugins/claude-code/claude-code";
 import { claudeLaunch } from "../../../src/plugins/claude-code/launch";
 import { bwrapUnavailableReason } from "../../support/bwrap";
+import { answerWith, startRefreshEndpoint, type RefreshAnswer, type RefreshCall, type RefreshEndpoint } from "../../support/refresh-endpoint";
+import { ClaudeCodeRunnerError } from "../../../src/plugins/claude-code/claude-code";
 import { startRelayUpstream, throwawayCertificate, type RelayUpstream } from "../../support/relay-upstream";
 import { shortTemporaryDirectory } from "../../support/short-temporary-directory";
 
@@ -14,14 +16,14 @@ const unavailable = bwrapUnavailableReason();
 if (unavailable) console.warn(`SKIPPED Claude relay tests: \`bwrap --unshare-net\` is unavailable (${unavailable})`);
 const describeSandbox = unavailable ? describe.skip : describe;
 
-const SECRETS = ["real-oauth-secret", "real-key-secret", "fixture-file-token", "fixture-oauth-token", "fixture-api-key"];
+const SECRETS = ["real-oauth-secret", "real-key-secret", "fixture-file-token", "fixture-oauth-token", "fixture-api-key", "secret-expired-access", "secret-fresh-access", "secret-refresh-1", "secret-refresh-2"];
 
 // The fake claude's secret patterns are built from parts, so neither its source, nor its command line, nor
 // the environment variable that carries the scan program contains a secret literally.
 const SCAN = `
 const fs = require("node:fs");
 const path = require("node:path");
-const secrets = [["real","oauth","secret"], ["real","key","secret"], ["fixture","file","token"], ["fixture","oauth","token"], ["fixture","api","key"]].map((parts) => parts.join("-"));
+const secrets = [["real","oauth","secret"], ["real","key","secret"], ["fixture","file","token"], ["fixture","oauth","token"], ["fixture","api","key"], ["secret","expired","access"], ["secret","fresh","access"], ["secret","refresh","1"], ["secret","refresh","2"]].map((parts) => parts.join("-"));
 const leaks = (text) => secrets.filter((secret) => text.includes(secret));
 const out = { environLeaks: [], cmdlineLeaks: [], pids: 0, users: [], nets: [], bwrapProcesses: 0, files: [], leakedFiles: [], harnessEnvironReadable: false, harnessHasPlaceholder: false };
 const harness = process.env.HARNESS_PID;
@@ -87,6 +89,7 @@ const LOGIN = (token: string) => JSON.stringify({ claudeAiOauth: { accessToken: 
 
 const directories: string[] = [];
 const servers: net.Server[] = [];
+const refreshes: RefreshEndpoint[] = [];
 const upstreams: RelayUpstream[] = [];
 let certificate: Awaited<ReturnType<typeof throwawayCertificate>>;
 beforeAll(async () => {
@@ -95,6 +98,7 @@ beforeAll(async () => {
 afterEach(async () => {
   for (const server of servers.splice(0)) server.close();
   await Promise.all(upstreams.splice(0).map((upstream) => upstream.close()));
+  await Promise.all(refreshes.splice(0).map((refresh) => refresh.close()));
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
@@ -105,6 +109,10 @@ interface Scenario {
   /** Files of the service user's config directory (`.credentials.json` ...), relative to it. */
   config?: Record<string, string> | null;
   egress?: boolean;
+  /** The OAuth endpoint the host refreshes a login at. */
+  refresh?: string;
+  /** The run is expected to reject; `run` then returns the error instead of an envelope. */
+  fails?: boolean;
   resume?: boolean;
   onEvent?: (event: unknown) => void;
   /** Runs while the fake claude is still running, with the run's directories. */
@@ -156,12 +164,19 @@ async function run(scenario: Scenario) {
       resolve: async () => ["203.0.113.1"],
       dial: () => net.connect((model.address() as net.AddressInfo).port, "127.0.0.1"),
       // The test seam: the real upstream is a local TLS server; the credential below is never used.
-      relay: { upstream: `https://localhost:${upstream.port}`, ca: certificate.cert, credential: () => "unused" },
+      relay: {
+        upstream: `https://localhost:${upstream.port}`,
+        ca: certificate.cert,
+        credential: () => "unused",
+        ...(scenario.refresh ? { refreshEndpoint: scenario.refresh, refreshCa: certificate.cert } : {}),
+      },
     },
   });
   const during = scenario.during?.({ directory, artifacts, config });
-  const [envelope] = await Promise.all([running, during]);
-  return { directory, artifacts, config, upstream, envelope, events, capture: JSON.parse(await readFile(capturePath, "utf8")) };
+  let error: ClaudeCodeRunnerError | undefined;
+  const settled = scenario.fails ? running.catch((failure: ClaudeCodeRunnerError) => { error = failure; return undefined; }) : running;
+  const [envelope] = await Promise.all([settled, during]);
+  return { directory, artifacts, config, upstream, envelope: envelope as Awaited<typeof running>, error: error as ClaudeCodeRunnerError, events, capture: JSON.parse(await readFile(capturePath, "utf8")) };
 }
 
 async function everyFile(directory: string): Promise<Array<{ file: string; content: string }>> {
@@ -174,6 +189,19 @@ async function everyFile(directory: string): Promise<Array<{ file: string; conte
   return found;
 }
 
+const refreshing = async (answer?: (call: RefreshCall, number: number) => RefreshAnswer | Promise<RefreshAnswer>): Promise<RefreshEndpoint> => {
+  const endpoint = await startRefreshEndpoint(answer, certificate);
+  refreshes.push(endpoint);
+  return endpoint;
+};
+const loginOf = (accessToken: string, refreshToken: string | undefined, expiresAt = Date.now() - 60_000) =>
+  JSON.stringify({ claudeAiOauth: { accessToken, ...(refreshToken === undefined ? {} : { refreshToken }), expiresAt, scopes: ["user:inference"], subscriptionType: "max" } });
+// What real Claude Code does on an API error: the result event carries the relay's reply text and it exits 1.
+const FAIL_LIKE_CLAUDE = `
+await Bun.write(process.env.CAPTURE, JSON.stringify(capture));
+console.log(JSON.stringify({ type: "result", subtype: "error", is_error: true, result: "API Error: " + capture.reply.status + " " + capture.reply.body, session_id: "s" }));
+process.exit(1);
+`;
 const hasSecret = (value: string): string[] => SECRETS.filter((secret) => value.includes(secret));
 const TOKEN_FILE = { ".credentials.json": LOGIN("fixture-file-token") };
 const REQUEST = `capture.reply = await relay("/v1/messages?beta=true", { headers: authorized(), body: '{"m":1}' });`;
@@ -437,6 +465,111 @@ capture.bare = await relay("/v1/messages", { body: "{}" });`,
       expect(capture.guessed.status).toBe(401);
       expect(capture.bare.status).toBe(401);
       expect(upstream.requests).toEqual([]);
+    });
+  });
+
+  describe("a login that expires", () => {
+    test("AC-1.2: an expired login is refreshed on the host and the run's request authenticates with the refreshed token", async () => {
+      const refresh = await refreshing();
+      const { capture, upstream } = await run({ refresh: refresh.url, config: { ".credentials.json": loginOf("expired-access", "refresh-1") }, body: REQUEST });
+      expect(upstream.requests.map((request) => request.headers.authorization)).toEqual(["Bearer fresh-access"]);
+      expect(capture.reply).toEqual({ status: 200, body: "upstream-ok" });
+      expect(capture.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(capture.env.CONVEYOR_RELAY_PLACEHOLDER);
+      expect(refresh.calls).toHaveLength(1);
+    });
+
+    test("AC-5.1: after a refresh no file, environ or command line a command can read holds a token", async () => {
+      const refresh = await refreshing(() => answerWith({ access_token: "secret-fresh-access", refresh_token: "secret-refresh-2", expires_in: 28800 }));
+      const { capture, envelope, events, artifacts, config } = await run({
+        refresh: refresh.url,
+        config: { ".credentials.json": loginOf("secret-expired-access", "secret-refresh-1") },
+        body: `${REQUEST}
+capture.scan = scan();
+capture.selfEnviron = fs.readFileSync("/proc/self/environ", "latin1");
+capture.cat = text(viaPrefix("cat " + process.env.CLAUDE_CONFIG_DIR + "/.credentials.json 2>&1; echo exit=$?").stdout);`,
+      });
+      expect(capture.reply.status).toBe(200);
+      expect(refresh.calls).toHaveLength(1);
+      expect(capture.scan.environLeaks).toEqual([]);
+      expect(capture.scan.cmdlineLeaks).toEqual([]);
+      expect(capture.scan.leakedFiles).toEqual([]);
+      expect(capture.scan.files.some((file: string) => file.endsWith("/.credentials.json"))).toBe(false);
+      expect(hasSecret(capture.cat)).toEqual([]);
+      expect(hasSecret(JSON.stringify(capture.env))).toEqual([]);
+      expect(hasSecret(capture.selfEnviron)).toEqual([]);
+      expect(hasSecret(envelope.stderr)).toEqual([]);
+      expect(hasSecret(JSON.stringify(events))).toEqual([]);
+      for (const { file, content } of await everyFile(artifacts)) expect([file, hasSecret(content)]).toEqual([file, []]);
+      expect(capture.scan.harnessHasPlaceholder).toBe(true);
+      // The host's file does hold the fresh tokens, so the secrets the scans looked for were real.
+      const stored = JSON.parse(await readFile(path.join(config, ".credentials.json"), "utf8")).claudeAiOauth;
+      expect([stored.accessToken, stored.refreshToken]).toEqual(["secret-fresh-access", "secret-refresh-2"]);
+    });
+
+    test("AC-5.2 and AC-8.1: a refused refresh fails the run asking for `claude login`, without a retry, a forwarded request or an echo of the answer", async () => {
+      for (const status of [400, 401]) {
+        const refresh = await refreshing(() => ({ status, body: JSON.stringify({ error: "invalid_grant", detail: "secret-refresh-1" }) }));
+        const login = loginOf("secret-expired-access", "secret-refresh-1");
+        const { error, capture, upstream, config, artifacts, events } = await run({
+          refresh: refresh.url, fails: true, config: { ".credentials.json": login }, body: REQUEST + FAIL_LIKE_CLAUDE,
+        });
+        expect(error).toBeInstanceOf(ClaudeCodeRunnerError);
+        expect(error.message).toContain("claude login");
+        expect(error.message).toMatch(/must be renewed|renew it/);
+        expect(["protocol", "invalid-result", "timeout", "sandbox"]).not.toContain(error.kind);
+        expect(refresh.calls).toHaveLength(1);
+        expect(upstream.requests).toEqual([]);
+        expect(await readFile(path.join(config, ".credentials.json"), "utf8")).toBe(login);
+        for (const text of [capture.reply.body, error.message, error.stderr, JSON.stringify(events)]) {
+          expect(hasSecret(text)).toEqual([]);
+          expect(text).not.toContain("invalid_grant");
+        }
+        for (const { file, content } of await everyFile(artifacts)) expect([file, hasSecret(content)]).toEqual([file, []]);
+      }
+    });
+
+    test("AC-9.1: an expired token with no refresh token fails asking for `claude login` and calls no endpoint", async () => {
+      for (const refreshToken of [undefined, ""]) {
+        const refresh = await refreshing();
+        const login = loginOf("expired-access", refreshToken);
+        const { error, upstream, config } = await run({ refresh: refresh.url, fails: true, config: { ".credentials.json": login }, body: REQUEST + FAIL_LIKE_CLAUDE });
+        expect(error.message).toContain("claude login");
+        expect(["protocol", "invalid-result", "timeout", "sandbox"]).not.toContain(error.kind);
+        expect(refresh.calls).toHaveLength(0);
+        expect(upstream.requests).toEqual([]);
+        expect(await readFile(path.join(config, ".credentials.json"), "utf8")).toBe(login);
+      }
+    });
+
+    test("AC-10.1: an unreachable refresh endpoint fails the run as a transient failure that does not blame the login", async () => {
+      const unreachable = await refreshing();
+      await unreachable.close();
+      const login = loginOf("expired-access", "refresh-1");
+      const { error, upstream, config } = await run({ refresh: unreachable.url, fails: true, config: { ".credentials.json": login }, body: REQUEST + FAIL_LIKE_CLAUDE });
+      expect(["protocol", "timeout", "sandbox", "invalid-result"]).toContain(error.kind);
+      expect(error.message).not.toContain("claude login");
+      expect(upstream.requests).toEqual([]);
+      expect(await readFile(path.join(config, ".credentials.json"), "utf8")).toBe(login);
+    });
+
+    test("AC-11.1: with CLAUDE_CODE_OAUTH_TOKEN the relay forwards it and never refreshes", async () => {
+      const refresh = await refreshing();
+      const login = loginOf("expired-access", "refresh-1");
+      const { upstream, config } = await run({
+        refresh: refresh.url, env: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-oauth-token" }, config: { ".credentials.json": login }, body: `${REQUEST}\n${REQUEST}`,
+      });
+      expect(upstream.requests.map((request) => request.headers.authorization)).toEqual(["Bearer fixture-oauth-token", "Bearer fixture-oauth-token"]);
+      expect(refresh.calls).toHaveLength(0);
+      expect(await readFile(path.join(config, ".credentials.json"), "utf8")).toBe(login);
+    });
+
+    test("AC-12.1: with ANTHROPIC_API_KEY the relay forwards it as x-api-key and never refreshes", async () => {
+      const refresh = await refreshing();
+      const login = loginOf("expired-access", "refresh-1");
+      const { upstream, config } = await run({ refresh: refresh.url, env: { ANTHROPIC_API_KEY: "fixture-api-key" }, config: { ".credentials.json": login }, body: REQUEST });
+      expect(upstream.requests.map((request) => [request.headers["x-api-key"], request.headers.authorization])).toEqual([["fixture-api-key", undefined]]);
+      expect(refresh.calls).toHaveLength(0);
+      expect(await readFile(path.join(config, ".credentials.json"), "utf8")).toBe(login);
     });
   });
 
