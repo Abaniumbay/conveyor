@@ -14,6 +14,8 @@ export interface CredentialRelayOptions {
   credential: () => string | Promise<string>;
   /** The only credential a request may carry; the relay substitutes the real one. */
   placeholder: string;
+  /** Header the real credential is sent in: `Authorization: Bearer` (default) or `x-api-key` for an API key. */
+  credentialHeader?: "authorization" | "x-api-key";
   /** Extra trust anchor for the upstream certificate; injectable for tests. Verification is always on. */
   ca?: string | Buffer;
 }
@@ -84,7 +86,8 @@ export async function startCredentialRelay(options: CredentialRelayOptions): Pro
     for (const [name, value] of Object.entries(request.headers)) {
       if (!DROPPED_REQUEST_HEADERS.has(name)) headers[name] = value;
     }
-    headers.authorization = `Bearer ${credential}`;
+    if (options.credentialHeader === "x-api-key") headers["x-api-key"] = credential;
+    else headers.authorization = `Bearer ${credential}`;
     const upstream = https.request({
       host: base.hostname,
       port: base.port || 443,

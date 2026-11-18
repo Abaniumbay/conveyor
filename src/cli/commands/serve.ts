@@ -162,7 +162,7 @@ export const serve: Command = {
       },
     });
     // Sandboxed agents reach the MCP endpoint (only) through this Unix socket via the sandbox bridge.
-    const mcpSocket = Object.values(config.repositories).some((repository) => repository.agentEgress?.allowLoopbackMcp)
+    const mcpSocket = (Object.values(config.repositories).some((repository) => repository.agentEgress?.allowLoopbackMcp) || Object.values(config.runners ?? {}).some((runner) => runner.type === "claude-code"))
       ? serveMcpSocket({ socket: mcpSocketPath(config.settings.artifacts), handler })
       : null;
     const dashboardUrl = config.web.publicUrl ?? server.url.href;

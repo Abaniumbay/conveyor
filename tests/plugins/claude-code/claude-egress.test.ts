@@ -76,11 +76,7 @@ const connect = (host) => new Promise((resolve) => {
   const auth = Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64");
   socket.write("CONNECT " + host + ":443 HTTP/1.1\\r\\nHost: " + host + ":443\\r\\nProxy-Authorization: Basic " + auth + "\\r\\n\\r\\n");
 });
-const capture = { args, proxy: process.env.HTTPS_PROXY, prefix: process.env.CLAUDE_CODE_SHELL_PREFIX, cwd: process.cwd() };
-if (!proxy && process.env.CLAUDE_CODE_SHELL_PREFIX) {
-  const plain = Bun.spawnSync([process.env.CLAUDE_CODE_SHELL_PREFIX, 'printf "%s|%s|%s|%s" "\${ANTHROPIC_API_KEY-unset}" "\${CLAUDE_CODE_OAUTH_TOKEN-unset}" "\${CLAUDE_CONFIG_DIR-unset}" "\${CAPTURE:+set}"'], { env: process.env });
-  capture.plainCommand = new TextDecoder().decode(plain.stdout);
-}
+const capture = { args, proxy: process.env.HTTPS_PROXY, prefix: process.env.CLAUDE_CODE_SHELL_PREFIX, cwd: process.cwd(), baseUrl: process.env.ANTHROPIC_BASE_URL, oauth: process.env.CLAUDE_CODE_OAUTH_TOKEN, apiKey: process.env.ANTHROPIC_API_KEY, placeholder: process.env.CONVEYOR_RELAY_PLACEHOLDER };
 if (proxy) {
   capture.controlModel = await connect("model.fake.test");
   capture.controlRegistry = await connect("registry.fake.test");
@@ -284,11 +280,21 @@ describeSandbox("runClaudeCode with agent egress", () => {
     expect((await run({ egress: true, sandbox: "workspace-write" })).capture.workspaceWritable).toBe(true);
   });
 
-  test("without an egress policy it has no proxies, and its commands still lose what is Claude Code's own", async () => {
+  test("without an egress policy it still starts in the network namespace with the relay and an empty data-plane allowlist, and its commands lose what is Claude Code's own", async () => {
     const { capture, artifacts } = await run({ egress: false });
-    expect(capture.proxy).toBeUndefined();
+    expect(capture.proxy).toMatch(/^http:\/\/conveyor:[A-Za-z0-9_%-]{20,}@127\.0\.0\.1:\d+$/);
     expect(capture.prefix).toBe(path.join(artifacts, "net", "shell-prefix"));
-    expect(capture.plainCommand).toBe("unset|unset|unset|set");
+    // The harness holds the relay endpoint and the placeholder, never the configured credentials.
+    expect(capture.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(capture.oauth).toBe(capture.placeholder);
+    expect(capture.oauth).not.toBe("oauth-secret");
+    expect(capture.apiKey).toBeUndefined();
+    // No host is allowed for commands, and Claude's own variables are still unset for them.
+    expect(capture.command.allowed).toBe("403");
+    expect(capture.command.oauth).toBeNull();
+    expect(capture.command.apiKey).toBeNull();
+    expect(capture.command.configDir).toBeNull();
+    expect(["ENETUNREACH", "EHOSTUNREACH", "ECONNREFUSED", "timeout"]).toContain(capture.command.directIp);
   });
 });
 

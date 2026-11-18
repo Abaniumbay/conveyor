@@ -51,6 +51,8 @@ export interface AgentFilesystemOptions {
   writableGit?: boolean;
   writable?: readonly string[];
   readable?: readonly string[];
+  /** Existing files inside a mounted path that the agent sees as empty (a credential file in a writable directory). */
+  hidden?: readonly string[];
   runtime?: readonly string[];
   /**
    * Repository-declared SDK and toolchain directories, mounted read-only. Unlike `readable`, one that
@@ -168,6 +170,10 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   for (const gitFile of git.files) if (!sharedGit || !gitFile.startsWith(`${sharedGit}/`)) addPath(gitFile, false);
   for (const writablePath of writable) addPath(writablePath, true, true);
   for (const readable of options.readable ?? []) addPath(readable, false);
+  for (const hidden of options.hidden ?? []) {
+    const target = path.join(resolveFilesystemPath(path.dirname(hidden)), path.basename(hidden));
+    if (existsSync(target)) mounts.push("--ro-bind", "/dev/null", target);
+  }
   const runMaterial = [workspace, artifacts, home, scratch, ...git.directories, ...writable];
   for (const declared of options.toolchain ?? []) {
     const source = resolveFilesystemPath(declared);

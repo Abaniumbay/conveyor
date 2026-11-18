@@ -18,6 +18,8 @@ export interface CredentialRelayPolicy {
   upstream: string;
   /** The real credential, read on the host for every request and never given to the sandbox. */
   credential: () => string | Promise<string>;
+  /** Header the real credential is sent in (default `authorization`); `x-api-key` for an API key. */
+  credentialHeader?: "authorization" | "x-api-key";
   /** Sandbox loopback port of the relay endpoint (default 3140). */
   port?: number;
   /** Test seam: extra trust anchor for the upstream certificate. */
@@ -105,6 +107,7 @@ export async function startRunNetwork(options: { directory: string; policy: Agen
         upstream: policy.relay.upstream,
         credential: policy.relay.credential,
         placeholder: relay.placeholder,
+        ...(policy.relay.credentialHeader ? { credentialHeader: policy.relay.credentialHeader } : {}),
         ...(policy.relay.ca ? { ca: policy.relay.ca } : {}),
       }));
     }

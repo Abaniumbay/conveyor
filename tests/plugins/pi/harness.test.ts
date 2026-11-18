@@ -51,6 +51,7 @@ async function world() {
   const environment = { ...defaultRunVariables(), PATH: `${fakeBin}:${process.env.PATH}`, CAPTURE: capture, FAKE_EVENTS: events, FAKE_EVENTS_RESUMED: resumedEvents };
   const config = {
     hash: "cfg",
+    web: { listen: "127.0.0.1:4310" },
     settings: { artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, agentRunTokenWarning: 15_000_000 },
     agents: {
       parisa: { runner: "pi", instructions, tasks: [], name: "Parisa", title: "Reviewer", workspaceAccess: "read-only", environment },

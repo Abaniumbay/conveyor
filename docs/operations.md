@@ -191,7 +191,7 @@ bun scripts/check-agent-egress.ts <repository-id> --config <conveyor.yaml> --run
 
 It starts the real Claude Code CLI inside the run's namespace with the runner's sign-in, as a real run
 does: the runner's `configDir` (else `CLAUDE_CONFIG_DIR`, else `~/.claude`) is `CLAUDE_CONFIG_DIR`,
-mounted writable, and the runner's `settings.environment` (such as `ANTHROPIC_API_KEY`) is passed from your environment.
+mounted writable with its `.credentials.json` masked, and the runner's `settings.environment` (such as `ANTHROPIC_API_KEY`) is passed from your environment to the host-side credential relay, never to the sandbox.
 **Run it as the account the service runs as**, with the same `PATH`, so it finds the same `claude` and
 sign-in; a CLI that is not signed in fails the check as "the Claude Code CLI is not signed in". It runs
 the runner's configured `command`; if that is not installed the error names it and the `PATH` searched. The CLI is started with a prompt that runs one `Bash`

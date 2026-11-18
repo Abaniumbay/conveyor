@@ -304,7 +304,7 @@ async function runAgent(
           readOnly: agent.workspaceAccess === "read-only",
           writableRoots: (await agentAccess(agent, workspace.path)).writableRoots,
           toolchainPaths: toolchainFor(deps).toolchainPaths,
-          egress: egressFor(deps, runner).egress,
+          egress: egressFor(deps, runner, harness?.profile.relayAlways).egress,
         },
       });
       const resume = answered !== null && harness.capabilities.sessionResume && answered.sessionId !== null;
@@ -317,7 +317,7 @@ async function runAgent(
         ...(agent.effort ? { effort: agent.effort } : {}),
         ...runSettings(harness.profile, runner, agent, runVariables.env),
         programVariables: runVariables.programVariables,
-        ...egressFor(deps, runner),
+        ...egressFor(deps, runner, harness?.profile.relayAlways),
         ...(await agentAccess(agent, workspace.path)),
         temporaryDirectory: workspaceScratchPath(workspace.path),
         ...await agentExtensions(agent, workspace.path),
@@ -578,7 +578,7 @@ function toolchainFor(deps: Deps): { toolchainPaths?: string[] } {
   return { toolchainPaths: resolveToolchainPaths(declared, protectedServiceLocations({ ...deps.config, root: deps.config.root })) };
 }
 
-function egressFor(deps: Deps, runner: { controlPlaneHosts?: string[] | undefined }) {
-  const egress = agentEgressFor(deps.config, deps.repository.id, runner);
+function egressFor(deps: Deps, runner: { controlPlaneHosts?: string[] | undefined }, sandboxed = false) {
+  const egress = agentEgressFor(deps.config, deps.repository.id, { ...runner, sandboxed });
   return egress ? { egress } : {};
 }
