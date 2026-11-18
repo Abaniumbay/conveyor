@@ -4,11 +4,13 @@
 // happens on the host (credential-source.ts). Anything else keeps a private copy of the login and
 // the run says so.
 
+import { stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { CredentialRelayPolicy, EgressInput } from "../../isolation/run-network";
 import { codexCredentialSource, jwtClaims, parseRecord, type CodexLoginMode } from "./credential-source";
-import { readRegularFile } from "./home";
+import { log } from "../../log/logger";
+import { prepareCodexEnvironment, readRegularFile, serviceCodexHome } from "./home";
 
 export const CHATGPT_UPSTREAM = "https://chatgpt.com/backend-api/codex";
 export const API_UPSTREAM = "https://api.openai.com/v1";
@@ -83,10 +85,13 @@ export async function planCodexRoute(options: {
   const common = { ...(seams?.ca ? { ca: seams.ca } : {}) };
   const content = await readRegularFile(path.join(options.serviceHome, "auth.json")).catch(() => undefined);
   const record = parseRecord(content);
-  const exposed = content !== undefined;
+  // What an unrouted run would put in front of its commands: any file at auth.json (the private copy
+  // follows symlinks, so a symlinked record counts) and any key variable the harness is given.
+  const recordPresent = await stat(path.join(options.serviceHome, "auth.json")).then(() => true, () => false);
+  const environmentKey = API_KEY_VARIABLES.map((name) => options.variables?.[name]).find((value) => value);
+  const exposed = recordPresent || Boolean(environmentKey);
   if (!options.egress) return { routed: false, exposed, reason: "the run has no sandbox network (no agentEgress) to host the credential relay" };
 
-  const environmentKey = API_KEY_VARIABLES.map((name) => options.variables?.[name]).find((value) => value);
   if (environmentKey) {
     return {
       routed: true,
@@ -95,7 +100,7 @@ export async function planCodexRoute(options: {
       placeholderVariables: API_KEY_VARIABLES.filter((name) => options.variables?.[name]),
     };
   }
-  if (!exposed) return { routed: false, exposed: false, reason: "no Codex login is configured" };
+  if (!recordPresent) return { routed: false, exposed: false, reason: "no Codex login is configured" };
 
   const tokens = record?.tokens;
   const hasTokens = typeof tokens === "object" && tokens !== null && !Array.isArray(tokens);
@@ -129,4 +134,31 @@ export async function planCodexRoute(options: {
     };
   }
   return { routed: false, exposed: true, reason: record ? `the login record has an unsupported shape (auth_mode ${JSON.stringify(typeof mode === "string" ? mode : null)})` : "the login record is not a readable JSON object" };
+}
+
+/**
+ * Plans the route and prepares the run's environment: the one place every Codex entry point (run,
+ * check, steering) sets up its authentication, so none is left unrouted without saying so.
+ */
+export async function prepareCodexRun(options: {
+  artifactsDirectory: string;
+  workspace: string;
+  variables?: Record<string, string> | undefined;
+  egress: EgressInput | undefined;
+  seams?: CodexRoutingSeams | undefined;
+  resumeSessionId?: string | undefined;
+}): Promise<{ route: CodexRoute; environment: Record<string, string>; promoteAuth: boolean }> {
+  const route = await planCodexRoute({ serviceHome: serviceCodexHome(options.variables), variables: options.variables, egress: options.egress, seams: options.seams });
+  if (!route.routed && route.exposed) {
+    log.warn("Codex login is not routed through the credential relay and stays readable by the run's commands", { artifactsDirectory: options.artifactsDirectory, reason: route.reason });
+  }
+  const prepared = await prepareCodexEnvironment({
+    artifactsDirectory: options.artifactsDirectory,
+    workspace: options.workspace,
+    variables: options.variables,
+    resumeSessionId: options.resumeSessionId,
+    routed: route.routed,
+  });
+  const environment = route.routed ? Object.fromEntries(Object.entries(prepared).filter(([name]) => !route.placeholderVariables.includes(name))) : prepared;
+  return { route, environment, promoteAuth: !route.routed };
 }

@@ -5,11 +5,11 @@ import { existsSync } from "node:fs";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
 import { cleanupSanitizedHome } from "../../isolation/environment";
-import { prepareCodexEnvironment, serviceCodexHome, syncCodexHome } from "./home";
+import { serviceCodexHome, syncCodexHome } from "./home";
 import { acquireScratch, assertNoHostTmpWritableRoots, type ScratchDirectory } from "../../isolation/scratch";
 import type { EgressInput, RunNetwork } from "../../isolation/run-network";
 import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch } from "./launch";
-import { planCodexRoute, type CodexRoutingSeams } from "./routing";
+import { prepareCodexRun, type CodexRoutingSeams } from "./routing";
 import { log } from "../../log/logger";
 import {
   EMPTY_USAGE,
@@ -313,13 +313,8 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   let promoteAuth = true;
   const scratch = await acquireScratch(input.temporaryDirectory);
   try {
-    const route = await planCodexRoute({ serviceHome: serviceCodexHome(input.env), variables: input.env, egress: runInput.egress, seams: input.routing });
-    promoteAuth = !route.routed;
-    if (!route.routed && route.exposed) {
-      log.warn("Codex login is not routed through the credential relay and stays readable by the run's commands", { artifactsDirectory, reason: route.reason });
-    }
-    const prepared = await prepareCodexEnvironment({ artifactsDirectory, workspace, variables: input.env, resumeSessionId: input.resumeSessionId, routed: route.routed });
-    const environment = route.routed ? Object.fromEntries(Object.entries(prepared).filter(([name]) => !route.placeholderVariables.includes(name))) : prepared;
+    const { route, environment, promoteAuth: promote } = await prepareCodexRun({ artifactsDirectory, workspace, variables: input.env, egress: runInput.egress, seams: input.routing, resumeSessionId: input.resumeSessionId });
+    promoteAuth = promote;
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     // Tools keep their state under HOME, so a run that may write must be able to write its own.
