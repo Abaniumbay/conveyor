@@ -116,6 +116,18 @@ async function replaceRecord(file: string, record: Json): Promise<void> {
   }
 }
 
+/** Refreshes in flight or queued per record, shared by every source of the same login (concurrent runs). */
+const refreshQueues = new Map<string, Promise<unknown>>();
+
+/** Runs `task` after every earlier refresh of `file`; `task` re-reads the record, so it sees their result. */
+function serialized(file: string, task: () => Promise<string>): Promise<string> {
+  const run = (refreshQueues.get(file) ?? Promise.resolve()).catch(() => undefined).then(task);
+  const tail = run.catch(() => undefined);
+  refreshQueues.set(file, tail);
+  void tail.then(() => { if (refreshQueues.get(file) === tail) refreshQueues.delete(file); });
+  return run;
+}
+
 /**
  * Returns the function the credential relay calls for every request. It re-reads the record each
  * time (a login rotated on the host applies at once), refuses anything but a regular, well-formed
@@ -125,7 +137,6 @@ async function replaceRecord(file: string, record: Json): Promise<void> {
 export function codexCredentialSource(options: CodexCredentialSourceOptions): () => Promise<string> {
   const file = path.join(options.serviceHome, "auth.json");
   const now = options.now ?? Date.now;
-  let refreshing: Promise<string> | undefined;
 
   async function refresh(): Promise<string> {
     const record = parseRecord(await readRegularFile(file));
@@ -169,7 +180,6 @@ export function codexCredentialSource(options: CodexCredentialSourceOptions): ()
     const accessToken = text(tokensOf(record)?.access_token);
     if (!accessToken) throw new Error("the Codex login has no access token");
     if (!isStale(record, accessToken, now())) return accessToken;
-    refreshing ??= refresh().finally(() => { refreshing = undefined; });
-    return refreshing;
+    return serialized(file, refresh);
   };
 }

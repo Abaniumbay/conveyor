@@ -13,6 +13,8 @@ import { shortTemporaryDirectory } from "../../support/short-temporary-directory
 const unavailable = bwrapUnavailableReason();
 if (unavailable) console.warn(`SKIPPED codex relay tests: \`bwrap --unshare-net\` is unavailable (${unavailable})`);
 const describeSandbox = unavailable ? describe.skip : describe;
+// Tests that walk the whole readable filesystem of a CI host take longer than any default limit.
+const SCAN_TIMEOUT_MS = 180_000;
 
 const directories: string[] = [];
 const upstreams: RelayUpstream[] = [];
@@ -229,7 +231,7 @@ describeSandbox("runCodex through the credential relay", () => {
     // The host's login is untouched and the run's record is gone.
     expect(await readFile(path.join(f.serviceHome, "auth.json"))).toEqual(before);
     expect(await readTree(path.join(artifacts, "home"))).toEqual([]);
-  });
+  }, SCAN_TIMEOUT_MS);
 
   test("a record the sandbox overwrites is never promoted over the host's (AC-1.3)", async () => {
     const f = await fixture({ login: chatgptRecord("REAL-ACCESS-1") });
@@ -257,7 +259,7 @@ describeSandbox("runCodex through the credential relay", () => {
     expect(capture.procHits).toEqual([]);
     expect(capture.envHit).toBe(false);
     await expectNowhere(artifacts, needles, capture);
-  });
+  }, SCAN_TIMEOUT_MS);
 
   test("placeholders are per run and a foreign one, or the real key, is refused (AC-5.2)", async () => {
     const f = await fixture({ login: { auth_mode: "apikey", OPENAI_API_KEY: "sk-fixture-REAL-KEY-1" } });
@@ -287,7 +289,7 @@ describeSandbox("runCodex through the credential relay", () => {
       const exclude = (capture.args as string[]).find((arg) => arg.startsWith("shell_environment_policy.exclude="))!;
       expect(exclude).toContain(`"${name}"`);
     }
-  });
+  }, SCAN_TIMEOUT_MS);
 
   test("an expired ChatGPT token is refreshed on the host and the run never sees the refresh token (AC-4.2, 4.5)", async () => {
     const expired = chatgptRecord("ACCESS-OLD", { expiresIn: -HOUR });
@@ -322,7 +324,7 @@ describeSandbox("runCodex through the credential relay", () => {
     const saved = JSON.parse(await readFile(path.join(f.serviceHome, "auth.json"), "utf8"));
     expect(saved.tokens.refresh_token).toBe("REAL-REFRESH-2");
     expect(saved.tokens.access_token).toBe(fresh);
-  });
+  }, SCAN_TIMEOUT_MS);
 
   test("a failing refresh answers 502, reaches no upstream, keeps the login and leaks nothing (AC-4.4, 2.4)", async () => {
     const f = await fixture({

@@ -106,6 +106,20 @@ describe("codexCredentialSource", () => {
     expect(JSON.parse(await readFile(path.join(serviceHome, "auth.json"), "utf8")).tokens.refresh_token).toBe("REAL-REFRESH-2");
   });
 
+  test("separate sources of one login (concurrent runs) share one refresh (AC-4.3)", async () => {
+    const serviceHome = await home();
+    await writeLogin(serviceHome, chatgptRecord("ACCESS-OLD", { expiresIn: -HOUR }));
+    const newAccess = fixtureJwt({ exp: secondsFromNow(HOUR), marker: "ACCESS-NEW" });
+    const { server, tokenUrl, ca } = await endpoint((_body, count) => count === 1
+      ? { status: 200, body: issued(newAccess, "REAL-REFRESH-2"), delayMs: 200 }
+      : { status: 400, body: '{"error":"invalid_grant"}' });
+    const sources = [1, 2, 3].map(() => codexCredentialSource({ serviceHome, mode: "chatgpt", tokenUrl, ca }));
+
+    const results = await Promise.all(sources.map((source) => source()));
+    expect(results).toEqual([newAccess, newAccess, newAccess]);
+    expect(server.requests.filter((request) => request.url === "/oauth/token")).toHaveLength(1);
+  });
+
   test("a failed refresh leaves the record untouched, leaks nothing and recovers later (AC-4.4, AC-2.4)", async () => {
     const serviceHome = await home();
     const file = await writeLogin(serviceHome, chatgptRecord("ACCESS-OLD", { expiresIn: -HOUR }));
