@@ -312,7 +312,7 @@ capture.args = args;`,
       const visited: string[] = capture.scan.files;
       expect(visited.length).toBeGreaterThan(3);
       expect(visited).toContain(path.join(directory, "svc-claude", "projects", "p", "sess-1.jsonl"));
-      expect(visited).toContain(path.join(directory, "svc-claude", ".credentials.json"));
+      expect(visited).not.toContain(path.join(directory, "svc-claude", ".credentials.json"));
       expect(visited).toContain(path.join(artifacts, "net", "shell-prefix"));
       expect(visited.some((file) => file.startsWith(path.join(artifacts, "home") + "/"))).toBe(true);
     });
@@ -461,7 +461,8 @@ capture.bare = await relay("/v1/messages", { body: "{}" });`,
       expect(capture.scan.environLeaks).toEqual([]);
       expect(capture.scan.cmdlineLeaks).toEqual([]);
       expect(capture.scan.leakedFiles).toEqual([]);
-      expect(capture.scan.files.length).toBeGreaterThan(3);
+      expect(capture.scan.files.some((file: string) => file.endsWith("/net/shell-prefix"))).toBe(true);
+      expect(capture.scan.files.length).toBeGreaterThan(1);
       expect(hasSecret(JSON.stringify(capture.env))).toEqual([]);
     });
 
