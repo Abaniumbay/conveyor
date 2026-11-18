@@ -95,3 +95,30 @@ describe("docs/tasks.md", () => {
     expect(text).toContain("| `demo.gate` | check | item | - | Checks it |");
   });
 });
+
+describe("return-to-refinement documentation", () => {
+  test("the agent.run description lists the status and both refusal conditions", async () => {
+    const docs = await readFile(path.join(import.meta.dir, "../../docs/tasks.md"), "utf8");
+    const row = docs.split("\n").find((line) => line.includes("`agent.run`"))!;
+    expect(row).toContain("`return-to-refinement`");
+    expect(row).toContain("`refinement` stage");
+    expect(row).toContain("refused when there is no reason or the stages have no `refinement` stage");
+    expect(row).toContain("`return-to-planning`");
+  });
+
+  test("the packaged planner instructions send criterion problems to refinement", async () => {
+    const { BUILTIN_FILES } = await import("../../src/config/builtin");
+    const text = BUILTIN_FILES["instructions/test-planner.md"]!;
+    expect(text).toContain("return-to-refinement");
+    expect(text).toContain("naming the criterion and the change it needs");
+    expect(text).toContain("untestable as written");
+    expect(text).toContain("`[Manual]` marker");
+    expect(text).toContain("bundles several behaviours");
+    expect(text).toContain("contradicts another criterion");
+    expect(text).not.toContain("report a blocker or ask one question");
+    expect(text).toContain("do not invent cases");
+    expect(text).toContain("## Tool failures");
+    expect(text).toContain("GitHub unavailable");
+    expect(text).toContain("Never edit criteria");
+  });
+});

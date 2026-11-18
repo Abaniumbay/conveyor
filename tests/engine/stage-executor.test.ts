@@ -647,6 +647,19 @@ describe("routing", () => {
     expect(h.journal.getContext("issue-1")!.context.engine?.returns).toBe(1);
   });
 
+  test("a task result routed to return to refinement from planning becomes a correction carrying the reason", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.actResult = () => fail("AC-3 needs a [Manual] marker", { route: { return: "refinement" } });
+    const plan = pipeline(stage("planning", [ct(h.registry, "act", "test.act")], [ct(h.registry, "gate", "test.check")]), stage("implementation", [ct(h.registry, "act2", "test.act")], [ct(h.registry, "gate2", "test.check")]));
+    const outcome = await h.run(plan, "planning");
+    expect(outcome).toEqual({
+      kind: "correction", stageId: "planning", targetStageId: "refinement", reason: "AC-3 needs a [Manual] marker",
+      requiredFixes: [], evidence: [], result: null,
+    });
+    expect(h.journal.getContext("issue-1")!.context.engine?.returns).toBe(1);
+  });
+
   test("an action routed to return becomes a correction", async () => {
     const h = await harness();
     h.activate();

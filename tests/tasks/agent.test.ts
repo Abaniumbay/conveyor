@@ -723,6 +723,86 @@ describe("agent.run", () => {
     });
   });
 
+  describe("return-to-refinement", () => {
+    const withStages = (w: World, stages: string[]) => {
+      const config = w.deps.config as unknown as Record<string, unknown>;
+      config.repositories = { repo: { pipeline: "p" } };
+      config.pipelines = { p: { stages: stages.map((id) => ({ id })) } };
+    };
+    const returns = (reason: string | null, status = "return-to-refinement") => ({ outcome: "failure" as const, status, summary: "Criterion is wrong", reason });
+    const all = ["refinement", "planning", "implementation"];
+
+    test("returns the item to the refinement stage", async () => {
+      const w = await world();
+      withStages(w, all);
+      w.setBehaviour(() => returns("AC-3 needs a [Manual] marker"));
+      expect(await w.run(false)).toEqual({ status: "fail", message: "AC-3 needs a [Manual] marker", route: { return: "refinement" } });
+    });
+
+    test("an unknown near-miss status is still an invalid result", async () => {
+      const w = await world();
+      withStages(w, all);
+      w.setBehaviour(() => returns("Wrong", "return-to-refinment"));
+      const result = await w.run(false);
+      expect(result).toMatchObject({ status: "fail", route: { stop: "error" } });
+      expect((result as { message: string }).message).toContain('unexpected failure status "return-to-refinment"');
+    });
+
+    test("carries the reason trimmed", async () => {
+      const w = await world();
+      withStages(w, all);
+      w.setBehaviour(() => returns("  \n AC-4 bundles two behaviours: split it into two criteria \n "));
+      expect(await w.run(false)).toMatchObject({ message: "AC-4 bundles two behaviours: split it into two criteria", route: { return: "refinement" } });
+    });
+
+    test.each([["   "], [""], [null]])("is refused for the reason %j, saying a reason is required", async (reason) => {
+      const w = await world();
+      withStages(w, all);
+      w.setBehaviour(() => returns(reason));
+      const result = await w.run(false);
+      expect(result).toMatchObject({ status: "fail", route: { stop: "error" } });
+      expect((result as { message: string }).message).toContain("a reason is required");
+      expect((result as { message: string }).message).toContain("refinement");
+    });
+
+    test("is refused when the stages have no refinement stage, naming it", async () => {
+      const w = await world();
+      withStages(w, ["planning", "implementation"]);
+      w.setBehaviour(() => returns("Wrong criterion"));
+      const result = await w.run(false);
+      expect(result).toMatchObject({ status: "fail", route: { stop: "error" } });
+      expect((result as { message: string }).message).toContain("no refinement stage");
+    });
+
+    test("is refused, without throwing, when no pipeline is configured", async () => {
+      const w = await world();
+      w.setBehaviour(() => returns("Wrong criterion"));
+      const result = await w.run(false);
+      expect(result).toMatchObject({ status: "fail", route: { stop: "error" } });
+      expect((result as { message: string }).message).toContain("no refinement stage");
+    });
+
+    test("a missing reason is reported before a missing stage", async () => {
+      const w = await world();
+      withStages(w, ["planning"]);
+      w.setBehaviour(() => returns(""));
+      const result = await w.run(false);
+      expect(result).toMatchObject({ status: "fail", route: { stop: "error" } });
+      expect((result as { message: string }).message).toContain("a reason is required");
+    });
+
+    test("the two returns route to their own stages, never swapped", async () => {
+      const planning = await world();
+      withStages(planning, all);
+      planning.setBehaviour(() => returns("Plan is wrong", "return-to-planning"));
+      expect(await planning.run(false)).toMatchObject({ route: { return: "planning" } });
+      const refinement = await world();
+      withStages(refinement, all);
+      refinement.setBehaviour(() => returns("Criterion is wrong"));
+      expect(await refinement.run(false)).toMatchObject({ route: { return: "refinement" } });
+    });
+  });
+
   test.each([
     ["blocked", "Cannot reach the registry"],
     ["rejected", "Out of scope"],

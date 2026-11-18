@@ -696,6 +696,16 @@ describe("item tools", () => {
       await tool("item.setTestPlan", w.deps(), { cases: [kase("AC-1.1", "AC-1"), kase("AC-2.1", "AC-2")], constraints });
       expect((await gate(w)).status).toBe("pass");
     });
+
+    test("testPlanComplete rejects a plan recorded before criteria were split or marked manual", async () => {
+      const w = await world(); w.add("i1", 5, { body });
+      await tool("item.setTestPlan", w.deps(), { cases: [kase("AC-1.1", "AC-1"), kase("AC-2.1", "AC-2")], constraints });
+      expect((await gate(w)).status).toBe("pass");
+      await tool("item.setCriteria", w.deps(), { criteria: [{ id: "AC-1", text: "One" }, { id: "AC-2", text: "Two [Manual]" }, { id: "AC-3", text: "Three" }] });
+      expect(await gate(w)).toMatchObject({ status: "fail", message: expect.stringContaining("recorded again") });
+      await tool("item.setTestPlan", w.deps(), { cases: [kase("AC-1.1", "AC-1"), kase("AC-2.1", "AC-2", "manual"), kase("AC-3.1", "AC-3")], constraints });
+      expect((await gate(w)).status).toBe("pass");
+    });
   });
 
   test("keeps successful content writes visible to the next refinement gates", async () => {

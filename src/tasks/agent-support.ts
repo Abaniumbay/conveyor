@@ -9,6 +9,8 @@ import { conveyorToolGuidance, type ToolNameGuidance } from "../mcp/guidance";
 export { conveyorToolGuidance } from "../mcp/guidance";
 /** Status an implementer returns when a planned test case is wrong or impossible; the item goes back to planning. */
 export const RETURN_TO_PLANNING = "return-to-planning";
+/** Status a planning agent returns when a criterion must change; the item goes back to refinement. */
+export const RETURN_TO_REFINEMENT = "return-to-refinement";
 export const AGENT_STOP_STATUSES = ["blocked", "rejected"] as const;
 
 export function prompt(
