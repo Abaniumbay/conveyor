@@ -9,6 +9,8 @@ import { conveyorToolGuidance, type ToolNameGuidance } from "../mcp/guidance";
 export { conveyorToolGuidance } from "../mcp/guidance";
 /** Status an implementer returns when a planned test case is wrong or impossible; the item goes back to planning. */
 export const RETURN_TO_PLANNING = "return-to-planning";
+/** Status a planning agent returns when a criterion must change; the item goes back to refinement. */
+export const RETURN_TO_REFINEMENT = "return-to-refinement";
 export const AGENT_STOP_STATUSES = ["blocked", "rejected"] as const;
 
 export function prompt(
@@ -37,8 +39,9 @@ export function prompt(
     ...(Array.isArray(parts.allowedFailureStatuses)
       ? [`Use only the configured failure statuses: ${parts.allowedFailureStatuses.join(", ")}. Do not invent status names.`]
       : [
-          `For a failed agent.run result, use ${[...AGENT_STOP_STATUSES, RETURN_TO_PLANNING].join(" or ")}. Do not invent status names such as blocked-external.`,
+          `For a failed agent.run result, use ${[...AGENT_STOP_STATUSES, RETURN_TO_PLANNING, RETURN_TO_REFINEMENT].join(" or ")}. Do not invent status names such as blocked-external.`,
           `Use ${RETURN_TO_PLANNING} only when a planned test case is wrong or impossible and the plan must be redone; it sends the item back to the planning stage and is refused without a non-empty reason.`,
+          `Use ${RETURN_TO_REFINEMENT} only when you are a planning agent and a criterion itself must change (untestable as written, needs a [Manual] marker, bundles several behaviours, or contradicts another criterion); it sends the item back to the refinement stage and is refused without a non-empty reason naming the criterion and the change it needs.`,
           "Use needs-input only after opening a question with agent.askQuestion. Use changes-requested only when this item has at least one open review finding: either a new finding recorded with change.comment or an existing finding from change.listFindings that you verified still applies. Reuse existing findings from earlier agents, people, or review bots; do not create duplicate findings just to associate them with this run. Include the blocking finding IDs in your summary. If you cannot record or verify a finding because the required tools are unavailable, return blocked with the concrete reason instead.",
         ]),
     "",

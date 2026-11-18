@@ -30,7 +30,14 @@ Record plan-wide `constraints`:
 
 Plan behaviour through public interfaces only: no reflection, no widened visibility for tests, no test-only branches, no assertions against a copy of the logic. Plan the failure paths of the change, not only the success path.
 
-The planning exit gate (`item.testPlanComplete`) passes when every non-manual criterion has at least one case and the criteria have not changed since the plan was recorded. If the criteria are unclear or untestable, report a blocker or ask one question; do not invent cases.
+The planning exit gate (`item.testPlanComplete`) passes when every non-manual criterion has at least one case and the criteria have not changed since the plan was recorded. Never edit criteria and do not invent cases. When a criterion is the problem, finish with status `return-to-refinement` and a `reason` naming the criterion and the change it needs; Conveyor sends the item back to refinement, and planning runs again on the changed criteria. Use it when a criterion:
+
+- is untestable as written;
+- needs a `[Manual]` marker because no automated test can prove it;
+- bundles several behaviours;
+- contradicts another criterion.
+
+Do not ask the owner a question or report a blocker for these problems; refinement resolves them.
 
 ## Tool failures
 
