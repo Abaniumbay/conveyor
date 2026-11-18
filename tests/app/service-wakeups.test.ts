@@ -671,6 +671,188 @@ describe("persisted wake-ups", () => {
   });
 });
 
+describe("in-progress waiters under changed stages", () => {
+  const nativeStage = (id: string) => ({ id, concurrency: 1, retries: 0, actions: [], exitGate: [{ task: "item.criteriaDefined" }] });
+  const insertStage = (config: ConveyorConfig, id: string, before: string) => {
+    const stages = config.pipelines.default!.stages as { id: string }[];
+    stages.splice(stages.findIndex((stage) => stage.id === before), 0, nativeStage(id) as never);
+  };
+  const park = (store: ConveyorStore, config: ConveyorConfig, id: string, stageId: string, number: number, state = "active") => {
+    if (id !== "issue") {
+      store.upsertIssue({
+        id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: id, body: "",
+        sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+      });
+      store.setQueueRank(id, store.nextQueueRank());
+    }
+    store.activateEnrollment(id);
+    store.setStageState({ issueId: id, stageId, status: "waiting-in-flight", feedbackCycle: 0, configHash: config.hash });
+    store.setIssueProjection(id, {
+      stage: stageId, state: state as "active", warning: "Waiting for an in-progress slot in repo: #2",
+    });
+  };
+  const holder = (store: ConveyorStore, config: ConveyorConfig, limit: number) => {
+    config.repositories.repo!.inFlight = { limit, from: "implementation" };
+    addRunningHolder(store, config);
+    store.setStageState({ issueId: "holder", stageId: "implementation", status: "awaiting-source", feedbackCycle: 0, configHash: config.hash });
+    store.activateEnrollment("holder");
+  };
+  const status = (store: ConveyorStore, id = "issue") => store.getStageState(id)?.status;
+  const card = (service: ConveyorService) =>
+    dashboardViews(service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+
+  test("a waiter no longer directly before from is promoted when a slot is free", async () => {
+    const { config, first } = await setup(false, true);
+    insertStage(config, "planning", "implementation");
+    park(first.store, config, "issue", "refinement", 1);
+    schedule(first.service);
+    expect(first.executed).toContain("issue");
+    expect(status(first.store)).not.toBe("waiting-in-flight");
+    expect(first.store.getIssue("issue")?.warning ?? "").not.toContain("in-progress slot");
+    await first.service.close();
+  });
+
+  test("a waiter is promoted when several stages were inserted after it parked", async () => {
+    const { config, first } = await setup(false, true);
+    insertStage(config, "planning", "implementation");
+    insertStage(config, "design", "implementation");
+    park(first.store, config, "issue", "refinement", 1);
+    schedule(first.service);
+    expect(first.executed).toContain("issue");
+    expect(status(first.store)).not.toBe("waiting-in-flight");
+    await first.service.close();
+  });
+
+  test("with every slot taken a waiter directly before from is held and keeps its reason", async () => {
+    const { config, first } = await setup(false, true);
+    holder(first.store, config, 1);
+    park(first.store, config, "issue", "refinement", 1);
+    schedule(first.service);
+    schedule(first.service);
+    expect(first.executed).toEqual([]);
+    expect(status(first.store)).toBe("waiting-in-flight");
+    expect(card(first.service)).toMatchObject({ waiting: { reason: "Waiting for an in-progress slot in repo: #2" } });
+    await first.service.close();
+  });
+
+  test("a stage inserted earlier does not release a waiter still directly before from", async () => {
+    const { config, first } = await setup(false, true);
+    insertStage(config, "planning", "refinement");
+    holder(first.store, config, 1);
+    park(first.store, config, "issue", "refinement", 1);
+    schedule(first.service);
+    expect(first.executed).toEqual([]);
+    expect(status(first.store)).toBe("waiting-in-flight");
+    await first.service.close();
+  });
+
+  test("only as many waiters as there are free slots are promoted, in queue order", async () => {
+    const { config, first } = await setup(false, true);
+    holder(first.store, config, 2);
+    park(first.store, config, "issue", "refinement", 13);
+    park(first.store, config, "w2", "refinement", 12);
+    park(first.store, config, "w3", "refinement", 11);
+    schedule(first.service);
+    expect(first.executed).toEqual(["issue"]);
+    expect(status(first.store, "w2")).toBe("waiting-in-flight");
+    expect(status(first.store, "w3")).toBe("waiting-in-flight");
+    schedule(first.service);
+    expect(first.executed).toEqual(["issue"]);
+    await first.service.close();
+  });
+
+  test("waiters in different stages share free slots and one needing no slot consumes none", async () => {
+    const { config, first } = await setup(false, true);
+    insertStage(config, "planning", "implementation");
+    holder(first.store, config, 2);
+    park(first.store, config, "issue", "refinement", 21);
+    park(first.store, config, "a", "planning", 22);
+    park(first.store, config, "c", "planning", 23);
+    schedule(first.service);
+    expect([...first.executed].sort()).toEqual(["a", "issue"]);
+    expect(status(first.store, "c")).toBe("waiting-in-flight");
+    await first.service.close();
+  });
+
+  test("a waiter whose next stage needs no slot advances while every slot is taken", async () => {
+    const { config, first } = await setup(false, true);
+    insertStage(config, "planning", "implementation");
+    holder(first.store, config, 1);
+    park(first.store, config, "issue", "refinement", 1);
+    schedule(first.service);
+    expect(first.executed).toEqual(["issue"]);
+    expect(status(first.store)).not.toBe("waiting-in-flight");
+    expect(status(first.store, "holder")).toBe("awaiting-source");
+    await first.service.close();
+  });
+
+  test("a waiter advances once the repository has no in-progress limit", async () => {
+    const { config, first } = await setup(false, true);
+    holder(first.store, config, 1);
+    delete config.repositories.repo!.inFlight;
+    park(first.store, config, "issue", "refinement", 1);
+    schedule(first.service);
+    expect(first.executed).toEqual(["issue"]);
+    expect(status(first.store)).not.toBe("waiting-in-flight");
+    await first.service.close();
+  });
+
+  test("a waiter that is not active is not promoted", async () => {
+    const { config, first } = await setup(false, true);
+    insertStage(config, "planning", "implementation");
+    park(first.store, config, "issue", "refinement", 1, "needs-input");
+    schedule(first.service);
+    expect(first.executed).toEqual([]);
+    expect(status(first.store)).toBe("waiting-in-flight");
+    await first.service.close();
+  });
+
+  test("the live status names the holders for a waiter not directly before from", async () => {
+    const { config, first } = await setup(false, true);
+    insertStage(config, "planning", "implementation");
+    holder(first.store, config, 1);
+    park(first.store, config, "issue", "refinement", 1);
+    first.store.setIssueProjection("issue", { stage: "refinement", state: "active", warning: "stale text" });
+    expect(card(first.service)).toMatchObject({ waiting: { reason: "Waiting for an in-progress slot in repo: #2" } });
+    first.store.upsertIssue({
+      id: "holder3", repositoryId: "repo", sourceNumber: 3, sourceUrl: "https://example.test/3", title: "H3", body: "",
+      sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    first.store.setIssueProjection("holder3", { stage: "merge", state: "active", warning: null });
+    first.store.setStageState({ issueId: "holder3", stageId: "merge", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    first.store.activateEnrollment("holder3");
+    expect(card(first.service)).toMatchObject({ waiting: { reason: "Waiting for an in-progress slot in repo: #2, #3" } });
+    await first.service.close();
+  });
+
+  test("pausing and resuming a repository does not strand a waiter", async () => {
+    const { config, first } = await setup(false, true);
+    insertStage(config, "planning", "implementation");
+    park(first.store, config, "issue", "refinement", 1);
+    first.service.pauseRepository("repo", "maintenance", "operator");
+    schedule(first.service);
+    expect(first.executed).toEqual([]);
+    await first.service.resumeRepository("repo");
+    schedule(first.service);
+    expect(first.executed).toEqual(["issue"]);
+    expect(status(first.store)).not.toBe("waiting-in-flight");
+    await first.service.close();
+  });
+
+  test("after a resume a waiter needing no slot advances even with every slot taken", async () => {
+    const { config, first } = await setup(false, true);
+    insertStage(config, "planning", "implementation");
+    holder(first.store, config, 1);
+    park(first.store, config, "issue", "refinement", 1);
+    first.service.pauseRepository("repo", "maintenance", "operator");
+    await first.service.resumeRepository("repo");
+    schedule(first.service);
+    expect(first.executed).toEqual(["issue"]);
+    expect(status(first.store)).not.toBe("waiting-in-flight");
+    await first.service.close();
+  });
+});
+
 describe("gate-only executions", () => {
   async function gateOnlySetup(gate: "ci" | "script", cursor: "exit-gate" | "none" | "script-pending") {
     const { config, first } = await setup(false, false, gate);
