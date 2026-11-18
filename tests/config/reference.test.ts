@@ -121,6 +121,7 @@ describe("reference configuration", () => {
     const read = (agent: string) => readFile(config.agents[agent]!.instructions, "utf8");
     const planner = await read("tara");
     for (const word of ["item.setTestPlan", "AC-n.m", "proves", "boundary", "setup", "action", "expected", "kind", "mustNotTouch", "reuse", "redLines", "manual"]) expect(planner).toContain(word);
+    expect(planner).toMatch(/`manual` case[^\n]*owner checks after merge[^\n]*linked test[^\n]*block delivery/);
     const kaveh = await read("kaveh");
     expect(kaveh).toMatch(/Read the test plan/);
     expect(kaveh).toMatch(/write the planned tests first/);
