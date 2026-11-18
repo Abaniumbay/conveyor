@@ -17,6 +17,7 @@ import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { HarnessResumeInput, TaskContext } from "../../src/tasks/context";
 import { InfrastructureError, runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
+import { parseManagedSections, upsertManagedSection, type ManagedSectionName } from "../../src/source/managed-sections";
 import { WorkspaceError } from "../../src/workspace/manager";
 
 const directories: string[] = [];
@@ -725,9 +726,10 @@ describe("agent.run", () => {
 
   describe("return-to-refinement", () => {
     const withStages = (w: World, stages: string[]) => {
-      const config = w.deps.config as unknown as Record<string, unknown>;
-      config.repositories = { repo: { pipeline: "p" } };
-      config.pipelines = { p: { stages: stages.map((id) => ({ id })) } };
+      Object.assign(w.deps.config, {
+        repositories: { repo: { pipeline: "p" } },
+        pipelines: { p: { stages: stages.map((id) => ({ id })) } },
+      });
     };
     const returns = (reason: string | null, status = "return-to-refinement") => ({ outcome: "failure" as const, status, summary: "Criterion is wrong", reason });
     const all = ["refinement", "planning", "implementation"];
@@ -789,6 +791,51 @@ describe("agent.run", () => {
       const result = await w.run(false);
       expect(result).toMatchObject({ status: "fail", route: { stop: "error" } });
       expect((result as { message: string }).message).toContain("a reason is required");
+    });
+
+    test("after the return and a criteria change, only a freshly recorded plan passes the gate", async () => {
+      const w = await world();
+      withStages(w, all);
+      Object.assign(w.deps.config, { labels: { enrollment: "conveyor", metadata: { noSplit: "conveyor:no-split" } } });
+      const issue = (body: string) => ({ id: "i1", number: 7, url: "https://x/7", title: "Fix it", body, state: "open" as const, labels: ["conveyor"], updatedAt: "2026-01-01T00:00:00Z" });
+      const body = [
+        "<!-- conveyor:acceptance-criteria:start -->",
+        "- [ ] One <!-- conveyor:criterion:AC-1 -->", "- [ ] Two <!-- conveyor:criterion:AC-2 -->",
+        "<!-- conveyor:acceptance-criteria:end -->", "",
+      ].join("\n");
+      let source = issue(body);
+      w.store.upsertIssue({ id: "i1", repositoryId: "repo", sourceNumber: 7, sourceUrl: "https://x/7", title: "Fix it", body, sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+      Object.assign(w.deps, {
+        items: {
+          getIssue: async () => source,
+          managedRevision: (text: string) => parseManagedSections(text).revision,
+          updateManagedSection: async (input: { section: ManagedSectionName; markdown: string; expectedRevision: string; baseBody: string }) => {
+            source = { ...source, body: upsertManagedSection(input.baseBody, input.section, input.markdown, input.expectedRevision) };
+            return source;
+          },
+        },
+      });
+      const kase = (id: string, criterionId: string) => ({ id, criterionId, proves: "p", boundary: "b", setup: "s", action: "a", expected: "e", kind: "behaviour" });
+      const constraints = { mustNotTouch: ["x"], reuse: ["y"], redLines: ["z"] };
+      const tool = (name: string, input: unknown) => runTask(registry.require(name), {
+        context: {}, config: {}, deps: w.deps, input, actor: "agent", instance: { id: name, stage: "planning", idempotencyKey: "k", resumed: false },
+      } as never);
+      const gate = async () => {
+        const loaded = (outcome(await tool("item.load", {}) as TaskResult)) as unknown as Partial<TaskContext>["item"];
+        return runTask(registry.require("item.testPlanComplete"), {
+          context: { item: loaded }, config: {}, deps: w.deps, instance: { id: "g", stage: "planning", idempotencyKey: "k", resumed: false },
+        } as never);
+      };
+      await tool("item.setTestPlan", { cases: [kase("AC-1.1", "AC-1"), kase("AC-2.1", "AC-2")], constraints });
+      expect((await gate()).status).toBe("pass");
+
+      w.setBehaviour(() => returns("AC-2 needs a [Manual] marker"));
+      expect(await w.run(false)).toMatchObject({ status: "fail", route: { return: "refinement" } });
+
+      await tool("item.setCriteria", { criteria: [{ id: "AC-1", text: "One" }, { id: "AC-2", text: "Two [Manual]" }, { id: "AC-3", text: "Three" }] });
+      expect(await gate()).toMatchObject({ status: "fail", message: expect.stringContaining("recorded again") });
+      await tool("item.setTestPlan", { cases: [kase("AC-1.1", "AC-1"), { ...kase("AC-2.1", "AC-2"), kind: "manual" }, kase("AC-3.1", "AC-3")], constraints });
+      expect((await gate()).status).toBe("pass");
     });
 
     test("the two returns route to their own stages, never swapped", async () => {

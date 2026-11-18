@@ -57,6 +57,13 @@ test("native runs explain supported stops while legacy runs keep their configure
   expect(legacy).not.toContain("return-to-planning");
 });
 
+test("native runs name return-to-refinement and its reason requirement; legacy runs do not", () => {
+  const native = prompt({}, "Plan.");
+  expect(native).toContain("blocked or rejected or return-to-planning or return-to-refinement");
+  expect(native).toContain("sends the item back to the refinement stage and is refused without a non-empty reason");
+  expect(prompt({ allowedFailureStatuses: ["error"] }, "Check.")).not.toContain("return-to-refinement");
+});
+
 test("a failed MCP server is noted once however often the failure is observed", () => {
   const events: unknown[] = [];
   const messages: string[] = [];
