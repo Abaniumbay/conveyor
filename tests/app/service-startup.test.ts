@@ -13,7 +13,7 @@ import { ConsoleSink, type LogRecord, log } from "../../src/log/logger";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
-import { webDependenciesOf } from "../support/dashboard";
+import { dashboardViews, webDependenciesOf } from "../support/dashboard";
 
 const directories: string[] = [];
 
@@ -398,6 +398,126 @@ describe("startup reconciliation", () => {
       await waitFor(() => store.getStageState("first-issue")?.status === "done");
       expect(service.startupStatus()).toEqual({ state: "degraded", repository: "second", phase: null });
       expect(store.getStageState("second-issue")?.status).toBe("ready");
+    } finally {
+      await service.close();
+    }
+  });
+});
+
+describe("startup release of in-progress waiters", () => {
+  const yaml = (root: string, planning: boolean, inFlight: boolean) => `
+settings: { database: ${root}/db.sqlite, logs: ${root}/logs, workspaces: ${root}/workspaces, artifacts: ${root}/artifacts }
+web: {}
+sources: { github: { type: github } }
+runners: { codex: { type: codex } }
+agents: { worker: { runner: codex, instructions: ./instructions.md } }
+checks: {}
+labels:
+  enrollment: conveyor
+  stageTemplate: "conveyor:{stage}"
+  states: { done: "conveyor:done", blocked: "conveyor:blocked" }
+  metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" }
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - { id: refinement, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }
+${planning ? "      - { id: planning, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }\n" : ""}      - { id: implementation, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }
+      - { id: merge, concurrency: 1, actions: [{ id: merge, task: change.merge }], exit-gate: [{ task: item.criteriaDefined }] }
+repositories:
+  app:
+    source: github
+    address: owner/my-app
+    folder: ${root}/app
+    pipeline: default
+${inFlight ? "    inFlight: { limit: 1, from: implementation }" : ""}
+`;
+
+  async function restart(next: { planning: boolean; inFlight: boolean }) {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-startup-inflight-"));
+    directories.push(root);
+    await mkdir(path.join(root, "app"));
+    await writeFile(path.join(root, "instructions.md"), "Work.");
+    await writeFile(path.join(root, "v1.yml"), yaml(root, false, true));
+    await writeFile(path.join(root, "v2.yml"), yaml(root, next.planning, next.inFlight));
+    const v1 = await loadConfig(path.join(root, "v1.yml"));
+    const before = await ConveyorStore.open(v1.settings.database);
+    before.upsertRepository({ id: "app", configName: "app", source: "github", address: "owner/my-app", folder: path.join(root, "app"), configHash: v1.hash });
+    for (const [id, number, stage, status] of [
+      ["holder", 2, "implementation", "awaiting-source"],
+      ["issue", 1, "refinement", "waiting-in-flight"],
+    ] as const) {
+      before.upsertIssue({
+        id, repositoryId: "app", sourceNumber: number, sourceUrl: `https://example.com/issues/${number}`, title: id, body: "",
+        sourceState: "open", labels: ["conveyor", `conveyor:${stage}`], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+      });
+      before.setIssueProjection(id, { stage, state: "active", warning: id === "issue" ? "Waiting for an in-progress slot in app: #2" : null });
+      before.setStageState({ issueId: id, stageId: stage, status, feedbackCycle: 0, configHash: v1.hash });
+      before.activateEnrollment(id);
+      before.setQueueRank(id, number);
+    }
+    before.close();
+    const v2 = await loadConfig(path.join(root, "v2.yml"));
+    const store = await ConveyorStore.open(v2.settings.database);
+    const sourceIssue = (number: number, stage: string) => ({
+      id: `source-${number}`, number, url: `https://example.com/issues/${number}`, title: "Issue", body: "",
+      state: "open" as const, labels: ["conveyor", `conveyor:${stage}`], updatedAt: "2026-01-01T00:00:00Z",
+    });
+    const github = {
+      async repositoryVisibility() { return "private" as const; },
+      async collaboratorPermission() { return "admin" as const; },
+      async ensureLabels() {},
+      async listIssues() { return [sourceIssue(1, "refinement"), sourceIssue(2, "implementation")]; },
+      async getIssue(_address: string, number: number) { return sourceIssue(number, number === 1 ? "refinement" : "implementation"); },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+      async getIssueProvenance() { return { enrollment: { login: "maintainer" }, title: null, body: null }; },
+      async replaceConveyorLabels() {},
+      async upsertStatusComment() { return 1; },
+    };
+    const service = new ConveyorService(v2, store, github as never);
+    const executed: string[] = [];
+    (service as unknown as { execute(issue: { id: string }): Promise<void> }).execute = async (issue) => {
+      executed.push(issue.id);
+      store.setIssueProjection(issue.id, { stage: store.getIssue(issue.id)?.projectedStage ?? null, state: "needs-input", warning: null });
+    };
+    return { service, store, executed };
+  }
+
+  test("a stage list changed since parking releases a waiter whose next stage needs no slot", async () => {
+    const { service, store, executed } = await restart({ planning: true, inFlight: true });
+    try {
+      service.start();
+      await waitFor(() => service.isReady() && executed.includes("issue"));
+      expect(store.getStageState("issue")?.status).not.toBe("waiting-in-flight");
+      expect(store.getStageState("holder")?.stageId).toBe("implementation");
+    } finally {
+      await service.close();
+    }
+  });
+
+  test("dropping the repository in-progress limit releases a waiter at startup", async () => {
+    const { service, store, executed } = await restart({ planning: false, inFlight: false });
+    try {
+      service.start();
+      await waitFor(() => service.isReady() && executed.includes("issue"));
+      expect(store.getStageState("issue")?.status).not.toBe("waiting-in-flight");
+    } finally {
+      await service.close();
+    }
+  });
+
+  test("an unchanged configuration keeps a waiter that still needs a slot waiting and names the holder", async () => {
+    const { service, store, executed } = await restart({ planning: false, inFlight: true });
+    try {
+      service.start();
+      await waitFor(() => service.isReady());
+      await Bun.sleep(50);
+      expect(executed).not.toContain("issue");
+      expect(store.getStageState("issue")?.status).toBe("waiting-in-flight");
+      const card = dashboardViews(service).dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+      expect(card).toMatchObject({ waiting: { kind: "waiting", reason: "Waiting for an in-progress slot in app: #2" } });
     } finally {
       await service.close();
     }

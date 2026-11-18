@@ -483,24 +483,30 @@ export class Scheduler {
     return holders.length > 0 ? inFlightWaitReason(issue.repositoryId, holders) : issue.warning;
   }
 
-  /** Promotes waiting prior-stage completions in queue order when code-pipeline capacity is free. */
+  /**
+   * Releases `waiting-in-flight` items in queue order, whatever stage they are parked in. The next stage is read from
+   * the current pipeline: a waiter whose next stage needs no slot advances at once, one entering the `from` stage
+   * takes a free slot. A waiter with no next stage is left alone.
+   */
   #promoteInFlightWaiters(): string[] {
     const { config, store } = this.#deps;
     const promoted: string[] = [];
-    for (const repositoryId of Object.keys(config.repositories)) {
+    for (const [repositoryId, repository] of Object.entries(config.repositories)) {
+      const stages = config.pipelines[repository.pipeline]?.stages;
+      if (!stages) continue;
       const configured = this.#repositoryInFlight(repositoryId);
-      if (!configured) continue;
-      const available = configured.interval.limit - this.#inFlightHolders(repositoryId).length;
-      if (available <= 0) continue;
-      const waiters = store.listIssues(repositoryId).filter((issue) => {
+      let available = configured
+        ? configured.interval.limit - this.#inFlightHolders(repositoryId).length
+        : Number.POSITIVE_INFINITY;
+      for (const issue of store.listIssues(repositoryId)) {
         const state = store.getStageState(issue.id);
-        const stageIndex = state ? configured.stages.findIndex((stage) => stage.id === state.stageId) : -1;
-        return issue.projectedState === "active" &&
-          state?.status === "waiting-in-flight" &&
-          stageIndex + 1 === configured.interval.fromIndex;
-      });
-      for (const issue of waiters.slice(0, available)) {
-        const state = store.getStageState(issue.id)!;
+        if (issue.projectedState !== "active" || state?.status !== "waiting-in-flight") continue;
+        const stageIndex = stages.findIndex((stage) => stage.id === state.stageId);
+        if (stageIndex < 0 || stageIndex + 1 >= stages.length) continue;
+        if (configured && stageIndex + 1 === configured.interval.fromIndex) {
+          if (available <= 0) continue;
+          available -= 1;
+        }
         store.setStageState({ ...state, status: "ready", configHash: config.hash });
         store.setIssueProjection(issue.id, {
           stage: issue.projectedStage,
