@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { startRunNetwork, withBridgeSockets, type AgentNetworkPolicy, type CredentialRelayPolicy, type EgressInput, type RunNetwork } from "../../isolation/run-network";
 import { agentLaunchCommand, verifyAgentWrapper, type AgentFilesystemOptions } from "../../isolation/sandbox";
-import { LoginRefreshUnavailableError, LoginRenewalError, loginAccessToken } from "./login-refresh";
+import { LoginRefreshUnavailableError, LoginRenewalError, loginAccessToken, type RefreshOptions } from "./login-refresh";
 
 /** Hosts Claude Code itself needs for its model API and authentication. */
 export const CLAUDE_CONTROL_PLANE_HOSTS: readonly string[] = ["api.anthropic.com", "console.anthropic.com", "platform.claude.com", "claude.ai"];
@@ -27,19 +27,21 @@ export type LoginFailure = "renew" | "unavailable";
  * else the access token in the service user's login file, read again for every request and refreshed
  * on the host first when it is about to expire (only this credential is ever refreshed).
  * `loginFailure` says why the login file last failed to supply a token (null after a success).
- * `relay` overrides only the upstream, port, trust anchor and refresh endpoint (test seams).
+ * `relay` overrides only the upstream, port and trust anchor, and `refresh` the refresh endpoint and its
+ * trust anchor (test seams).
  */
 export function claudeCredentials(
   environment: Record<string, string>,
   configDirectory: string,
   relay?: Partial<CredentialRelayPolicy>,
+  refresh?: RefreshOptions,
 ): { environment: Record<string, string>; relay: CredentialRelayPolicy; loginFailure: () => LoginFailure | null } {
   const { CLAUDE_CODE_OAUTH_TOKEN: token, ANTHROPIC_API_KEY: apiKey, ANTHROPIC_BASE_URL: _baseUrl, ...rest } = environment;
   const file = path.join(configDirectory, CLAUDE_CREDENTIAL_FILE);
   let failure: LoginFailure | null = null;
   const fromFile = async (): Promise<string> => {
     try {
-      const accessToken = await loginAccessToken(file, { endpoint: relay?.refreshEndpoint, ca: relay?.refreshCa });
+      const accessToken = await loginAccessToken(file, refresh);
       failure = null;
       return accessToken;
     } catch (error) {

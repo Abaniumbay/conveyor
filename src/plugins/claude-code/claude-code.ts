@@ -22,10 +22,13 @@ import type { HarnessRunInput } from "../../harness/types";
 import { sandboxSetupError } from "../../runner/sandbox-failure";
 import { OUTPUT_SCHEMAS } from "../../runner/output-schemas";
 import { claudeCodeProfile } from "./profile";
+import type { RefreshOptions } from "./login-refresh";
 
 export interface ClaudeCodeRunInput extends HarnessRunInput {
   /** Continue this session with `--resume` instead of starting a new one. */
   resumeSessionId?: string;
+  /** Test seam: where and with which trust anchor the `claude login` credential is refreshed (default Anthropic's). */
+  loginRefresh?: RefreshOptions;
 }
 
 export type ClaudeCodeErrorKind = "usage-limit" | "sandbox" | "process" | "protocol" | "invalid-result" | "timeout" | "interrupted";
@@ -257,7 +260,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     environment.CLAUDE_CONFIG_DIR = resolvedConfigDir;
     environment.TMPDIR = scratch.path;
     // The real credential stays on the host with the relay; the sandbox gets only a placeholder.
-    const credentials = claudeCredentials(resolvePathEnvironment(environment), resolvedConfigDir, input.egress?.relay);
+    const credentials = claudeCredentials(resolvePathEnvironment(environment), resolvedConfigDir, input.egress?.relay, input.loginRefresh);
     const resolvedEnvironment = credentials.environment;
     const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
     const filesystemOptions: AgentFilesystemOptions = {

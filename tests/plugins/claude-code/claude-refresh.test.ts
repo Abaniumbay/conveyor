@@ -58,9 +58,7 @@ async function world(
     const credentials = claudeCredentials(environment, config, {
       upstream: `https://localhost:${upstream.port}`,
       ca: certificate.cert,
-      refreshEndpoint: refreshUrl ? refreshUrl(refresh) : refresh.url,
-      refreshCa: certificate.cert,
-    });
+    }, { endpoint: refreshUrl ? refreshUrl(refresh) : refresh.url, ca: certificate.cert });
     const proxy: EgressProxy = await startCredentialRelay({ socketPath, placeholder: PLACEHOLDER, ...credentials.relay });
     cleanups.push(() => proxy.close());
     return socketPath;
@@ -124,6 +122,23 @@ describe("a Claude Code login refreshed on the host", () => {
     expect(after.mcpOAuth).toEqual({ srv: { token: "keep" } });
     expect((await stat(w.file)).mode & 0o777).toBe(0o600);
     expect(await readdir(path.dirname(w.file))).toEqual([".credentials.json"]);
+    // The replacement is staged beside the config directory, never inside the sandbox-visible one.
+    expect((await readdir(w.directory)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  test("AC-8.1: a refused refresh token is sent to the endpoint once, not again on later requests", async () => {
+    const w = await world({ claudeAiOauth: EXPIRED() }, () => ({ status: 400, body: "{}" }));
+    const socket = await w.relay();
+    const first = await w.send(socket);
+    const second = await w.send(socket);
+    const third = await w.send(await w.relay());
+    expect([first.status, second.status, third.status].every((status) => status >= 500)).toBe(true);
+    expect(w.refresh.calls).toHaveLength(1);
+    expect(w.tokens()).toEqual([]);
+    // A renewed login (a new refresh token) is tried again.
+    await writeFile(w.file, JSON.stringify({ claudeAiOauth: oauth("renewed-access", Date.now() + 3_600_000, { refreshToken: "refresh-9" }) }), { mode: 0o600 });
+    expect((await w.send(socket)).status).toBe(200);
+    expect(w.tokens()).toEqual(["Bearer renewed-access"]);
   });
 
   test("AC-4.2: an answer without a refresh token keeps the stored one", async () => {

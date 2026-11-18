@@ -1,6 +1,7 @@
-import { randomBytes } from "node:crypto";
-import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import https from "node:https";
+import os from "node:os";
 import path from "node:path";
 
 /** Anthropic's OAuth token endpoint, where a `claude login` refresh token is exchanged. */
@@ -89,10 +90,14 @@ function exchange(refreshToken: string, options: RefreshOptions): Promise<{ acce
   });
 }
 
-/** Replaces the file atomically, keeping its mode. */
+/**
+ * Replaces the file atomically, keeping its mode. The replacement is written beside the config
+ * directory, not in it: the sandbox mounts that directory writable and could open a file there
+ * before it is renamed.
+ */
 async function writeLogin(file: string, login: Login): Promise<void> {
   const { mode } = await stat(file);
-  const temporary = path.join(path.dirname(file), `.credentials.${randomBytes(6).toString("hex")}.tmp`);
+  const temporary = path.join(path.dirname(path.dirname(file)), `.credentials.${randomBytes(6).toString("hex")}.tmp`);
   try {
     await writeFile(temporary, JSON.stringify(login), { mode: mode & 0o777 });
     await rename(temporary, file);
@@ -101,8 +106,36 @@ async function writeLogin(file: string, login: Login): Promise<void> {
   }
 }
 
+const LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_MS = 10_000;
+
+/** Runs `action` holding a host-wide lock on the login file (a lock file outside the sandbox's reach). */
+async function withFileLock<T>(file: string, action: () => Promise<T>): Promise<T> {
+  const lock = path.join(os.tmpdir(), `conveyor-claude-login-${createHash("sha256").update(file).digest("hex").slice(0, 16)}.lock`);
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      await (await open(lock, "wx", 0o600)).close();
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new LoginRefreshUnavailableError("the login lock could not be taken");
+      const age = await stat(lock).then((info) => Date.now() - info.mtimeMs, () => 0);
+      if (age > LOCK_STALE_MS) await rm(lock, { force: true });
+      else if (Date.now() > deadline) throw new LoginRefreshUnavailableError("the login lock is held by another process");
+      else await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    return await action();
+  } finally {
+    await rm(lock, { force: true });
+  }
+}
+
 // One refresh per login file at a time, shared by every relay in this process; later callers join it.
 const inFlight = new Map<string, Promise<string>>();
+// The refresh token each login file last had refused, so it is not sent to the endpoint again.
+const refused = new Map<string, string>();
 
 async function refresh(file: string, options: RefreshOptions): Promise<string> {
   // Another refresh may have finished since the caller read the file.
@@ -112,13 +145,29 @@ async function refresh(file: string, options: RefreshOptions): Promise<string> {
     if (staleAfter(start.expiresAt, 0)) throw new LoginRenewalError();
     return start.accessToken;
   }
-  const fresh = await exchange(start.refreshToken, options);
-  // A newer login on disk (another process refreshed it meanwhile) is never overwritten.
-  const current = await readLogin(file);
-  if (current.accessToken !== start.accessToken) return current.accessToken;
-  const oauth = { ...current.login.claudeAiOauth, accessToken: fresh.accessToken, refreshToken: fresh.refreshToken ?? start.refreshToken, expiresAt: Date.now() + fresh.expiresIn * 1000 };
-  await writeLogin(file, { ...current.login, claudeAiOauth: oauth });
-  return fresh.accessToken;
+  if (refused.get(file) === start.refreshToken) {
+    if (staleAfter(start.expiresAt, 0)) throw new LoginRenewalError();
+    return start.accessToken;
+  }
+  let fresh: Awaited<ReturnType<typeof exchange>>;
+  try {
+    fresh = await exchange(start.refreshToken, options);
+  } catch (error) {
+    if (error instanceof LoginRenewalError) {
+      refused.set(file, start.refreshToken);
+      if (!staleAfter(start.expiresAt, 0)) return start.accessToken;
+    }
+    throw error;
+  }
+  refused.delete(file);
+  // The check and the write happen under one lock: a newer login on disk is never overwritten.
+  return withFileLock(file, async () => {
+    const current = await readLogin(file);
+    if (current.accessToken !== start.accessToken) return current.accessToken;
+    const oauth = { ...current.login.claudeAiOauth, accessToken: fresh.accessToken, refreshToken: fresh.refreshToken ?? start.refreshToken, expiresAt: Date.now() + fresh.expiresIn * 1000 };
+    await writeLogin(file, { ...current.login, claudeAiOauth: oauth });
+    return fresh.accessToken;
+  });
 }
 
 /**

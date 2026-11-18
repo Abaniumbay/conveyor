@@ -24,10 +24,6 @@ export interface CredentialRelayPolicy {
   port?: number;
   /** Test seam: extra trust anchor for the upstream certificate. */
   ca?: string | Buffer;
-  /** Test seam: the OAuth endpoint a Claude Code login is refreshed at (default Anthropic's). */
-  refreshEndpoint?: string;
-  /** Test seam: extra trust anchor for the refresh endpoint's certificate. */
-  refreshCa?: string | Buffer;
 }
 
 export interface AgentNetworkPolicy {

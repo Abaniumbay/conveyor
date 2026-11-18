@@ -158,6 +158,7 @@ async function run(scenario: Scenario) {
     env: { ...defaultRunVariables(), CAPTURE: capturePath, SCAN, CLAUDE_CONFIG_DIR: config, ...scenario.env },
     programVariables: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
     onEvent: (event) => { events.push(event); scenario.onEvent?.(event); },
+    ...(scenario.refresh ? { loginRefresh: { endpoint: scenario.refresh, ca: certificate.cert } } : {}),
     egress: {
       httpsHosts: scenario.egress ? ["registry.fake.test"] : [],
       ...(scenario.egress ? { controlPlaneHosts: ["model.fake.test"] } : {}),
@@ -168,7 +169,6 @@ async function run(scenario: Scenario) {
         upstream: `https://localhost:${upstream.port}`,
         ca: certificate.cert,
         credential: () => "unused",
-        ...(scenario.refresh ? { refreshEndpoint: scenario.refresh, refreshCa: certificate.cert } : {}),
       },
     },
   });
