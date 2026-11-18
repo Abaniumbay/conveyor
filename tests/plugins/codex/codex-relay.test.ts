@@ -13,8 +13,8 @@ import { shortTemporaryDirectory } from "../../support/short-temporary-directory
 const unavailable = bwrapUnavailableReason();
 if (unavailable) console.warn(`SKIPPED codex relay tests: \`bwrap --unshare-net\` is unavailable (${unavailable})`);
 const describeSandbox = unavailable ? describe.skip : describe;
-// Tests that walk the whole readable filesystem of a CI host take longer than any default limit.
-const SCAN_TIMEOUT_MS = 180_000;
+// Scanning tests walk the run's writable and handed-over trees; the limit is above the 5s default but fails fast.
+const SCAN_TIMEOUT_MS = 60_000;
 
 const directories: string[] = [];
 const upstreams: RelayUpstream[] = [];
@@ -78,14 +78,21 @@ if (scenario.scan) {
   out.homeAuth = (() => { const r = read(process.env.HOME + "/.codex/auth.json"); return Buffer.isBuffer(r) ? r.toString("utf8") : r.code; })();
   out.envHit = hit(Buffer.from(JSON.stringify(process.env))) || hit(Buffer.from(JSON.stringify(args)));
   out.authFiles = [];
+  out.scanned = 0;
+  out.walked = [];
+  const skipped = ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/opt", "/snap"];
+  const mustWalk = [process.env.CODEX_HOME, scenario.artifacts, scenario.workspace];
   const walk = (dir) => {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
       const file = dir === "/" ? "/" + entry.name : dir + "/" + entry.name;
       if (file === "/proc" || file === "/dev" || file === "/sys") continue;
-      if (entry.isDirectory()) walk(file);
+      // Read-only system mounts and dependency trees hold no login a run could be handed.
+      if (skipped.includes(file) || entry.name === "node_modules") continue;
+      if (entry.isDirectory()) { if (mustWalk.includes(file)) out.walked.push(file); walk(file); }
       else if (entry.isFile()) {
+        out.scanned += 1;
         if (entry.name === "auth.json") out.authFiles.push(file);
         let size = 0; try { size = fs.statSync(file).size; } catch { continue; }
         if (size > 4_000_000) continue;
@@ -113,6 +120,8 @@ interface Scenario {
   requests?: { path: string; bearer?: string; headers?: Record<string, string>; body?: string }[];
   needles?: string[];
   scan?: boolean;
+  artifacts?: string;
+  workspace?: string;
   tokenFrom?: "env";
   overwriteAuth?: boolean;
   connect?: string;
@@ -152,7 +161,7 @@ async function run(f: Fixture, scenario: Scenario, extra: { env?: Record<string,
       ...defaultRunVariables(),
       CODEX_HOME: f.serviceHome,
       CAPTURE: capture,
-      SCENARIO: JSON.stringify({ servicePath: path.join(f.serviceHome, "auth.json"), ...scenario, needles: (scenario.needles ?? []).map((value) => Buffer.from(value).toString("base64")) }),
+      SCENARIO: JSON.stringify({ servicePath: path.join(f.serviceHome, "auth.json"), ...scenario, ...(scenario.scan ? { artifacts, workspace: f.workspace } : {}), needles: (scenario.needles ?? []).map((value) => Buffer.from(value).toString("base64")) }),
       ...extra.env,
     },
     routing: { chatgptUpstream: `${base}/backend/codex`, apiUpstream: `${base}/v1`, tokenUrl: `${base}/oauth/token`, ca: f.upstream.cert },
@@ -160,7 +169,14 @@ async function run(f: Fixture, scenario: Scenario, extra: { env?: Record<string,
   };
   log.configure({ sinks: [{ write: (record) => void records.push(record) }] });
   await runCodex(input);
-  return { capture: JSON.parse(await readFile(capture, "utf8")), artifacts };
+  const parsed = JSON.parse(await readFile(capture, "utf8"));
+  if (scenario.scan) {
+    // The scan must prove it ran over what a run can write, so the exclusions cannot hide a gap.
+    expect(parsed.scanned).toBeGreaterThan(0);
+    expect(parsed.walked).toContain(artifacts);
+    expect(parsed.walked).toContain(f.workspace);
+  }
+  return { capture: parsed, artifacts };
 }
 
 async function readTree(root: string): Promise<string[]> {
