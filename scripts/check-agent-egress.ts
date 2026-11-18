@@ -39,7 +39,7 @@ import { startEgressProxy } from "../src/isolation/egress-proxy";
 import { agentEgressFor } from "../src/isolation/agent-egress";
 import { resolveBash } from "../src/isolation/environment";
 import { resolveRunEnvironment } from "../src/isolation/run-environment";
-import { CLAUDE_CONTROL_PLANE_HOSTS, claudeCommandUnset, claudeLaunch } from "../src/plugins/claude-code/launch";
+import { CLAUDE_CONTROL_PLANE_HOSTS, CLAUDE_CREDENTIAL_FILE, CLAUDE_UPSTREAM, claudeCommandUnset, claudeCredentials, claudeLaunch } from "../src/plugins/claude-code/launch";
 import { preparePiAgentDirectory, servicePiAgentDirectory, syncPiAgentDirectory } from "../src/plugins/pi/agent-directory";
 import { piRunnerSchema } from "../src/plugins/pi/config";
 import { piCommandEnvironmentFile, piControlPlaneHosts, piInstallation, piLaunch, piMountRoot, piShellCommandPrefix } from "../src/plugins/pi/launch";
@@ -260,7 +260,8 @@ async function runClaudeCodeCheck(options: {
     command: options.check.argv[0]!,
     environment,
     artifactsDirectory: artifacts,
-    egress: options.egress,
+    // The probes never call the model API; the relay only has to exist.
+    egress: { ...options.egress, relay: { upstream: CLAUDE_UPSTREAM, credential: () => "" } },
     filesystem: { command: options.check.argv[0]!, env: environment, workspace: options.workspace, artifacts, home, scratch: temporary },
     buildArguments: () => options.check.argv.slice(1),
   });
@@ -392,7 +393,7 @@ export function liveFilesystemOptions(options: {
   if (!configured) throw new Error("cannot locate the Claude Code config directory: set the runner's configDir, CLAUDE_CONFIG_DIR or HOME");
   const configDirectory = resolveFilesystemPath(configured);
   const env = { ...options.base, ...options.credentials, CLAUDE_CONFIG_DIR: configDirectory, HOME: options.home, TMPDIR: options.scratch };
-  return { command: options.cli, env, workspace: options.workspace, artifacts: options.artifacts, home: options.home, scratch: options.scratch, writable: [configDirectory] };
+  return { command: options.cli, env, workspace: options.workspace, artifacts: options.artifacts, home: options.home, scratch: options.scratch, writable: [configDirectory], hidden: [path.join(configDirectory, CLAUDE_CREDENTIAL_FILE)] };
 }
 
 /** Starts the real Claude Code CLI in the run's network namespace, exactly as the runner launches it, and judges its two `Bash` calls. */
@@ -407,13 +408,15 @@ export async function runLiveClaudeCheck(options: {
   await Promise.all([artifacts, home, temporary].map((target) => mkdir(target, { recursive: true })));
   const filesystem = liveFilesystemOptions({ ...options, artifacts, home, scratch: temporary });
   await mkdir(filesystem.env.CLAUDE_CONFIG_DIR!, { recursive: true });
+  // As a real run: the credentials stay with the relay on the host and the CLI gets a placeholder.
+  const credentials = claudeCredentials(filesystem.env, filesystem.env.CLAUDE_CONFIG_DIR!);
   const launch = await claudeLaunch({
     command: options.cli,
-    environment: filesystem.env,
+    environment: credentials.environment,
     artifactsDirectory: artifacts,
-    egress: options.egress,
+    egress: { ...options.egress, relay: credentials.relay },
     unset: claudeCommandUnset(Object.keys(options.credentials ?? {})),
-    filesystem,
+    filesystem: { ...filesystem, env: credentials.environment },
     buildArguments: liveArguments,
   });
   try {

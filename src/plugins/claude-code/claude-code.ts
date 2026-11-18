@@ -13,8 +13,8 @@ import path from "node:path";
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
 import { prepareAgentEnvironment } from "../../isolation/environment";
 import type { RunNetwork } from "../../isolation/run-network";
-import { claudeCommandUnset, claudeLaunch, claudePrefixFile, writeClaudeShellPrefix } from "./launch";
-import { agentFilesystemPlan, agentLaunchCommand, verifyAgentWrapper, type AgentFilesystemOptions } from "../../isolation/sandbox";
+import { CLAUDE_CREDENTIAL_FILE, claudeCommandUnset, claudeCredentials, claudeLaunch } from "./launch";
+import type { AgentFilesystemOptions } from "../../isolation/sandbox";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../../isolation/scratch";
 import { log } from "../../log/logger";
 import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type Artifact, type RunEnvelope } from "../../runner/result";
@@ -253,14 +253,13 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
       throw new ClaudeCodeRunnerError("cannot locate the Claude Code config directory: set CLAUDE_CONFIG_DIR or HOME", "process", null, "");
     }
     await mkdir(configDir, { recursive: true });
-    environment.CLAUDE_CONFIG_DIR = resolveFilesystemPath(configDir);
+    const resolvedConfigDir = resolveFilesystemPath(configDir);
+    environment.CLAUDE_CONFIG_DIR = resolvedConfigDir;
     environment.TMPDIR = scratch.path;
-    const resolvedEnvironment = resolvePathEnvironment(environment);
+    // The real credential stays on the host with the relay; the sandbox gets only a placeholder.
+    const credentials = claudeCredentials(resolvePathEnvironment(environment), resolvedConfigDir, input.egress?.relay);
+    const resolvedEnvironment = credentials.environment;
     const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
-    const commandUnset = claudeCommandUnset(input.programVariables);
-    // Without egress the prefix only removes what Claude Code holds for itself; under egress claudeLaunch writes one that also sets the proxy.
-    const plainPrefix = input.egress ? undefined : await writeClaudeShellPrefix(await claudePrefixFile(artifactsDirectory), {}, commandUnset);
-    if (plainPrefix) resolvedEnvironment.CLAUDE_CODE_SHELL_PREFIX = plainPrefix;
     const filesystemOptions: AgentFilesystemOptions = {
       command: input.command,
       env: resolvedEnvironment,
@@ -273,34 +272,24 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
         resolvedEnvironment.CLAUDE_CONFIG_DIR!,
         ...(input.sandbox === "workspace-write" ? [workspace, ...writableRoots] : []),
       ],
+      // Session data stays; the login file never reaches the sandbox.
+      hidden: [path.join(resolvedConfigDir, CLAUDE_CREDENTIAL_FILE)],
       runtime: [input.mcp.command, ...Object.values(input.mcpServers ?? {}).map((server) => server.command)],
       ...(input.toolchainPaths?.length ? { toolchain: input.toolchainPaths } : {}),
-      // Bound read-only over the writable artifacts mount, so the agent cannot rewrite its own prefix.
-      ...(plainPrefix ? { readable: [plainPrefix] } : {}),
     };
-    const filesystem = agentFilesystemPlan(filesystemOptions);
-    const command = agentLaunchCommand(filesystemOptions);
-    let argv = [
-      "bwrap", "--unshare-pid", "--die-with-parent", ...filesystem.mounts, "--chdir", workspace, "--",
-      command, ...claudeArguments(input, schema),
-    ];
-    let spawnEnvironment = resolvedEnvironment;
-    if (!input.egress) verifyAgentWrapper({ argv, env: spawnEnvironment }, command);
-    if (input.egress) {
-      // Fails closed: without the namespace and its proxies Claude Code is never started.
-      const launch = await claudeLaunch({
-        command: input.command,
-        environment: resolvedEnvironment,
-        artifactsDirectory,
-        egress: input.egress,
-        unset: commandUnset,
-        filesystem: filesystemOptions,
-        buildArguments: () => claudeArguments(input, schema),
-      });
-      network = launch.network;
-      argv = launch.argv;
-      spawnEnvironment = launch.env;
-    }
+    // Fails closed: without the namespace, its proxies and the relay Claude Code is never started.
+    const launch = await claudeLaunch({
+      command: input.command,
+      environment: resolvedEnvironment,
+      artifactsDirectory,
+      egress: { httpsHosts: [], ...input.egress, relay: credentials.relay },
+      unset: claudeCommandUnset(input.programVariables),
+      filesystem: filesystemOptions,
+      buildArguments: () => claudeArguments(input, schema),
+    });
+    network = launch.network;
+    const argv = launch.argv;
+    const spawnEnvironment = launch.env;
     const child = Bun.spawn(argv, { cwd: workspace, env: spawnEnvironment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     // Release the per-run network whenever the process ends, even if later setup throws.
     void child.exited.finally(() => network?.close());

@@ -7,6 +7,7 @@ import path from "node:path";
 import { defaultRunVariables } from "../../../src/isolation/run-environment";
 import { claudeArguments, claudeSchema, clearClaudeCodeHome, runClaudeCode, type ClaudeCodeRunInput } from "../../../src/plugins/claude-code/claude-code";
 import { bwrapUnavailableReason } from "../../support/bwrap";
+import { shortTemporaryDirectory } from "../../support/short-temporary-directory";
 
 const directories: string[] = [];
 const bwrapUnavailable = bwrapUnavailableReason();
@@ -20,7 +21,7 @@ const base = {
 };
 
 async function runnable(script: string) {
-  const root = await mkdtemp(path.join(tmpdir(), "conveyor-claude-cleanup-"));
+  const root = await shortTemporaryDirectory("conveyor-cc-", { socketPath: "artifacts/run-1/net/control.sock" });
   directories.push(root);
   const workspace = path.join(root, "workspace");
   const artifactsDirectory = path.join(root, "artifacts", "run-1");

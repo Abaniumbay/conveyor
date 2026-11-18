@@ -45,7 +45,7 @@ function git(args: string[], cwd?: string): void {
 }
 
 async function fixture() {
-  const root = await shortTemporaryDirectory("conveyor-clfs-", { visibleInSandbox: true });
+  const root = await shortTemporaryDirectory("conveyor-clfs-", { socketPath: "artifacts/run/net/control.sock", visibleInSandbox: true });
   directories.push(root);
   const source = path.join(root, "source");
   const workspace = path.join(root, "workspace");
