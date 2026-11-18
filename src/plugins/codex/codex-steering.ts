@@ -163,8 +163,13 @@ export async function runCodexSteering(
     const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env, promoteAuth });
     throw withCleanupError(error, cleanupError);
   }
-  child.stdin.write(input.prompt);
-  child.stdin.end();
+  try {
+    child.stdin.write(input.prompt);
+    child.stdin.end();
+  } catch (error) {
+    // A harness that exits without reading its prompt has already finished; only a closed pipe is ignored.
+    if ((error as NodeJS.ErrnoException)?.code !== "EPIPE") throw error;
+  }
 
   let sessionId: string | null = null;
   let summary = "";
