@@ -22,10 +22,13 @@ import type { HarnessRunInput } from "../../harness/types";
 import { sandboxSetupError } from "../../runner/sandbox-failure";
 import { OUTPUT_SCHEMAS } from "../../runner/output-schemas";
 import { claudeCodeProfile } from "./profile";
+import type { RefreshOptions } from "./login-refresh";
 
 export interface ClaudeCodeRunInput extends HarnessRunInput {
   /** Continue this session with `--resume` instead of starting a new one. */
   resumeSessionId?: string;
+  /** Test seam: where and with which trust anchor the `claude login` credential is refreshed (default Anthropic's). */
+  loginRefresh?: RefreshOptions;
 }
 
 export type ClaudeCodeErrorKind = "usage-limit" | "sandbox" | "process" | "protocol" | "invalid-result" | "timeout" | "interrupted";
@@ -257,7 +260,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     environment.CLAUDE_CONFIG_DIR = resolvedConfigDir;
     environment.TMPDIR = scratch.path;
     // The real credential stays on the host with the relay; the sandbox gets only a placeholder.
-    const credentials = claudeCredentials(resolvePathEnvironment(environment), resolvedConfigDir, input.egress?.relay);
+    const credentials = claudeCredentials(resolvePathEnvironment(environment), resolvedConfigDir, input.egress?.relay, input.loginRefresh);
     const resolvedEnvironment = credentials.environment;
     const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
     const filesystemOptions: AgentFilesystemOptions = {
@@ -339,6 +342,10 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     if (interrupted) throw new ClaudeCodeRunnerError(`Claude Code was interrupted${detail ? `: ${detail}` : ""}`, "interrupted", exitCode, stderr);
     if (sandboxError) throw new ClaudeCodeRunnerError(`Claude Code sandbox could not start commands: ${sandboxError}`, "sandbox", exitCode, stderr);
     if (exitCode !== 0 || final?.is_error) {
+      // A login the host could not refresh is the failure's cause; the sandbox saw only a generic bad gateway.
+      const loginFailure = credentials.loginFailure();
+      if (loginFailure === "renew") throw new ClaudeCodeRunnerError("the Claude Code login has expired and cannot be refreshed: renew it with `claude login`", "process", exitCode, stderr);
+      if (loginFailure === "unavailable") throw new ClaudeCodeRunnerError("Claude Code could not start: the login refresh endpoint was unreachable or failed; the run is retried", "protocol", exitCode, stderr);
       const kind = USAGE_LIMIT_PATTERN.test(`${detail}\n${raw.slice(-4_000)}`) ? "usage-limit" : "process";
       throw new ClaudeCodeRunnerError(`Claude Code exited with code ${exitCode}${detail ? `: ${detail}` : ""}`, kind, exitCode, stderr);
     }
