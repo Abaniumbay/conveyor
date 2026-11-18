@@ -1,6 +1,8 @@
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { startRunNetwork, withBridgeSockets, type AgentNetworkPolicy, type EgressInput, type RunNetwork } from "../../isolation/run-network";
+import type { CodexRoute } from "./routing";
 import { agentFilesystemCommand, agentLaunchCommand, privateTmpCommand, PROXY_VARIABLES, verifyAgentWrapper, type AgentFilesystemOptions } from "../../isolation/sandbox";
 
 /** Hosts Codex itself needs for its model backend and authentication. */
@@ -48,6 +50,8 @@ export async function codexLaunch(options: {
   filesystem: AgentFilesystemOptions;
   /** Variables for Codex itself that its commands must not inherit (the harness level's environment). */
   programVariables?: readonly string[] | undefined;
+  /** How the run authenticates; a routed one is pointed at the credential relay and holds a placeholder. */
+  route?: CodexRoute | undefined;
   buildArguments: (extra: string[]) => string[];
 }): Promise<{ argv: string[]; env: Record<string, string>; network: RunNetwork | null }> {
   const confined: AgentFilesystemOptions = { ...options.filesystem, releaseManifest: CODEX_RELEASE_MANIFEST };
@@ -58,7 +62,13 @@ export async function codexLaunch(options: {
     if (!options.privateTmp) verifyAgentWrapper(launch, agentLaunchCommand(confined));
     return { argv: launch.argv, env: launch.env, network: null };
   }
-  const policy: AgentNetworkPolicy = { ...options.egress, controlPlaneHosts: options.egress.controlPlaneHosts ?? CODEX_CONTROL_PLANE_HOSTS };
+  const route = options.route?.routed ? options.route : undefined;
+  const { relay: _callerRelay, ...egress } = options.egress;
+  const policy: AgentNetworkPolicy = {
+    ...egress,
+    controlPlaneHosts: options.egress.controlPlaneHosts ?? CODEX_CONTROL_PLANE_HOSTS,
+    ...(route ? { relay: route.policy } : {}),
+  };
   const network = await startRunNetwork({ directory: path.join(options.artifactsDirectory, "net"), policy });
   const filesystem = withBridgeSockets(confined, policy);
   let command: string;
@@ -68,7 +78,22 @@ export async function codexLaunch(options: {
     await network.close();
     throw error;
   }
-  const sandboxed = network.wrap(options.environment, (dataEnv) => [command, ...options.buildArguments(shellPolicyArguments(dataEnv, options.programVariables))], filesystem);
+  let environment = options.environment;
+  let routing: string[] = [];
+  let hidden: readonly string[] = options.programVariables ?? [];
+  try {
+    if (route && network.relay) {
+      const { url, placeholder } = network.relay;
+      environment = { ...environment, ...Object.fromEntries(route.placeholderVariables.map((name) => [name, placeholder])) };
+      if (route.sandboxRecord) await writeFile(path.join(environment.CODEX_HOME!, "auth.json"), route.sandboxRecord(placeholder), { mode: 0o600 });
+      routing = ["-c", `openai_base_url=${JSON.stringify(url)}`];
+      hidden = [...hidden, ...route.placeholderVariables, "CONVEYOR_RELAY_URL", "CONVEYOR_RELAY_PLACEHOLDER"];
+    }
+  } catch (error) {
+    await network.close();
+    throw error;
+  }
+  const sandboxed = network.wrap(environment, (dataEnv) => [command, ...options.buildArguments([...shellPolicyArguments(dataEnv, hidden), ...routing])], filesystem);
   try {
     verifyAgentWrapper(sandboxed, command);
   } catch (error) {

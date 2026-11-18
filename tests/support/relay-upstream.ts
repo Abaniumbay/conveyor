@@ -47,9 +47,20 @@ export async function throwawayCertificate(): Promise<{ cert: string; key: strin
 /**
  * A loopback TLS server standing in for the relay's upstream. It records every request on the host and
  * never echoes request headers. `/v1/stream` answers in two chunks, `/v1/error` answers 500 and
- * `/v1/slow` holds its response open.
+ * `/v1/slow` holds its response open and `/oauth/token` answers as `tokenEndpoint` says.
  */
-export async function startRelayUpstream(certificate?: { cert: string; key: string }): Promise<RelayUpstream> {
+export interface TokenAnswer {
+  status: number;
+  body: string;
+  /** Delay before answering. */
+  delayMs?: number;
+}
+
+export async function startRelayUpstream(
+  certificate?: { cert: string; key: string },
+  /** Answers `POST /oauth/token`, the stand-in for the identity provider's token endpoint. */
+  tokenEndpoint?: (body: string) => TokenAnswer,
+): Promise<RelayUpstream> {
   const { cert, key } = certificate ?? (await throwawayCertificate());
   const requests: RecordedRequest[] = [];
   const sockets = new Set<net.Socket>();
@@ -67,6 +78,14 @@ export async function startRelayUpstream(certificate?: { cert: string; key: stri
       });
       const route = (request.url ?? "").split("?")[0];
       if (route === "/v1/slow") return;
+      if (route === "/oauth/token" && tokenEndpoint) {
+        const answer = tokenEndpoint(requests[requests.length - 1]!.body);
+        setTimeout(() => {
+          response.writeHead(answer.status, { "Content-Type": "application/json" });
+          response.end(answer.body);
+        }, answer.delayMs ?? 0);
+        return;
+      }
       if (route === "/v1/error") {
         response.writeHead(500);
         response.end("upstream-failed");

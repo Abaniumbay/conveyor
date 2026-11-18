@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { z } from "zod";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
-import { prepareCodexEnvironment } from "./home";
+import { prepareCodexRun, type CodexRoute } from "./routing";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../../isolation/scratch";
 import type { RunNetwork } from "../../isolation/run-network";
 import { codexLaunch } from "./launch";
@@ -182,13 +182,14 @@ export async function runCodexCheck(
   let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
   let network: RunNetwork | null = null;
   let schemaFile: string;
+  let route: CodexRoute | undefined;
+  let promoteAuth = true;
   try {
     schemaFile = await writeOutputSchema(artifactsDirectory, "check");
-    const environment = await prepareCodexEnvironment({
-      artifactsDirectory,
-      workspace,
-      variables: input.env,
-    });
+    const prepared = await prepareCodexRun({ artifactsDirectory, workspace, variables: input.env, egress: runInput.egress });
+    route = prepared.route;
+    promoteAuth = prepared.promoteAuth;
+    const environment = prepared.environment;
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     const run =
@@ -207,6 +208,7 @@ export async function runCodexCheck(
       environment: resolvedEnvironment,
       artifactsDirectory,
       programVariables: input.programVariables,
+      route,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
       filesystem: {
@@ -227,7 +229,7 @@ export async function runCodexCheck(
     // Release the per-run network whenever the process ends, even if later setup throws.
     void child.exited.finally(() => network?.close());
   } catch (error) {
-    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
+    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env, promoteAuth });
     throw withCleanupError(new CodexRunnerError(
       `Could not start Codex: ${error instanceof Error ? error.message : String(error)}`,
       "process",
@@ -236,8 +238,13 @@ export async function runCodexCheck(
       { cause: error },
     ), cleanupError);
   }
-  child.stdin.write(input.prompt);
-  child.stdin.end();
+  try {
+    child.stdin.write(input.prompt);
+    child.stdin.end();
+  } catch (error) {
+    // A harness that exits without reading its prompt has already finished; only a closed pipe is ignored.
+    if ((error as NodeJS.ErrnoException)?.code !== "EPIPE") throw error;
+  }
 
   let sessionId: string | null = null;
   const usage = { ...EMPTY_USAGE };
@@ -294,7 +301,7 @@ export async function runCodexCheck(
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);
-    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
+    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env, promoteAuth });
   }
   const [{ raw, invalidLine }, stderr] = await Promise.all([
     stdoutPromise,

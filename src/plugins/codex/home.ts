@@ -23,8 +23,10 @@ export async function prepareCodexEnvironment(options: {
   parent?: Environment;
   /** A persisted session the run resumes; its record is copied into the private Codex home. */
   resumeSessionId?: string | undefined;
+  /** The login is relayed from the host, so the run's home gets no copy of it (the launch writes a placeholder record). */
+  routed?: boolean | undefined;
 }): Promise<Record<string, string>> {
-  const { resumeSessionId, ...rest } = options;
+  const { resumeSessionId, routed, ...rest } = options;
   const serviceHome = serviceCodexHome(options.variables, options.parent ?? process.env);
   const env = await prepareAgentEnvironment(rest);
   // The service's Codex home holds every run's credentials and sessions. The harness gets a
@@ -32,7 +34,7 @@ export async function prepareCodexEnvironment(options: {
   // policy excludes CODEX_HOME) and it is deleted with the home when the run ends.
   const privateHome = path.join(env.HOME!, ".codex");
   await mkdir(privateHome, { recursive: true, mode: 0o700 });
-  await copyIfPresent(path.join(serviceHome, "auth.json"), path.join(privateHome, "auth.json"));
+  if (!routed) await copyIfPresent(path.join(serviceHome, "auth.json"), path.join(privateHome, "auth.json"));
   if (resumeSessionId) {
     for (const relative of await sessionRecords(serviceHome, resumeSessionId)) {
       await copyIfPresent(path.join(serviceHome, relative), path.join(privateHome, relative));
@@ -45,7 +47,12 @@ export async function prepareCodexEnvironment(options: {
  * Returns what a run produced in its private Codex home to the service's: persisted session
  * records (so later runs can resume them) and a refreshed authentication record.
  */
-export async function syncCodexHome(options: { privateHome: string; serviceHome: string }): Promise<void> {
+export async function syncCodexHome(options: {
+  privateHome: string;
+  serviceHome: string;
+  /** False for a routed run: its private record is a placeholder and never replaces the host's login. */
+  promoteAuth?: boolean;
+}): Promise<void> {
   // The private home is writable by the agent, so nothing in it is trusted: only regular files are
   // read (never followed through a symlink) and only a well-formed authentication record is promoted.
   const sessions = path.join(options.privateHome, "sessions");
@@ -56,6 +63,7 @@ export async function syncCodexHome(options: { privateHome: string; serviceHome:
     await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     await writeFile(target, content, { mode: 0o600 });
   }
+  if (options.promoteAuth === false) return;
   const updated = await readRegularFile(path.join(options.privateHome, "auth.json"));
   if (!updated || !isAuthenticationRecord(updated)) return;
   const service = path.join(options.serviceHome, "auth.json");
@@ -75,7 +83,7 @@ export function serviceCodexHome(overrides?: Record<string, string>, parent: Env
 }
 
 /** Reads a regular file without following a final symlink; anything else yields undefined. */
-async function readRegularFile(file: string): Promise<Buffer | undefined> {
+export async function readRegularFile(file: string): Promise<Buffer | undefined> {
   let handle;
   try {
     handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);

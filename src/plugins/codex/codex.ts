@@ -5,10 +5,11 @@ import { existsSync } from "node:fs";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
 import { cleanupSanitizedHome } from "../../isolation/environment";
-import { prepareCodexEnvironment, serviceCodexHome, syncCodexHome } from "./home";
+import { serviceCodexHome, syncCodexHome } from "./home";
 import { acquireScratch, assertNoHostTmpWritableRoots, type ScratchDirectory } from "../../isolation/scratch";
 import type { EgressInput, RunNetwork } from "../../isolation/run-network";
 import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch } from "./launch";
+import { prepareCodexRun, type CodexRoutingSeams } from "./routing";
 import { log } from "../../log/logger";
 import {
   EMPTY_USAGE,
@@ -61,6 +62,8 @@ export interface CodexRunInput {
   config?: Record<string, CodexConfigValue>;
   /** MCP servers beside Conveyor's own. They are optional: one that fails to start does not fail the run. */
   mcpServers?: Record<string, CodexMcpServer>;
+  /** Test seams for the credential relay's upstreams and token endpoint. */
+  routing?: CodexRoutingSeams;
 }
 
 export type CodexConfigValue = string | number | boolean;
@@ -109,6 +112,8 @@ export async function cleanupCodexRun(options: {
   scratch: Pick<ScratchDirectory, "cleanup">;
   /** The caller's environment overrides, which can relocate the service's Codex home. */
   env?: Record<string, string> | undefined;
+  /** False for a routed run, whose private login record is a placeholder that must not replace the host's. */
+  promoteAuth?: boolean;
 }): Promise<string | undefined> {
   const failures: string[] = [];
   for (const [name, cleanup] of [
@@ -117,6 +122,7 @@ export async function cleanupCodexRun(options: {
     ["codex home", () => syncCodexHome({
       privateHome: path.join(path.resolve(options.artifactsDirectory), "home", ".codex"),
       serviceHome: serviceCodexHome(options.env),
+      promoteAuth: options.promoteAuth ?? true,
     })],
     ["private home", () => cleanupSanitizedHome(options.artifactsDirectory)],
   ] as const) {
@@ -304,9 +310,11 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   const startedAt = performance.now();
   let network: RunNetwork | null = null;
   let child: ReturnType<typeof spawnPiped>;
+  let promoteAuth = true;
   const scratch = await acquireScratch(input.temporaryDirectory);
   try {
-    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace, variables: input.env, resumeSessionId: input.resumeSessionId });
+    const { route, environment, promoteAuth: promote } = await prepareCodexRun({ artifactsDirectory, workspace, variables: input.env, egress: runInput.egress, seams: input.routing, resumeSessionId: input.resumeSessionId });
+    promoteAuth = promote;
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     // Tools keep their state under HOME, so a run that may write must be able to write its own.
@@ -318,6 +326,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
       environment: resolvedEnvironment,
       artifactsDirectory,
       programVariables: input.programVariables,
+      route,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
       filesystem: {
@@ -339,11 +348,16 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     // Release the per-run network whenever the process ends, even if later setup throws.
     void child.exited.finally(() => network?.close());
   } catch (error) {
-    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
+    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env, promoteAuth });
     throw withCleanupError(error, cleanupError);
   }
-  child.stdin.write(input.prompt);
-  child.stdin.end();
+  try {
+    child.stdin.write(input.prompt);
+    child.stdin.end();
+  } catch (error) {
+    // A harness that exits without reading its prompt has already finished; only a closed pipe is ignored.
+    if ((error as NodeJS.ErrnoException)?.code !== "EPIPE") throw error;
+  }
 
   let sessionId: string | null = null;
   const usage = { ...EMPTY_USAGE };
@@ -398,7 +412,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);
-    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
+    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env, promoteAuth });
   }
   const [{ raw, invalidLine }, stderr] = await Promise.all([
     stdoutPromise,

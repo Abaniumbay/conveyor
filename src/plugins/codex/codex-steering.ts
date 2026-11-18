@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../../core/paths";
-import { prepareCodexEnvironment } from "./home";
+import { prepareCodexRun, type CodexRoute } from "./routing";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../../isolation/scratch";
 import type { RunNetwork } from "../../isolation/run-network";
 import { codexLaunch } from "./launch";
@@ -113,11 +113,16 @@ export async function runCodexSteering(
   };
   const scratch = await acquireScratch(input.temporaryDirectory);
   let network: RunNetwork | null = null;
+  let route: CodexRoute | undefined;
+  let promoteAuth = true;
   let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
   try {
     const confined = input.filesystem === "scratch";
     const agentWorkspace = confined ? scratch.path : workspace;
-    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace: agentWorkspace, variables: input.env });
+    const prepared = await prepareCodexRun({ artifactsDirectory, workspace: agentWorkspace, variables: input.env, egress: runInput.egress });
+    route = prepared.route;
+    promoteAuth = prepared.promoteAuth;
+    const environment = prepared.environment;
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     const run = runInput.sandbox === "workspace-write"
@@ -135,6 +140,7 @@ export async function runCodexSteering(
       environment: resolvedEnvironment,
       artifactsDirectory,
       programVariables: input.programVariables,
+      route,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
       filesystem: {
@@ -154,11 +160,16 @@ export async function runCodexSteering(
     child = Bun.spawn(launch.argv, { cwd: agentWorkspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     void child.exited.finally(() => network?.close());
   } catch (error) {
-    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
+    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env, promoteAuth });
     throw withCleanupError(error, cleanupError);
   }
-  child.stdin.write(input.prompt);
-  child.stdin.end();
+  try {
+    child.stdin.write(input.prompt);
+    child.stdin.end();
+  } catch (error) {
+    // A harness that exits without reading its prompt has already finished; only a closed pipe is ignored.
+    if ((error as NodeJS.ErrnoException)?.code !== "EPIPE") throw error;
+  }
 
   let sessionId: string | null = null;
   let summary = "";
@@ -210,7 +221,7 @@ export async function runCodexSteering(
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);
-    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
+    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env, promoteAuth });
   }
   const [{ raw, invalidLine }, stderr] = await Promise.all([stdout, stderrPromise]);
   const detail = [stderr.trim(), ...errors].filter(Boolean).join("\n");
