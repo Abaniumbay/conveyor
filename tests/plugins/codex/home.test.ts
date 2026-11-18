@@ -61,6 +61,22 @@ describe("prepareCodexEnvironment", () => {
     expect(existsSync(path.join(privateHome, "sessions", "2026", "rollout-other.jsonl"))).toBe(false);
   });
 
+  test("a routed run's private home gets no copy of the login (AC-1.3)", async () => {
+    const root = await temporary();
+    const serviceHome = path.join(root, "service-codex");
+    await mkdir(serviceHome, { recursive: true });
+    await writeFile(path.join(serviceHome, "auth.json"), '{"tokens":"service"}');
+
+    const env = await prepareCodexEnvironment({
+      artifactsDirectory: path.join(root, "artifacts", "run-1"),
+      workspace: await workspaceIn(root),
+      parent: { HOME: "/home/real", PATH: process.env.PATH ?? "", CODEX_HOME: serviceHome },
+      routed: true,
+    });
+
+    expect(existsSync(path.join(env.CODEX_HOME!, "auth.json"))).toBe(false);
+  });
+
   test("reads the login from ~/.codex when CODEX_HOME is not set", async () => {
     const root = await temporary();
     const home = path.join(root, "home");
@@ -102,6 +118,16 @@ describe("syncCodexHome", () => {
     await writeFile(path.join(privateHome, "auth.json"), "junk");
     await syncCodexHome({ privateHome, serviceHome });
     expect(await readFile(path.join(serviceHome, "auth.json"), "utf8")).toBe('{"tokens":"service"}');
+  });
+
+  test("never promotes the private record of a routed run (AC-1.3)", async () => {
+    const { privateHome, serviceHome } = await homes();
+    await writeFile(path.join(serviceHome, "auth.json"), '{"tokens":"service"}');
+    await writeFile(path.join(privateHome, "auth.json"), '{"tokens":"placeholder"}');
+    await writeFile(path.join(privateHome, "sessions", "2026", "rollout-abc.jsonl"), "{}\n");
+    await syncCodexHome({ privateHome, serviceHome, promoteAuth: false });
+    expect(await readFile(path.join(serviceHome, "auth.json"), "utf8")).toBe('{"tokens":"service"}');
+    expect(await readFile(path.join(serviceHome, "sessions", "2026", "rollout-abc.jsonl"), "utf8")).toBe("{}\n");
   });
 
   test("promotes a refreshed auth record and regular session files but not symlinked sessions", async () => {
