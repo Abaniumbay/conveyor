@@ -19,12 +19,8 @@ import type { IssueJourneyViewModel } from "../web/types";
 import type { LiveIssueStatus, SchedulerLookups } from "./dashboard-sources";
 import { CI_INDICATOR_ID, type StoredIndicator } from "./indicators";
 import { latestStopReason } from "./item-history";
+import { DEPENDENCIES_TASK, dependencyResolved } from "../core/dependency-rule";
 import { inheritedDependencies, type InheritanceReads } from "../core/inherited-dependencies";
-
-/** A dependency is met when its issue is closed or done. */
-function dependencyMet(blocker: Pick<StoredIssue, "sourceState" | "projectedState"> | null): boolean {
-  return Boolean(blocker && (blocker.sourceState === "closed" || blocker.projectedState === "done"));
-}
 
 /** A stage this process runs now, as the scheduler counts it. */
 export interface RunningStage {
@@ -127,7 +123,7 @@ export class Scheduler {
       // Dependencies, an ancestor's included, can change after the candidates were built. An item
       // whose dependency is unmet waits here; it is neither launched nor stopped, and a later pass starts it.
       const reads = { dependencies: (id: string) => store.listDependencies(id), issue: (id: string) => store.getIssue(id) };
-      if (this.#allDependencies(issue.id, reads).some(({ dependencyId }) => !dependencyMet(store.getIssue(dependencyId)))) continue;
+      if (this.#allDependencies(issue.id, reads).some(({ dependencyId }) => !this.#dependencyMet(issue, candidate.stageId, store.getIssue(dependencyId)))) continue;
       // The retry marker is only an admission permit. Restore the executor's
       // ordinary ready state immediately before it claims the stage.
       const stage = store.getStageState(issue.id);
@@ -218,7 +214,7 @@ export class Scheduler {
       if (!state?.stageId || issue.queueRank === null) return [];
       const lightweight = this.#deps.isLightweightStage(issue.repositoryId, state.stageId);
       const dependenciesSatisfied = this.#allDependencies(issue.id, { dependencies, issue: getIssue })
-        .every(({ dependencyId }) => dependencyMet(getIssue(dependencyId)));
+        .every(({ dependencyId }) => this.#dependencyMet(issue, state.stageId, getIssue(dependencyId)));
       return [{
         id: issue.id,
         repositoryId: issue.repositoryId,
@@ -241,6 +237,44 @@ export class Scheduler {
         skipped: this.#deps.isSkippedStage(issue.repositoryId, state.stageId),
         gateOnly: !lightweight && this.#deps.isGateOnlyExecution(issue.id, issue.repositoryId, state.stageId),
       }];
+    });
+  }
+
+  /** The dependent's pipeline as the scheduler reads it: its stage ids in order and the stage and `after` of its item.dependenciesMet step. */
+  #dependencyCheck(repositoryId: string): { stages: string[]; stageId: string; after: string } | undefined {
+    const { config } = this.#deps;
+    const plan = (config.plans ?? []).find((candidate) => candidate.repositoryId === repositoryId);
+    // A compiled plan carries repository overrides; a config without plans (legacy or mixed pipelines) is read as written.
+    const pipeline = config.repositories[repositoryId]?.pipeline;
+    const stages = plan
+      ? plan.stages.map((stage) => ({ id: stage.id, entries: [...stage.actions, ...stage.exitGate].map((task) => ({ task: task.task, after: task.with.after })) }))
+      : (pipeline === undefined ? [] : config.pipelines[pipeline]?.stages ?? []).map((stage) => ({
+        id: stage.id,
+        entries: isNativeStage(stage)
+          ? [...stage.actions, ...stage.exitGate].map((entry) => ({ task: entry.task, after: (entry.with as { after?: unknown } | undefined)?.after }))
+          : [],
+      }));
+    for (const stage of stages) {
+      for (const entry of stage.entries) {
+        if (entry.task === DEPENDENCIES_TASK && typeof entry.after === "string") {
+          return { stages: stages.map((candidate) => candidate.id), stageId: stage.id, after: entry.after };
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Whether a blocker no longer holds the dependent at `stageId`. A dependent past the stage of its
+   * dependenciesMet step has passed the check, so a blocker sent back later does not stop it.
+   */
+  #dependencyMet(dependent: StoredIssue, stageId: string | null, blocker: StoredIssue | null): boolean {
+    const { config } = this.#deps;
+    const check = this.#dependencyCheck(dependent.repositoryId);
+    if (check && stageId !== null && check.stages.indexOf(stageId) > check.stages.indexOf(check.stageId)) return true;
+    return dependencyResolved(blocker, check?.after, (repositoryId) => {
+      const pipeline = config.repositories[repositoryId]?.pipeline;
+      return pipeline === undefined ? null : config.pipelines[pipeline]?.stages.map((stage) => stage.id) ?? null;
     });
   }
 
@@ -364,7 +398,7 @@ export class Scheduler {
       const unmet = this.#allDependencies(issue.id, { dependencies: (id) => store.listDependencies(id), issue: (id) => store.getIssue(id) })
         .flatMap((entry) => {
           const dependency = store.getIssue(entry.dependencyId);
-          return dependency && dependencyMet(dependency) ? [] : [{ ...entry, label: dependency ? `#${dependency.sourceNumber}` : entry.dependencyId }];
+          return this.#dependencyMet(issue, candidate.stageId, dependency) ? [] : [{ ...entry, label: dependency ? `#${dependency.sourceNumber}` : entry.dependencyId }];
         });
       const reasons = [
         ...(unmet.some((entry) => entry.ancestorId === null)

@@ -76,6 +76,10 @@ A script that completes always lets \`script.run\` pass, even when it reports fa
 
 Gate open: advance. Gate \`fail\`: run the stage's actions again with \`run.feedback\`, unless \`onFail\` routes elsewhere. Gate \`pending\`: park, then re-evaluate the whole gate with fresh loads.
 
+## Dependencies released at a stage
+
+\`item.dependenciesMet\` takes an optional \`with: { after: <stage> }\`. By default (no \`after\`) a blocker counts only when it is closed or done. With \`after\`, a blocker also counts once its own stage is later than \`after\` in its own pipeline; a blocker still at that stage or earlier, or with no stage, keeps the dependent waiting. A blocker whose pipeline has no stage with that name counts only when closed or done. The stage must exist in the pipeline that names it, or the configuration is rejected. The scheduler applies the same \`after\` as the dependent's own step. A blocker later sent back to \`after\` or an earlier stage is waited for again the next time the check runs; a dependent already past the check is not stopped.
+
 ## Repository overrides
 
 \`repositories.<id>.overrides.stages.<stage>.<actions|exit-gate>.<instance id>\` replaces \`with\`, merges \`wait\` and replaces \`onFail\`. Naming a stage, list or instance that does not exist is a configuration error.

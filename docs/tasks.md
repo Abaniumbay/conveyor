@@ -70,6 +70,10 @@ A script that completes always lets `script.run` pass, even when it reports fail
 
 Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedback`, unless `onFail` routes elsewhere. Gate `pending`: park, then re-evaluate the whole gate with fresh loads.
 
+## Dependencies released at a stage
+
+`item.dependenciesMet` takes an optional `with: { after: <stage> }`. By default (no `after`) a blocker counts only when it is closed or done. With `after`, a blocker also counts once its own stage is later than `after` in its own pipeline; a blocker still at that stage or earlier, or with no stage, keeps the dependent waiting. A blocker whose pipeline has no stage with that name counts only when closed or done. The stage must exist in the pipeline that names it, or the configuration is rejected. The scheduler applies the same `after` as the dependent's own step. A blocker later sent back to `after` or an earlier stage is waited for again the next time the check runs; a dependent already past the check is not stopped.
+
 ## Repository overrides
 
 `repositories.<id>.overrides.stages.<stage>.<actions|exit-gate>.<instance id>` replaces `with`, merges `wait` and replaces `onFail`. Naming a stage, list or instance that does not exist is a configuration error.
@@ -152,7 +156,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `item.comment` | tool | - | invalidates item | Add a Markdown comment to the current issue. |
 | `item.createChild` | tool | - | invalidates item | Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. It refuses when the current item has the configured no-split metadata label: give the whole item acceptance criteria or report needs-input instead. dependsOn may name any open or finished (closed as completed), Conveyor-enrolled issue in this repository, including siblings and issues outside this parent; a finished dependency counts as already met. It cannot name the parent, the new child, an issue closed without being finished, an unenrolled issue, or create a cycle. Everything knowable before the child is created is validated first. |
 | `item.criteriaDefined` | check | item, repository | - | Passes when the item has at least one acceptance criterion, or has children that carry the work. |
-| `item.dependenciesMet` | check | item, repository | - | Pending while any dependency is neither closed nor done; the message lists them. A blocker of a tracked repository closing or reaching done wakes it at once. |
+| `item.dependenciesMet` | check | item, repository | - | Pending while any dependency is neither closed nor done; the message lists them. With `after`, a dependency also counts once its own pipeline is past that stage (a dependency whose pipeline lacks the stage counts only when closed or done). A blocker of a tracked repository changing stage, closing or reaching done wakes it at once. |
 | `item.followUps` | check | item, repository | - | Passes the follow-up stage; notes, when present, require its automatic acknowledgement gate. |
 | `item.get` | tool | - | - | Read the accepted source snapshot of the current issue, including whether it must remain one item and its recorded test plan (testPlan, null when none). |
 | `item.guidance` | tool | - | - | Read source-specific agent guidance. |

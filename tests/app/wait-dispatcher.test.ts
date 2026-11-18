@@ -91,3 +91,18 @@ describe("WaitDispatcher wakes", () => {
     expect(woken).toEqual(["item"]);
   });
 });
+
+describe("WaitDispatcher wakes on a blocker's stage change", () => {
+  const moved = (issueId: string) => event("item.stageChanged", { fromStage: "merge", fromState: "active", toStage: "verify", toState: "active" }, { issueId });
+
+  test("AC-8.3 only the subscriber of the blocker's topic is woken", () => {
+    const { instance, woken } = dispatcher({
+      "issue:owner/app:7": [{ issueId: "dependent", stageEpoch: 3 }],
+      "issue:owner/app:8": [{ issueId: "other", stageEpoch: 3 }],
+    });
+    instance.handle(moved("blocker"));
+    instance.handle(moved("unrelated"));
+    instance.flush();
+    expect(woken).toEqual(["dependent"]);
+  });
+});
