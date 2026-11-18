@@ -169,8 +169,8 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     return { harness, check: harness.check.bind(harness) };
   }
 
-  private egressInput(runner: { controlPlaneHosts?: string[] | undefined }): { egress?: EgressInput } {
-    const egress = agentEgressFor(this.config, this.context.repository.id, runner);
+  private egressInput(runner: { controlPlaneHosts?: string[] | undefined }, sandboxed = false): { egress?: EgressInput } {
+    const egress = agentEgressFor(this.config, this.context.repository.id, { ...runner, sandboxed });
     return egress ? { egress } : {};
   }
 
@@ -315,7 +315,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
               agent.workspaceAccess === "read-only" ? "read-only" : runner.sandbox ?? "read-only",
             automaticApprovals: runner.automaticApprovals ?? false,
             mcp: lease.configuration,
-            ...this.egressInput(runner),
+            ...this.egressInput(runner, harness.profile.relayAlways),
             interruptGraceMs: this.config.settings.interruptGraceMs,
             ...(this.signal ? { signal: this.signal } : {}),
             onEvent: (event) => {
@@ -450,7 +450,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         automaticApprovals: false,
         mcp: lease.configuration,
         ...agentRunVariables(this.config, { runId, repositoryId: this.context.repository.id, itemId: String(issue.id), stageId: context.stageId, agentId: definition.verifier }),
-        ...this.egressInput(runner),
+        ...this.egressInput(runner, harness.profile.relayAlways),
         interruptGraceMs: this.config.settings.interruptGraceMs,
         ...(this.signal ? { signal: this.signal } : {}),
         onEvent: (event) => {

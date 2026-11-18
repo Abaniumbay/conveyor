@@ -179,6 +179,8 @@ export interface HarnessProfile {
    * harness that cannot is refused for such a repository when the configuration loads.
    */
   readonly agentEgress: boolean;
+  /** Whether every run is sandboxed through the credential relay even when the repository declares no `agentEgress`. */
+  readonly relayAlways?: boolean;
   /**
    * Lines the agent's tool guidance adds about how this harness shows Conveyor's tools to the agent
    * (such as the names they are called by), given the granted canonical names; absent: none.

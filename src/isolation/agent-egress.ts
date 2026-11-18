@@ -27,10 +27,19 @@ function isDockerSocket(socket: string): boolean {
 export function agentEgressFor(
   config: ConveyorConfig,
   repositoryId: string,
-  runner: { controlPlaneHosts?: string[] | undefined; relay?: CredentialRelayPolicy | undefined },
+  runner: { controlPlaneHosts?: string[] | undefined; relay?: CredentialRelayPolicy | undefined; sandboxed?: boolean | undefined },
 ): EgressInput | undefined {
   const egress = config.repositories?.[repositoryId]?.agentEgress;
-  if (!egress) return runner.relay ? { httpsHosts: [], controlPlaneHosts: runner.controlPlaneHosts, relay: runner.relay } : undefined;
+  if (!egress) {
+    if (!runner.relay && !runner.sandboxed) return undefined;
+    // The sandbox's loopback keeps the MCP route the unsandboxed run had.
+    return {
+      httpsHosts: [],
+      controlPlaneHosts: runner.controlPlaneHosts,
+      ...(runner.relay ? { relay: runner.relay } : {}),
+      ...(runner.sandboxed ? { mcp: { port: listenPort(config.web.listen), socket: mcpSocketPath(config.settings.artifacts) } } : {}),
+    };
+  }
   const services = egress.localServices ?? [];
   for (const service of services) {
     if (service.socket !== undefined && isDockerSocket(service.socket)) {

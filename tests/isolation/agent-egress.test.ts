@@ -20,6 +20,14 @@ describe("agentEgressFor", () => {
     expect(agentEgressFor(config({}), "missing", {})).toBeUndefined();
   });
 
+  test("a harness that is always sandboxed keeps the MCP route without an agentEgress block", () => {
+    expect(agentEgressFor(config({}), "legacy", { sandboxed: true })).toEqual({
+      httpsHosts: [],
+      controlPlaneHosts: undefined,
+      mcp: { port: 8123, socket: "/data/artifacts/mcp.sock" },
+    });
+  });
+
   test("forwards the exact web port to the MCP-only socket when loopback MCP is allowed", () => {
     expect(
       agentEgressFor(config({ allowLoopbackMcp: true, httpsHosts: ["registry.npmjs.org"] }), "app", { controlPlaneHosts: ["x.example.com"] }),

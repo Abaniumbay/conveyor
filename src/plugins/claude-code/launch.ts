@@ -116,7 +116,7 @@ export async function claudeLaunch(options: {
       filesystem,
     );
     verifyAgentWrapper(sandboxed, command);
-    const owned: RunNetwork = { wrap: network.wrap, close: async () => { await network.close(); await rm(prefix, { force: true }); } };
+    const owned: RunNetwork = { wrap: network.wrap, ...(network.relay ? { relay: network.relay } : {}), close: async () => { await network.close(); await rm(prefix, { force: true }); } };
     return { argv: sandboxed.argv, env: sandboxed.env, network: owned };
   } catch (error) {
     await network.close();
