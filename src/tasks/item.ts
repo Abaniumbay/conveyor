@@ -772,7 +772,7 @@ const setRefinement = tool("item.setRefinement",
   });
 
 const setTestPlan = tool("item.setTestPlan",
-  "Record the test plan in the managed Test Plan section of the issue body: cases (id such as AC-2.1, criterionId, proves, boundary, setup, action, expected, kind behaviour|edge|negative|failure|manual) and constraints (mustNotTouch, reuse, redLines). Every case must name an existing criterion; case ids must be unique. Replaces only that section and records the criteria it was written against.",
+  "Record the test plan in the managed Test Plan section of the issue body: cases (id such as AC-2.1, criterionId, proves, boundary, setup, action, expected, kind behaviour|edge|negative|failure|manual) and constraints (mustNotTouch, reuse, redLines). Every case must name an existing criterion; case ids must be unique. Replaces only that section and records the criteria it was written against. Cases of kind manual, and cases of [Manual] criteria, need no linked test and do not block delivery.",
   testPlanInput, true,
   async ({ deps, input }, issue) => {
     const criteria = criteriaOf(issue.body);

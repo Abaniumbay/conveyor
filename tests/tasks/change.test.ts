@@ -1445,3 +1445,76 @@ describe("planned test cases", () => {
     expect(((await record(w, [{ name: "does work", file: "tests/a.test.ts", caseId: "AC-1.1" }])) as Fail).message).toContain("AC-1.1");
   });
 });
+
+describe("planned cases that need no linked test", () => {
+  type PlanCase = [id: string, criterionId: string, kind: "behaviour" | "edge" | "negative" | "failure" | "manual"];
+  const body = (cases: PlanCase[]) => upsertManagedSection(BODY, "test-plan", renderTestPlanSection({
+    criteriaDigest: "d", constraints: { mustNotTouch: [], reuse: [], redLines: [] },
+    cases: cases.map(([id, criterionId, kind]) => ({ id, criterionId, proves: "p", boundary: "b", setup: "s", action: "a", expected: "e", kind })),
+  }), parseManagedSections(BODY).revision);
+  const grant = { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) };
+  const source = "it(\"does work\", () => {})";
+  const plain = [{ id: "a", text: "It works", manual: false }];
+  const mixed = [...plain, { id: "m", text: "[Manual] Looks right", manual: true }];
+  const check = async (criteria: unknown[], cases: PlanCase[], evidence: Array<Record<string, unknown>>) => {
+    const w = await world({ body: PR_BODY, files: { "tests/a.test.ts": source } }, true, body(cases));
+    if (evidence.length > 0) {
+      const recorded = await run("change.recordCriterionTests", { context: {}, deps: w.deps, input: { headSha: "head1", criteria: evidence }, actor: "kaveh", grant }) as Fail | Pass;
+      expect(recorded.status).toBe("pass");
+    }
+    return run("change.criterionTestsVerified", { context: ctx({ item: { criteria } as never }), deps: w.deps }) as Promise<Fail | Pass>;
+  };
+  const linked = (caseId: string, name = "does work") => ({ criterionId: "a", tests: [{ name, file: "tests/a.test.ts", caseId }] });
+
+  test("AC-1.1 a case of a [Manual] criterion needs no linked test", async () => {
+    const result = await check(mixed, [["AC-1.1", "a", "behaviour"], ["AC-2.1", "m", "behaviour"]], [linked("AC-1.1"), { criterionId: "m", manual: true }]);
+    expect(result.status).toBe("pass");
+  });
+
+  test("AC-1.2 a [Manual] criterion alone passes with several unlinked cases", async () => {
+    const result = await check([{ id: "m", text: "[Manual] x", manual: true }], [["AC-1.1", "m", "behaviour"], ["AC-1.2", "m", "edge"]], [{ criterionId: "m", manual: true }]);
+    expect(result.status).toBe("pass");
+  });
+
+  test("AC-2.1 a manual-kind case needs no linked test when the other cases are linked", async () => {
+    const result = await check(plain, [["AC-1.1", "a", "behaviour"], ["AC-1.2", "a", "manual"]], [linked("AC-1.1")]);
+    expect(result.status).toBe("pass");
+  });
+
+  test("AC-2.2 a manual-kind case does not excuse a non-manual criterion from linked tests", async () => {
+    const result = await check(plain, [["AC-1.1", "a", "manual"]], []) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("a: no tests linked");
+    expect(result.message).not.toContain("planned cases without a linked test");
+  });
+
+  test("AC-3.1 every non-manual kind still needs a linked test", async () => {
+    const result = await check(plain, [["AC-1.1", "a", "behaviour"], ["AC-1.2", "a", "edge"], ["AC-1.3", "a", "negative"], ["AC-1.4", "a", "failure"], ["AC-1.5", "a", "manual"]], [linked("AC-1.1")]) as Fail;
+    expect(result.status).toBe("fail");
+    for (const id of ["AC-1.2", "AC-1.3", "AC-1.4"]) expect(result.message).toContain(id);
+    expect(result.message).not.toContain("AC-1.1");
+    expect(result.message).not.toContain("AC-1.5");
+  });
+
+  test("AC-3.2 the manual criterion exemption does not leak to other criteria", async () => {
+    const result = await check(mixed, [["AC-1.1", "a", "behaviour"], ["AC-1.2", "a", "behaviour"], ["AC-2.1", "m", "behaviour"]], [linked("AC-1.1"), { criterionId: "m", manual: true }]) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("AC-1.2");
+    expect(result.message).not.toContain("AC-2.1");
+  });
+
+  test("AC-4.1 a linked test absent from its file still fails for a manual-kind case", async () => {
+    const result = await check(plain, [["AC-1.1", "a", "behaviour"], ["AC-1.2", "a", "manual"]], [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts", caseId: "AC-1.1" }, { name: "renamed away", file: "tests/a.test.ts", caseId: "AC-1.2" }] }]) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("AC-1.2");
+    expect(result.message).toContain("renamed away");
+    expect(result.message).toContain("as written");
+  });
+
+  test("AC-4.2 a missing linked file still fails beside a [Manual] criterion", async () => {
+    const result = await check(mixed, [["AC-1.1", "a", "behaviour"], ["AC-1.2", "a", "edge"], ["AC-2.1", "m", "behaviour"]], [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts", caseId: "AC-1.1" }, { name: "gone", file: "tests/gone.test.ts", caseId: "AC-1.2" }] }, { criterionId: "m", manual: true }]) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("AC-1.2");
+    expect(result.message).toContain("tests/gone.test.ts");
+  });
+});

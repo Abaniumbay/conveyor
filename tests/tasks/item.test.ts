@@ -651,6 +651,13 @@ describe("item tools", () => {
       return run("item.testPlanComplete", { context: ctx(loaded) });
     };
 
+    test("AC-5.1 setTestPlan description says manual cases and [Manual] criteria need no linked test", () => {
+      const description = registry.require("item.setTestPlan").description;
+      expect(description).toContain("kind behaviour|edge|negative|failure|manual");
+      expect(description).toContain("Replaces only that section");
+      expect(description).toMatch(/kind manual, and cases of \[Manual\] criteria, need no linked test/);
+    });
+
     test("setTestPlan writes only its own section and item.get returns the plan", async () => {
       const w = await world(); w.add("i1", 5, { body });
       expect(((await tool("item.get", w.deps(), {})).output as { testPlan: unknown }).testPlan).toBeNull();

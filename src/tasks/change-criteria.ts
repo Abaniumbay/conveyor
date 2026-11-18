@@ -335,7 +335,8 @@ export const criterionTestsVerified: TaskDefinition<unknown, unknown, Deps> = {
       if (foundLines.length === entry.tests.length) lines.set(criterion.id, foundLines);
     }
     // Cases linked from a manual criterion's entry are not read above; any linked case must still exist at the head.
-    const uncovered = (plan?.cases ?? []).filter((plannedCase) => !covered.has(plannedCase.id) && !gaps.some((gap) => gap.includes(`(case ${plannedCase.id})`))).map((plannedCase) => plannedCase.id);
+    const manualCriteria = new Set(context.item!.criteria.filter((criterion) => criterion.manual).map((criterion) => criterion.id));
+    const uncovered = (plan?.cases ?? []).filter((plannedCase) => plannedCase.kind !== "manual" && !manualCriteria.has(plannedCase.criterionId) && !covered.has(plannedCase.id) && !gaps.some((gap) => gap.includes(`(case ${plannedCase.id})`))).map((plannedCase) => plannedCase.id);
     if (uncovered.length > 0) gaps.push(`planned cases without a linked test at ${live.headSha}: ${uncovered.join(", ")}`);
     if (gaps.length > 0) return fail(`Criterion test evidence is incomplete or stale: ${gaps.join("; ")}`);
     deps.store.refreshCriterionTestEvidence(deps.issueId, live.headSha, lines);
