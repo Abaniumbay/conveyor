@@ -1,5 +1,5 @@
-import { createHash, randomBytes } from "node:crypto";
-import { open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { open, readFile, rm, stat } from "node:fs/promises";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
@@ -39,7 +39,16 @@ export interface RefreshOptions {
 }
 
 async function readLogin(file: string): Promise<{ login: Login; accessToken: string; refreshToken: string; expiresAt: number | null }> {
-  const login = JSON.parse(await readFile(file, "utf8")) as Login;
+  // The file is rewritten in place, so a read may meet it half written: read again before giving up.
+  let login: Login | undefined;
+  for (let attempt = 0; login === undefined; attempt += 1) {
+    try {
+      login = JSON.parse(await readFile(file, "utf8")) as Login;
+    } catch (error) {
+      if (!(error instanceof SyntaxError) || attempt >= 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
   const oauth = login.claudeAiOauth;
   if (!oauth || typeof oauth.accessToken !== "string" || !oauth.accessToken) throw new Error("the Claude Code login file holds no access token");
   return {
@@ -91,18 +100,17 @@ function exchange(refreshToken: string, options: RefreshOptions): Promise<{ acce
 }
 
 /**
- * Replaces the file atomically, keeping its mode. The replacement is written beside the config
- * directory, not in it: the sandbox mounts that directory writable and could open a file there
- * before it is renamed.
+ * Rewrites the file in place, keeping its inode and mode. The sandbox hides this file with a mount
+ * on that inode: a rename would put a new, readable file at the path and drop the mask.
  */
 async function writeLogin(file: string, login: Login): Promise<void> {
-  const { mode } = await stat(file);
-  const temporary = path.join(path.dirname(path.dirname(file)), `.credentials.${randomBytes(6).toString("hex")}.tmp`);
+  const handle = await open(file, "r+");
   try {
-    await writeFile(temporary, JSON.stringify(login), { mode: mode & 0o777 });
-    await rename(temporary, file);
+    const content = Buffer.from(JSON.stringify(login));
+    await handle.truncate(0);
+    await handle.write(content, 0, content.length, 0);
   } finally {
-    await rm(temporary, { force: true });
+    await handle.close();
   }
 }
 
