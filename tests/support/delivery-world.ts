@@ -52,7 +52,7 @@ export interface DeliveryWorld {
   store: ConveyorStore;
   service: ConveyorService;
   host: FakeHost;
-  ci: { runs: CiRun[]; starts: number; reruns: number };
+  ci: { runs: CiRun[]; starts: number; reruns: number; lists: number };
   /** Every agent invocation: the stage it ran for, in order. */
   agentRuns: string[];
   /** Every script invocation (`deploy` or `verify`), in order. */
@@ -171,6 +171,8 @@ export async function deliveryWorld(options: {
   onGithubCall?: (method: string) => void | Promise<void>;
   /** Every agent invocation fails with this error before doing any work, as a crashed runner does. */
   agentFailure?: Error;
+  /** The GitHub CLI the service's pull request event listener runs. */
+  ghCommand?: string;
 } = {}): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
@@ -231,10 +233,11 @@ export async function deliveryWorld(options: {
     runs: [{ id: "1", name: "Tests", url: "https://ci.test/1", state: options.ciFailsFirstHead === undefined ? "passed" : "failed", canRerun: false, hasLog: true }] as CiRun[],
     starts: 0,
     reruns: 0,
+    lists: 0,
   };
   const provider: CiProvider = {
     async start() { ci.starts += 1; return []; },
-    async list(_change: CiChange, _commit: string) { return ci.runs; },
+    async list(_change: CiChange, _commit: string) { ci.lists += 1; return ci.runs; },
     async rerun() { ci.reruns += 1; },
     async definitions() { return { defined: true, provable: true, summary: "Tests workflow" }; },
     async log() { return options.ciFailsFirstHead ?? ""; },
@@ -415,6 +418,7 @@ export async function deliveryWorld(options: {
     plugins,
     harnesses: { codex: harness, "claude-code": { ...harness, profile: claudeCodeProfile } },
     codeHosts: new CodeHostRegistry().register("github", host),
+    ...(options.ghCommand ? { ghCommand: options.ghCommand } : {}),
   });
   if (!options.publicLifecycle) {
     Object.assign(service as object, {
