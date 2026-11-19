@@ -1,3 +1,4 @@
+import { githubEventListener } from "../../src/plugins/github/shared/event-listener";
 import { afterEach, expect, test } from "bun:test";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -34,7 +35,7 @@ test("AC-9.1 the service starts the listener for a pending wait and stops it wit
   const journal = world.store.executions();
   const epoch = journal.stageEpoch("issue-1");
   const wakeAt = new Date(Date.now() + 60_000).toISOString();
-  service = new ConveyorService(world.config, world.store, {} as unknown as GitHubAdapter, { ghCommand: gh });
+  service = new ConveyorService(world.config, world.store, {} as unknown as GitHubAdapter, { waitEvents: githubEventListener({ forgetChange: () => {}, forgetRepository: () => {} }, { command: gh }) });
   service.start();
   await Bun.sleep(200);
   // No wait is pending yet: nothing listens.

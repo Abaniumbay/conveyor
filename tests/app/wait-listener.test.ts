@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { WaitDispatcher } from "../../src/app/wait-dispatcher";
-import { LISTEN_EVENTS, WaitListener, type ListenerBackoff } from "../../src/app/wait-listener";
+import { waitEventListenerContext } from "../../src/app/wait-listener";
+import { GitHubEventListener, LISTEN_EVENTS, type ListenerBackoff } from "../../src/plugins/github/shared/event-listener";
 import { ConveyorStore } from "../../src/db/store";
 import { ciTopic, changeTopic } from "../../src/events/topics";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
@@ -17,7 +18,7 @@ const FAST: Partial<ListenerBackoff> = { baseMs: 20, capMs: 80, stableMs: 10_000
 
 const directories: string[] = [];
 const stores: ConveyorStore[] = [];
-const listeners: WaitListener[] = [];
+const listeners: GitHubEventListener[] = [];
 let records: LogRecord[] = [];
 
 afterEach(async () => {
@@ -28,7 +29,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-// The documented shape of `gh event listen` output: one CloudEvent per line (see src/app/wait-listener.ts).
+// The documented shape of `gh event listen` output: one CloudEvent per line (see src/plugins/github/shared/event-listener.ts).
 const suite = (repository: string, sha: string, conclusion: string | null) => JSON.stringify({
   specversion: "1.0", id: "e1", type: "com.github.pull_request.check_suite.status.changed.v1",
   data: { api_url: `https://api.github.com/repos/${repository}/check-suites/9`, head_sha: sha, conclusion },
@@ -96,11 +97,14 @@ async function world() {
   const wakeAt = (id: string) => journal.getCursor(id)!.wakeAt;
   const wokenEvents = (id: string) => (store.sqlite().query("SELECT COUNT(*) AS n FROM events WHERE type = 'task.woken' AND issue_id = ?").get(id) as { n: number }).n;
 
+  /** The cache drops the listener asks for, in order. */
+  const forgotten: string[] = [];
+  const cache = { forgetChange: (address: string, number: number) => { forgotten.push(`change ${address} ${number}`); }, forgetRepository: (address: string) => { forgotten.push(`repository ${address}`); } };
+
   function listener(command: string, backoff: Partial<ListenerBackoff> = FAST) {
-    const instance = new WaitListener({
-      journal,
-      addresses: () => ["Owner/App", "Owner/Other"],
-      dispatcher,
+    const instance = new GitHubEventListener({
+      ...waitEventListenerContext({ journal, addresses: () => ["Owner/App", "Owner/Other"], dispatcher }),
+      cache,
       command,
       backoff,
     });
@@ -109,7 +113,7 @@ async function world() {
     return instance;
   }
   const warnings = () => records.filter((record) => record.level === "warn");
-  return { dir, store, journal, fakeGh, spawns, spawnPids, alive, lines, park, end, wakeAt, wokenEvents, listener, wakes, warnings };
+  return { dir, store, journal, fakeGh, spawns, spawnPids, alive, lines, park, end, wakeAt, wokenEvents, listener, wakes, warnings, forgotten, cache, dispatcher };
 }
 
 const HOLD = "exec sleep 60";
@@ -330,7 +334,10 @@ describe("events that wake nothing", () => {
     await w.lines(suite("Owner/Other", SHA, "success"));
     const gh = await w.fakeGh(emit(w.dir));
     // A listener for the app repository only: the config lists just that repository.
-    const instance = new WaitListener({ journal: w.journal, addresses: () => ["Owner/App"], dispatcher: new WaitDispatcher({ journal: w.journal, addressOf: () => null, numberOf: () => null, wake: (id) => { w.wakes.push(id); } }), command: gh, backoff: FAST });
+    const instance = new GitHubEventListener({
+      ...waitEventListenerContext({ journal: w.journal, addresses: () => ["Owner/App"], dispatcher: new WaitDispatcher({ journal: w.journal, addressOf: () => null, numberOf: () => null, wake: (id) => { w.wakes.push(id); } }) }),
+      cache: w.cache, command: gh, backoff: FAST,
+    });
     listeners.push(instance);
     instance.start();
     await quiet(500);
@@ -533,5 +540,34 @@ describe("a wake only makes the item due", () => {
     await quiet();
     expect(w.wakes).toEqual([item.id]);
     expect(w.wokenEvents(item.id)).toBe(1);
+  });
+});
+
+describe("cached reads", () => {
+  test("a matching event drops the cached reads of its pull request before waking the wait", async () => {
+    const w = await world();
+    const issue = w.park("app", 5, [changeTopic("Owner/App", 5)], "change");
+    await w.lines(pullRequestEvent("review.submitted", "Owner/App", 5));
+    w.listener(await w.fakeGh(emit(w.dir)));
+    await until(() => w.wakeAt(issue.id) !== issue.wakeAt);
+    expect(w.forgotten).toEqual(["change Owner/App 5"]);
+  });
+
+  test("a finished check suite that names no pull request drops the repository's cached reads", async () => {
+    const w = await world();
+    const issue = w.park("app", 1, [ciTopic("Owner/App", SHA)]);
+    await w.lines(suite("Owner/App", SHA, "success"));
+    w.listener(await w.fakeGh(emit(w.dir)));
+    await until(() => w.wakeAt(issue.id) !== issue.wakeAt);
+    expect(w.forgotten).toEqual(["repository Owner/App"]);
+  });
+
+  test("an event no wait is pending for drops nothing", async () => {
+    const w = await world();
+    w.park("app", 1, [ciTopic("Owner/App", SHA)]);
+    await w.lines(pullRequestEvent("review.submitted", "Owner/App", 99), suite("Owner/App", OTHER_SHA, "success"));
+    w.listener(await w.fakeGh(emit(w.dir)));
+    await quiet(500);
+    expect(w.forgotten).toEqual([]);
   });
 });

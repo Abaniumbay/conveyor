@@ -2,7 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { chmod, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { GitHubAdapter } from "../../src/plugins/github/shared/adapter";
+import { GitHubActionsCiProvider } from "../../src/plugins/github/ci/actions";
+import { githubEventListener } from "../../src/plugins/github/shared/event-listener";
+import { GitHubReadCache } from "../../src/plugins/github/shared/read-cache";
 import { deliveryWorld, type DeliveryWorld } from "../support/delivery-world";
+import { GitHubSimulator } from "../support/github-simulator";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
 let world: DeliveryWorld | null = null;
@@ -15,7 +20,13 @@ afterEach(async () => {
   dir = null;
 });
 
-const RUN = (state: "running" | "passed") => [{ id: "1", name: "Tests", url: "https://ci.test/1", state, canRerun: false, hasLog: true }] as const;
+const ADDRESS = "owner/conveyor";
+let github: GitHubSimulator;
+let adapter: GitHubAdapter;
+/** What the simulated GitHub reports for any head's checks; it reaches the simulator when the provider reads. */
+let reported: "running" | "passed" = "running";
+const checks = (_w: DeliveryWorld, state: "running" | "passed") => { reported = state; };
+const reads = () => github.requests.filter((request) => /\/check-runs/.test(request.path)).length;
 
 /** A world whose `gh` prints the file `emit` once it exists and keeps running, as `gh event listen --follow` does. */
 async function worldWithListener(): Promise<DeliveryWorld> {
@@ -23,7 +34,16 @@ async function worldWithListener(): Promise<DeliveryWorld> {
   const gh = path.join(dir, "gh");
   await writeFile(gh, `#!/bin/sh\nwhile [ ! -f "${dir}/emit" ]; do sleep 0.02; done\ncat "${dir}/emit"\nexec sleep 60\n`);
   await chmod(gh, 0o755);
-  world = await deliveryWorld({ ghCommand: gh });
+  // The CI provider is the real GitHub one, reading through the read cache that production puts in front of GitHub.
+  github = new GitHubSimulator();
+  adapter = new GitHubAdapter(new GitHubReadCache(github), "conveyor");
+  world = await deliveryWorld({
+    waitEvents: githubEventListener(adapter, { command: gh }),
+    ciList: (change, commit) => {
+      github.setCheckRuns(ADDRESS, commit, [reported === "running" ? { name: "Tests", status: "in_progress" } : { name: "Tests", status: "completed", conclusion: "success" }]);
+      return new GitHubActionsCiProvider(adapter).list(change, commit);
+    },
+  });
   return world;
 }
 
@@ -60,15 +80,15 @@ const outcome = (w: DeliveryWorld) => {
 
 test("AC-8.1 a woken CI wait re-reads the source and stays pending while it is still running", async () => {
   const w = await worldWithListener();
-  w.ci.runs = [...RUN("running")];
+  checks(w, "running");
   await parkAtCi(w);
-  const before = w.ci.lists;
+  const before = reads();
   w.service.start();
 
   await emitCompletion(w, "success");
   await w.drive(1).catch(() => undefined);
 
-  expect(w.ci.lists).toBeGreaterThan(before);
+  expect(reads()).toBeGreaterThan(before);
   expect(w.store.executions().getCursor("issue")?.state).toBe("pending");
   expect(Date.parse(w.store.executions().getCursor("issue")!.wakeAt!)).toBeGreaterThan(Date.now());
   expect(w.store.executions().subscriptions("issue").some((s) => s.topic.startsWith("ci:"))).toBe(true);
@@ -76,9 +96,9 @@ test("AC-8.1 a woken CI wait re-reads the source and stays pending while it is s
 
 test("AC-8.2 a woken CI wait ends as a poll would when the source shows success, whatever the payload claims", async () => {
   const woken = await worldWithListener();
-  woken.ci.runs = [...RUN("running")];
+  checks(woken, "running");
   await parkAtCi(woken);
-  woken.ci.runs = [...RUN("passed")];
+  checks(woken, "passed");
   woken.service.start();
   await emitCompletion(woken, "failure");
   await woken.drive(1).catch(() => undefined);
@@ -89,11 +109,12 @@ test("AC-8.2 a woken CI wait ends as a poll would when the source shows success,
   await rm(dir!, { recursive: true, force: true });
   world = null;
 
-  // Control: the same item, polled at its wake_at, with no event.
+  // Control: the same item, polled at its wake_at with no event, once the cached running checks have expired.
   const polled = await worldWithListener();
-  polled.ci.runs = [...RUN("running")];
+  checks(polled, "running");
   await parkAtCi(polled);
-  polled.ci.runs = [...RUN("passed")];
+  checks(polled, "passed");
+  adapter.forgetRepository(ADDRESS);
   polled.store.sqlite().query("UPDATE stage_cursors SET wake_at = ? WHERE issue_id = 'issue'").run(new Date(Date.now() - 1_000).toISOString());
   await polled.drive(1).catch(() => undefined);
   expect(outcome(polled)).toEqual(viaEvent);

@@ -105,8 +105,8 @@ export const serve: Command = {
     });
     for (const warning of config.warnings ?? []) log.warn(warning);
     const plugins = new PluginRegistry(PLUGINS, pluginContext(config));
-    const { client: itemSource, calls: githubCalls } = githubItems(plugins.context);
-    const service = await ConveyorService.create(config, itemSource, { plugins, githubCalls });
+    const { client: itemSource, calls: githubCalls, waitEvents } = githubItems(plugins.context);
+    const service = await ConveyorService.create(config, itemSource, { plugins, githubCalls, ...(waitEvents ? { waitEvents } : {}) });
     // The presentations (web routes, control socket, operator MCP) take narrow sources, never the service.
     const web = service.webSources();
     const control = service.controlSources();

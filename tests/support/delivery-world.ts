@@ -29,6 +29,7 @@ import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { renderBreakdownPlan } from "../../src/tasks/breakdown";
 import { dispatchTool } from "../../src/tasks/dispatch";
 import { criteriaOf } from "../../src/tasks/item";
+import type { WaitEventListenerFactory } from "../../src/source/events";
 import { githubPlugins } from "./plugins";
 import { z } from "zod";
 
@@ -171,8 +172,10 @@ export async function deliveryWorld(options: {
   onGithubCall?: (method: string) => void | Promise<void>;
   /** Every agent invocation fails with this error before doing any work, as a crashed runner does. */
   agentFailure?: Error;
-  /** The GitHub CLI the service's pull request event listener runs. */
-  ghCommand?: string;
+  /** The service's pull request event listener. */
+  waitEvents?: WaitEventListenerFactory;
+  /** Reads a commit's CI runs instead of the fake provider, as a test that goes through the GitHub client does. */
+  ciList?: CiProvider["list"];
 } = {}): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
@@ -237,7 +240,7 @@ export async function deliveryWorld(options: {
   };
   const provider: CiProvider = {
     async start() { ci.starts += 1; return []; },
-    async list(_change: CiChange, _commit: string) { ci.lists += 1; return ci.runs; },
+    async list(change: CiChange, commit: string) { ci.lists += 1; return options.ciList ? options.ciList(change, commit) : ci.runs; },
     async rerun() { ci.reruns += 1; },
     async definitions() { return { defined: true, provable: true, summary: "Tests workflow" }; },
     async log() { return options.ciFailsFirstHead ?? ""; },
@@ -418,7 +421,7 @@ export async function deliveryWorld(options: {
     plugins,
     harnesses: { codex: harness, "claude-code": { ...harness, profile: claudeCodeProfile } },
     codeHosts: new CodeHostRegistry().register("github", host),
-    ...(options.ghCommand ? { ghCommand: options.ghCommand } : {}),
+    ...(options.waitEvents ? { waitEvents: options.waitEvents } : {}),
   });
   if (!options.publicLifecycle) {
     Object.assign(service as object, {

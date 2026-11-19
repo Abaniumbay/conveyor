@@ -13,6 +13,7 @@ import { ConveyorStore, type StoredIssue } from "../db/store";
 import type { Harness, SteeringRunInput, SteeringRunResult } from "../harness/types";
 import { DEFAULT_CI_TYPE, pluginContext, PluginRegistry, type WebhookReceipt } from "../core/plugins";
 import type { ItemSourceClient } from "../source/client";
+import type { WaitEventListener, WaitEventListenerFactory } from "../source/events";
 import { followUpsFromBody } from "../source/managed-sections";
 import { RepositoryActorTrust } from "../source/trust";
 import type { SourceIssue } from "../source/types";
@@ -62,7 +63,7 @@ import { Scheduler } from "./scheduler";
 import { Steering, STOP_SUMMARY_TIMEOUT_MS } from "./steering";
 import { StatusCommentWriter } from "./status-comments";
 import { WaitDispatcher } from "./wait-dispatcher";
-import { WaitListener } from "./wait-listener";
+import { waitEventListenerContext } from "./wait-listener";
 import { WebhookSupervisor } from "./webhook-supervisor";
 import type { ActiveWork, ControlSources, GitHubCallReport, StartupStatus } from "./control-sources";
 import type { DashboardSources, LiveIssueStatus } from "./dashboard-sources";
@@ -116,10 +117,8 @@ interface ServiceImplementations {
   githubCalls?: ProviderCallMeter;
   /** Event sinks beyond the configured ones (an embedding application's own consumers). */
   eventSinks?: EventSink[];
-  /** The GitHub CLI that listens for pull request events; `gh` by default. */
-  ghCommand?: string;
-  /** How the event listener restarts after it exits; see WaitListener. */
-  listenerBackoff?: ConstructorParameters<typeof WaitListener>[0]["backoff"];
+  /** The item source's listener for pull request and check events; none when the source has none. */
+  waitEvents?: WaitEventListenerFactory;
 }
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Agents never close source issues; Conveyor itself closes only an active completed roll-up parent after its descendant-completion rule passes. Preserve human-authored body text, use managed sections for acceptance criteria, pull-request descriptions, and dependencies, and report blockers with a concrete reason.`;
@@ -203,7 +202,7 @@ export class ConveyorService {
   /** The managed webhooks: registration, health and redelivery of missed deliveries. */
   readonly #webhooks: WebhookSupervisor;
   readonly #waitDispatcher: WaitDispatcher;
-  readonly #waitListener: WaitListener;
+  readonly #waitListener: WaitEventListener | null;
   readonly #harnesses: Record<string, Harness>;
   readonly #plugins: PluginRegistry;
   readonly #manualGateApprovals: ManualGateApprovals;
@@ -316,13 +315,11 @@ export class ConveyorService {
       numberOf: (issueId) => store.getIssue(issueId)?.sourceNumber ?? null,
       wake: (issueId) => { this.wakeParked(issueId); },
     });
-    this.#waitListener = new WaitListener({
+    this.#waitListener = implementations.waitEvents?.(waitEventListenerContext({
       journal: store.executions(),
       addresses: () => Object.values(config.repositories).map((repository) => repository.address),
       dispatcher: this.#waitDispatcher,
-      ...(implementations.ghCommand ? { command: implementations.ghCommand } : {}),
-      ...(implementations.listenerBackoff ? { backoff: implementations.listenerBackoff } : {}),
-    });
+    })) ?? null;
     this.registerCommands();
     this.subscribeToEvents();
     const logging = config.settings.logging;
@@ -443,7 +440,7 @@ export class ConveyorService {
   static async create(
     config: ConveyorConfig,
     itemSource: ItemSourceClient,
-    implementations: Pick<ServiceImplementations, "plugins" | "codeHosts" | "githubCalls"> = {},
+    implementations: Pick<ServiceImplementations, "plugins" | "codeHosts" | "githubCalls" | "waitEvents"> = {},
   ): Promise<ConveyorService> {
     await ensureRuntimeDirectories(config);
     const store = await ConveyorStore.open(config.settings.database);
@@ -549,7 +546,7 @@ export class ConveyorService {
     // The server listens from here on: ask for the deliveries GitHub could not make while Conveyor was
     // starting or stopped, and ping each webhook so its arrival shows deliveries work.
     this.#webhooks.start();
-    this.#waitListener.start();
+    this.#waitListener?.start();
   }
 
   /** A trace of a timer firing: the activity no request or event started. */
@@ -652,7 +649,7 @@ export class ConveyorService {
     if (this.#githubCallTimer) clearInterval(this.#githubCallTimer);
     this.#githubCallTimer = null;
     this.#webhooks.stop();
-    this.#waitListener.close();
+    this.#waitListener?.close();
     await Promise.all(this.#sinks.map((sink) => sink.stop()));
     for (const timer of this.#retryTimers) clearTimeout(timer);
     this.#retryTimers.clear();
@@ -693,7 +690,7 @@ export class ConveyorService {
         await this.reconcileAll({ skipFresh: true });
         await this.recoverClosedItems();
       });
-      this.#waitListener.sync();
+      this.#waitListener?.sync();
       this.schedule();
     } finally {
       this.#tickRunning = false;
@@ -1088,7 +1085,7 @@ export class ConveyorService {
     }
     // The waits that are pending decide which repositories are listened to.
     for (const type of ["task.pending", "task.passed", "task.failed", "task.woken", "item.stageChanged"] as const) {
-      this.events.subscribe(type, "update pull request event listeners", () => this.#waitListener.sync());
+      this.events.subscribe(type, "update pull request event listeners", () => this.#waitListener?.sync());
     }
     this.events.subscribe("ci.runUpdated", "wake advisory CI watches", (event) => {
       if (!event.payload.completed || !event.repositoryId) return;
