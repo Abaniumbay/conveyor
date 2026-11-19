@@ -5,6 +5,7 @@
 
 import type { ConveyorConfig } from "../config/load";
 import type { ProviderCallMeter } from "./calls";
+import type { WaitEventListenerFactory } from "./events";
 import type { ActorPermissions } from "./trust";
 import type { IssueSourceAdapter, ItemTracker, SourceIssue } from "./types";
 
@@ -95,4 +96,6 @@ export type ItemSourceClient = ItemTracker & IssueSourceAdapter & ItemLifecycle 
 export interface ItemSourceConnection {
   client: ItemSourceClient;
   calls: ProviderCallMeter;
+  /** The source's listener for pull request and check events, when it has one. */
+  waitEvents?: WaitEventListenerFactory;
 }

@@ -45,7 +45,12 @@ export class WaitDispatcher {
 
   /** Wakes, once per burst, every item whose current wait subscribes to a topic of `event`. */
   handle(event: StoredEvent): void {
-    for (const topic of this.topicsFor(event)) {
+    this.wakeTopics(this.topicsFor(event));
+  }
+
+  /** Wakes, once per burst, every item whose current wait subscribes to one of `topics`. */
+  wakeTopics(topics: readonly string[]): void {
+    for (const topic of topics) {
       for (const subscriber of this.dependencies.journal.subscribers(topic)) {
         const cursor = this.dependencies.journal.getCursor(subscriber.issueId);
         // A row of an earlier visit of the stage is stale: the current one decides for itself.

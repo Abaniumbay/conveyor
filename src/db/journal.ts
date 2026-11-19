@@ -530,6 +530,18 @@ export class ExecutionStore {
     return rows.map((row) => ({ issueId: row.issue_id, executionId: row.execution_id, stageEpoch: row.stage_epoch, kind: row.fallback_kind }));
   }
 
+  /** Every topic a parked task of its current stage visit waits for; rows of an earlier visit or of an item that is not parked are left out. */
+  pendingWaitTopics(): string[] {
+    const rows = this.#db
+      .query(
+        `SELECT DISTINCT s.topic FROM wait_subscriptions s
+         JOIN stage_cursors c ON c.issue_id = s.issue_id AND c.state = 'pending' AND c.stage_epoch = s.stage_epoch
+         ORDER BY s.topic`,
+      )
+      .all() as Array<{ topic: string }>;
+    return rows.map((row) => row.topic);
+  }
+
   /** The topics an item's parked task waits for. */
   subscriptions(issueId: string): Array<{ topic: string; executionId: string; stageEpoch: number; kind: WaitKind }> {
     const rows = this.#db

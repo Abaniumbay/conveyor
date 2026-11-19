@@ -1,6 +1,7 @@
 import type { ItemsPlugin, PluginContext } from "../../../core/plugins";
 import type { ItemSourceConnection } from "../../../source/client";
 import { githubClient } from "../shared/client";
+import { githubEventListener } from "../shared/event-listener";
 import { githubSourceSchema } from "./config";
 import { githubWebhookReceiver } from "./webhook";
 
@@ -15,5 +16,5 @@ export const githubItemsPlugin: ItemsPlugin = {
 /** GitHub Issues as the service's item source: the shared GitHub client, behind the item source ports. */
 export function githubItems(context: PluginContext): ItemSourceConnection {
   const { adapter, calls } = githubClient(context);
-  return { client: adapter, calls };
+  return { client: adapter, calls, waitEvents: githubEventListener(adapter) };
 }
