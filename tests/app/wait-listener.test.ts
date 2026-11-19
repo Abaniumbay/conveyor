@@ -238,20 +238,22 @@ describe("wakes", () => {
     await until(() => w.wakes.includes(item.id));
   });
 
-  for (const [id, kind] of [["AC-3.1", "review.submitted"], ["AC-3.2", "merge_conflict.changed"], ["AC-3.3", "head.changed"]] as const) {
-    test(`${id} a pull request ${kind} event wakes the change wait`, async () => {
-      const w = await world();
-      const item = w.park("app", 5, [changeTopic("Owner/App", 5)], "change");
-      await w.lines(pullRequestEvent(kind, "Owner/App", 5));
-      const started = Date.now();
-      w.listener(await w.fakeGh(emit(w.dir)));
-      await until(() => w.wakes.length === 1);
-      expect(Date.now() - started).toBeLessThan(2_000);
-      expect(w.wakes).toEqual([item.id]);
-      expect(Date.parse(w.wakeAt(item.id)!)).toBeLessThanOrEqual(Date.now());
-      expect(w.wokenEvents(item.id)).toBe(1);
-    });
+  async function prWake(kind: string): Promise<void> {
+    const w = await world();
+    const item = w.park("app", 5, [changeTopic("Owner/App", 5)], "change");
+    await w.lines(pullRequestEvent(kind, "Owner/App", 5));
+    const started = Date.now();
+    w.listener(await w.fakeGh(emit(w.dir)));
+    await until(() => w.wakes.length === 1);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(w.wakes).toEqual([item.id]);
+    expect(Date.parse(w.wakeAt(item.id)!)).toBeLessThanOrEqual(Date.now());
+    expect(w.wokenEvents(item.id)).toBe(1);
   }
+
+  test("AC-3.1 a pull request review event wakes the change wait", () => prWake("review.submitted"));
+  test("AC-3.2 a pull request merge conflict event wakes the change wait", () => prWake("merge_conflict.changed"));
+  test("AC-3.3 a pull request head change event wakes the change wait", () => prWake("head.changed"));
 
   test("AC-3.4 an event for another pull request wakes only that one", async () => {
     const w = await world();
