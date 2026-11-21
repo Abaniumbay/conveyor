@@ -110,7 +110,7 @@ function Relationships({ issue }: { issue: IssueCardViewModel }) {
       {issue.children.length > 0 && (
         <div>
           <strong>Children:</strong>
-          <ul>{issue.children.map((child) => <li key={child.number}><RelationLink relation={child} /></li>)}</ul>
+          <ul>{issue.children.map((child) => <li key={child.number}><RelationLink relation={child} />{child.station && <span class="child-stage"> {child.station.name}</span>}{child.satisfied && <span class="child-done" aria-label="Done" role="img">✓</span>}</li>)}</ul>
         </div>
       )}
     </section>
@@ -338,7 +338,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
           </section>
         )}
         <TodoChecklist issue={issue} />
-        <section class="criteria" aria-label="Acceptance criteria" data-criterion-evidence>
+        {issue.children.length === 0 && <section class="criteria" aria-label="Acceptance criteria" data-criterion-evidence>
           <h3>Acceptance criteria</h3>
           <p class="criterion-guidance">Marker key: the first check is an implementer-linked test; the second is reviewer approval.</p>
           {issue.acceptanceCriteria.length > 0
@@ -376,7 +376,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
               );
             })}</ul>
             : <p class="details-empty">No acceptance criteria recorded.</p>}
-        </section>
+        </section>}
         {issue.testPlan && <TestPlanSection issue={issue} />}
         {(issue.issueType || issue.issueFields.length > 0) && (
           <section class="source-labels issue-metadata" aria-label="Issue type and fields">

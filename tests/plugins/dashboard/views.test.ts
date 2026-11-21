@@ -1014,6 +1014,12 @@ describe("ConveyorService dashboard", () => {
       { id: "stopped", satisfied: false, station: { index: 3, count: 5, name: "Review" }, signal: "stop" },
       { id: "finished", satisfied: true, station: { index: 4, count: 5, name: "Done" }, signal: undefined },
     ]);
+    // The details dialog's view model gives every child the same station.
+    expect(dashboardViews(new ConveyorService(config, store, {} as never)).issueDetails("csrf", "parent")!.children.map(({ id, station }) => ({ id, station }))).toEqual([
+      { id: "working", station: { index: 2, count: 5, name: "Implementation" } },
+      { id: "stopped", station: { index: 3, count: 5, name: "Review" } },
+      { id: "finished", station: { index: 4, count: 5, name: "Done" } },
+    ]);
     expect(card("working").parentProgress).toEqual({ done: 1, total: 3 });
     expect(card("stopped").parent).toMatchObject({ id: "parent", number: 1 });
     expect(card("parent").parentProgress).toBeNull();
