@@ -2125,3 +2125,76 @@ describe("test plan in item details", () => {
     expect(renderIssueDetails({ ...parent, acceptanceCriteria: criteria })).not.toContain("Test plan");
   });
 });
+
+describe("parent details", () => {
+  const rel = (number: number, title: string, satisfied: boolean, name?: string, signal?: "run" | "wait" | "stop") => ({
+    id: `c${number}`, repository: "sample", number, title, url: null, satisfied,
+    ...(name ? { station: { index: 1, count: 5, name } } : {}), ...(signal ? { signal } : {}),
+  });
+  const childItems = (html: string) => [...html.slice(html.indexOf("<strong>Children:</strong>")).matchAll(/<li[ >].*?<\/li>/gs)].map((match) => match[0]);
+
+  test("hide the Acceptance criteria section, even with stored criteria or none", () => {
+    const html = renderIssueDetails({ ...parent, children: [rel(1, "Part", false)] });
+    for (const text of ['aria-label="Acceptance criteria"', "data-criterion-evidence", "Acceptance criteria", "Keyboard usable"]) expect(html).not.toContain(text);
+    const empty = renderIssueDetails({ ...parent, acceptanceCriteria: [], children: [rel(1, "Part", false)] });
+    expect(empty).not.toContain("No acceptance criteria recorded.");
+    expect(empty).not.toContain("Acceptance criteria");
+  });
+
+  test("a childless item keeps its criteria section and empty state", () => {
+    const html = renderIssueDetails(parent);
+    expect(html).toContain('aria-label="Acceptance criteria"');
+    expect(html).toContain("<h3>Acceptance criteria</h3>");
+    expect(html).toContain("Keyboard usable");
+    expect(renderIssueDetails({ ...parent, acceptanceCriteria: [] })).toContain("No acceptance criteria recorded.");
+  });
+
+  test("the board dialog follows the same rule", () => {
+    const html = renderDashboard({ ...dashboard, stages: dashboard.stages, selectedIssue: { ...parent, children: [rel(1, "Part", false, "Review")] } });
+    expect(html).not.toContain('aria-label="Acceptance criteria"');
+    expect(html).toContain("Children:");
+  });
+
+  test("each child shows its own stage as escaped text", () => {
+    const items = childItems(renderIssueDetails({ ...parent, children: [
+      rel(1, "Alpha", false, "Backlog"), rel(2, "Beta", false, "Review"), rel(3, "Gamma", true, "Done"), rel(4, "Delta", false, "<b>"),
+    ] }));
+    expect(items).toHaveLength(4);
+    expect(items[0]).toContain("Alpha");
+    expect(items[0]).toContain("Backlog");
+    expect(items[1]).toContain("Beta");
+    expect(items[1]).toContain("Review");
+    expect(items[2]).toContain("Gamma");
+    expect(items[2]).toContain("Done");
+    expect(items[3]).toContain("&lt;b>");
+    expect(items[3]).not.toContain("<b>");
+  });
+
+  test("a child without a station still renders", () => {
+    const html = renderIssueDetails({ ...parent, children: [rel(5, "Plain", false)] });
+    expect(childItems(html)[0]).toContain("Plain");
+    expect(html).not.toContain("undefined");
+  });
+
+  test("only done children show the check", () => {
+    const items = childItems(renderIssueDetails({ ...parent, children: [
+      rel(1, "Done one", true, "Done"), rel(2, "Open", false, "Review"), rel(3, "Run", false, "Review", "run"),
+      rel(4, "Wait", false, "Review", "wait"), rel(5, "Stop", false, "Review", "stop"), rel(6, "Back", false, "Backlog"),
+    ] }));
+    expect(items[0]).toContain('class="child-done" aria-label="Done"');
+    for (const item of items.slice(1)) expect(item).not.toContain("child-done");
+    expect(items.join("").match(/child-done/g)).toHaveLength(1);
+  });
+
+  test("the check is green through a theme variable", () => {
+    expect(dashboardCss).toMatch(/\.child-done\{[^}]*color:var\(--[a-z-]+\)/);
+    expect(dashboardCss.match(/\.child-done\{[^}]*\}/)![0]).not.toMatch(/#[0-9a-f]{3,6}|rgb/i);
+  });
+
+  test("Blocked by and Parent entries gain no stage or check", () => {
+    const html = renderIssueDetails({ ...parent, parent: rel(9, "Top", true, "Done") });
+    expect(html).toContain('class="relation-link--satisfied"');
+    expect(html).not.toContain("child-done");
+    expect(html).not.toContain("child-stage");
+  });
+});

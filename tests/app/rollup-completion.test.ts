@@ -144,6 +144,30 @@ async function serviceFor(
 }
 
 describe("roll-up parent completion", () => {
+  const criteriaBody = "<!-- conveyor:acceptance-criteria:start -->\n## Acceptance Criteria\n\n- [ ] First <!-- conveyor:criterion:AC-1 -->\n- [ ] Second <!-- conveyor:criterion:AC-2 -->\n<!-- conveyor:acceptance-criteria:end -->\n";
+
+  test("completes a parent with unapproved stored criteria once every child is done", async () => {
+    const { fixture, service, store } = await serviceFor([
+      { ...sourceIssue(1, "open", ["conveyor", "conveyor:implementation"]), body: criteriaBody },
+      sourceIssue(2, "closed", ["conveyor", "conveyor:done"]),
+    ], new Map([[1, [2]]]));
+    await service.reconcileAll();
+    expect(fixture.closeCalls).toEqual([1]);
+    expect(store.getIssue("github:owner/my-app#1")).toMatchObject({ sourceState: "closed", sourceStateReason: "completed", projectedState: "done" });
+    store.close();
+  });
+
+  test("does not complete that parent while a child is unfinished", async () => {
+    const { fixture, service, store } = await serviceFor([
+      { ...sourceIssue(1, "open", ["conveyor", "conveyor:implementation"]), body: criteriaBody },
+      sourceIssue(2, "open", ["conveyor", "conveyor:implementation"]),
+    ], new Map([[1, [2]]]));
+    await service.reconcileAll();
+    expect(fixture.closeCalls).toEqual([]);
+    expect(store.getIssue("github:owner/my-app#1")?.sourceState).toBe("open");
+    store.close();
+  });
+
   test("closes an active nested roll-up only after every descendant is done", async () => {
     const { fixture, service, store } = await serviceFor([
       sourceIssue(1, "open", ["conveyor", "conveyor:implementation"]),

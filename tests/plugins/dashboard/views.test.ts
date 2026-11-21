@@ -991,6 +991,7 @@ describe("ConveyorService dashboard", () => {
       { id: "mislabelled", number: 6, stage: "implementation", state: "inconsistent", sourceState: "open" as const },
       { id: "unrelated-history", number: 7, stage: "review", state: "done", sourceState: "closed" as const },
       { id: "completed-dependent", number: 8, stage: "review", state: "done", sourceState: "closed" as const },
+      { id: "queued", number: 9, stage: "unstaged", state: "active", sourceState: "open" as const },
       { id: "other", repository: "other", number: 1, stage: "implementation", state: "active", sourceState: "open" as const },
     ]) {
       const repository = item.repository ?? "repo";
@@ -999,7 +1000,7 @@ describe("ConveyorService dashboard", () => {
       store.setIssueProjection(item.id, { stage: item.stage, state: item.state, warning: null });
       store.setStageState({ issueId: item.id, stageId: item.stage, status: "ready", feedbackCycle: 0, configHash: config.hash });
     }
-    ["working", "stopped", "finished"].forEach((child, index) => store.replaceRelationships(child, { parentId: "parent", siblingOrder: index + 1 }, []));
+    ["queued", "working", "stopped", "finished"].forEach((child, index) => store.replaceRelationships(child, { parentId: "parent", siblingOrder: index + 1 }, []));
     // "unrelated" waits on a stopped item and on a finished one.
     store.replaceRelationships("unrelated", null, ["stopped", "finished", "mislabelled"]);
     // A completed dependent is context for its still-current prerequisite.
@@ -1010,11 +1011,19 @@ describe("ConveyorService dashboard", () => {
     const card = (id: string) => cards.find((candidate) => candidate.id === id)!;
     // Backlog, the three stages, then Done: five stations.
     expect(card("parent").children.map(({ id, satisfied, station, signal }) => ({ id, satisfied, station, signal }))).toEqual([
+      { id: "queued", satisfied: false, station: { index: 0, count: 5, name: "Backlog" }, signal: expect.anything() },
       { id: "working", satisfied: false, station: { index: 2, count: 5, name: "Implementation" }, signal: "wait" },
       { id: "stopped", satisfied: false, station: { index: 3, count: 5, name: "Review" }, signal: "stop" },
       { id: "finished", satisfied: true, station: { index: 4, count: 5, name: "Done" }, signal: undefined },
     ]);
-    expect(card("working").parentProgress).toEqual({ done: 1, total: 3 });
+    // The details dialog's view model gives every child the same station.
+    expect(dashboardViews(new ConveyorService(config, store, {} as never)).issueDetails("csrf", "parent")!.children.map(({ id, station }) => ({ id, station }))).toEqual([
+      { id: "queued", station: { index: 0, count: 5, name: "Backlog" } },
+      { id: "working", station: { index: 2, count: 5, name: "Implementation" } },
+      { id: "stopped", station: { index: 3, count: 5, name: "Review" } },
+      { id: "finished", station: { index: 4, count: 5, name: "Done" } },
+    ]);
+    expect(card("working").parentProgress).toEqual({ done: 1, total: 4 });
     expect(card("stopped").parent).toMatchObject({ id: "parent", number: 1 });
     expect(card("parent").parentProgress).toBeNull();
     // A stage's configured description reaches its column, for the information dialog.
@@ -1029,7 +1038,7 @@ describe("ConveyorService dashboard", () => {
       { id: "stopped", satisfied: false, signal: "stop", state: "Blocked" },
     ]);
     expect(model.graph.nodes.map((node) => node.id).sort()).toEqual([
-      "completed-dependent", "finished", "mislabelled", "other", "parent", "stopped", "unrelated", "working",
+      "completed-dependent", "finished", "mislabelled", "other", "parent", "queued", "stopped", "unrelated", "working",
     ]);
     expect(model.graph.nodes.find((node) => node.id === "other")).toMatchObject({ repository: "other", context: false });
     expect(model.graph.relationships.some((relationship) => relationship.from === "other" || relationship.to === "other")).toBe(false);
