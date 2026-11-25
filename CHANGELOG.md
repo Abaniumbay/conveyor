@@ -10,6 +10,30 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.26.0] - 2026-11-25
+
+This release keeps an item's children and its dependencies apart. A child no longer inherits its parent's dependencies. Instead the scheduler holds back a work breakdown while any ancestor is blocked, and says so on the held-back item. `item.setDependencies` refuses relations that could deadlock a breakdown. Both changes are breaking for scripts that read `inheritedDependencies` from `get_item`. It also wakes CI and change waits from `gh event listen` instead of waiting for the next poll, keeps Codex and Claude Code logins on the host (refreshing them there), and finds linked tests whose names use escaped quotes or contain dots.
+
+### Added
+
+- While a CI or change wait of a repository is pending, Conveyor now runs one `gh event listen` process for it, so a completed check suite, a pull request review, a merge conflict or a new head wakes the wait at once instead of at its next poll. This needs no public URL, and the woken task still reads GitHub again, so its outcome is the one a poll gives. If `gh` is missing, too old or not logged in, or the listener exits, Conveyor logs one warning per failure, the waits keep polling at their interval, and the listener restarts with a backoff while a wait is pending.
+
+### Changed
+
+- Codex runs with a sandbox network no longer hold the real login. Codex is pointed at the credential relay through its `openai_base_url` setting and holds only a per-run placeholder; the host reads the real ChatGPT or API-key login for every request and refreshes an expired ChatGPT token itself. A login that cannot be routed (an unrecognised record, or a run without a network policy) keeps today's readable private copy, and the run logs a warning that says so.
+
+- A parent's issue details no longer show an Acceptance criteria section. Each child in its children list shows its stage name, and a done child shows a green check mark. A parent whose children are all done still completes by the roll-up rule.
+
+- **Breaking:** `item.setDependencies` now refuses the item itself, its children and deeper descendants, its parent and higher ancestors, and any set that would close a dependency cycle. The error names the offending numbers and nothing is written. Order children by setting dependencies on the children, not on the parent. Relations already stored are left as they are. The default refinement instructions state this rule.
+
+- **Breaking:** A child's dependencies are now only the ones it declares. The operator MCP `get_item` no longer returns `inheritedDependencies`, and the board and item details no longer list inherited dependencies. Instead the scheduler does not start an item while any ancestor has an unmet dependency, and a held-back item shows a status line naming the nearest waiting ancestor, for example "Waiting: parent #12 is blocked by #9" (`get_item` returns it as `waiting`). Relations already stored are left as they are.
+
+### Fixed
+
+- A Claude Code harness that authenticates with `claude login` no longer stops delivering once the access token expires. Conveyor now refreshes the login on the host before forwarding a request and writes the renewed login back to the login file in `configDir`; the sandbox still never sees the access or refresh token. When the refresh token is revoked or missing, the run fails with a message to renew the login with `claude login` and is not retried; an unreachable refresh endpoint is retried as a transient failure. `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` are not refreshed.
+
+- The criterion test check now finds tests whose names are written with escaped quotes, backslashes or template literals, and it matches a plain test title containing a dot (such as `AC-1.2 does x`) as a whole name instead of splitting it. A malformed `\u{` escape in a linked test file no longer hangs or crashes the check.
+
 ## [0.25.0] - 2026-11-18
 
 Claude Code runs authenticate through a host credential relay, so commands in the sandbox never see the real login. Pipelines can release dependents once a blocker passes a configured stage, planning agents can return an item to refinement, and the criterion test gate no longer requires a linked test for manual planned cases. Reports default to 30 days with a weekly first-pass rate.
