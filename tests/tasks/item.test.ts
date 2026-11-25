@@ -638,6 +638,100 @@ describe("item tools", () => {
     expect(w.store.listDependencies("i1")).toEqual(["github:o/r#7", "github:o/r#8"]);
   });
 
+  describe("dependency validation", () => {
+    const rejects = async (w: Awaited<ReturnType<typeof world>>, numbers: number[], ...named: number[]) => {
+      const error = await tool("item.setDependencies", w.deps(), { issueNumbers: numbers }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ToolRequestError);
+      for (const n of named) expect((error as Error).message).toMatch(new RegExp(`\\b${n}\\b`));
+      return error as Error;
+    };
+
+    test("AC-1.1 AC-1.2 refuses itself, even among valid numbers", async () => {
+      const w = await world(); w.add("i1", 5); w.add("o7", 7);
+      await rejects(w, [5], 5);
+      const error = await rejects(w, [7, 5], 5);
+      expect(error.message).not.toMatch(/\b7\b/);
+    });
+
+    test("AC-2.1 AC-2.2 AC-2.3 refuses children and deeper descendants", async () => {
+      const w = await world(); w.add("i1", 5); w.add("c1", 6); w.add("c2", 7); w.add("c3", 8); w.add("o9", 9);
+      w.store.replaceRelationships("c1", { parentId: "i1", siblingOrder: 1 }, []);
+      w.store.replaceRelationships("c2", { parentId: "c1", siblingOrder: 1 }, []);
+      w.store.replaceRelationships("c3", { parentId: "c2", siblingOrder: 1 }, []);
+      await rejects(w, [6], 6);
+      await rejects(w, [7], 7);
+      await rejects(w, [8], 8);
+      const error = await rejects(w, [9, 6], 6);
+      expect(error.message).not.toMatch(/\b9\b/);
+    });
+
+    test("AC-3.1 AC-3.2 refuses the parent and higher ancestors", async () => {
+      const w = await world(); w.add("g", 2); w.add("p", 3); w.add("i1", 5);
+      w.store.replaceRelationships("p", { parentId: "g", siblingOrder: 1 }, []);
+      w.store.replaceRelationships("i1", { parentId: "p", siblingOrder: 1 }, []);
+      await rejects(w, [3], 3);
+      await rejects(w, [2], 2);
+    });
+
+    test("AC-4.1 AC-4.2 AC-4.3 refuses cycles naming every item, not chains", async () => {
+      const w = await world(); w.add("i1", 5); w.add("b", 7); w.add("c", 8);
+      w.store.replaceRelationships("b", null, ["i1"]);
+      await rejects(w, [7], 5, 7);
+      w.store.replaceRelationships("b", null, ["c"]);
+      w.store.replaceRelationships("c", null, ["i1"]);
+      await rejects(w, [7], 5, 7, 8);
+
+      const ok = await world(); ok.add("i1", 5); ok.add("b", 7); ok.add("c", 8); ok.add("d", 9);
+      ok.store.replaceRelationships("b", null, ["c"]);
+      ok.store.replaceRelationships("d", null, ["b", "c"]);
+      expect((await tool("item.setDependencies", ok.deps(), { issueNumbers: [7, 9] })).output).toEqual({ accepted: true });
+      expect(ok.calls.find((c) => c[0] === "setDependencies")![1]).toMatchObject({ blockerNumbers: [7, 9] });
+    });
+
+    test("AC-5.1 AC-5.2 a rejection writes nothing", async () => {
+      const scenarios: Array<[string, (w: Awaited<ReturnType<typeof world>>) => void, number[]]> = [
+        ["self", () => {}, [5]],
+        ["descendant", (w) => { w.add("c1", 6); w.store.replaceRelationships("c1", { parentId: "i1", siblingOrder: 1 }, []); }, [6]],
+        ["ancestor", (w) => { w.add("p", 3); w.store.replaceRelationships("i1", { parentId: "p", siblingOrder: 1 }, ["existing"]); }, [3]],
+        ["cycle", (w) => { w.add("b", 7); w.add("c", 8); w.store.replaceRelationships("b", null, ["c"]); w.store.replaceRelationships("c", null, ["i1"]); }, [7]],
+        ["mixed", (w) => { w.add("o7", 7); w.add("c1", 6); w.store.replaceRelationships("c1", { parentId: "i1", siblingOrder: 1 }, []); }, [7, 6]],
+      ];
+      for (const [, setup, numbers] of scenarios) {
+        const w = await world(); w.add("i1", 5, { body: "Original body." }); w.add("existing", 2);
+        w.store.replaceRelationships("i1", null, ["existing"]);
+        setup(w);
+        const parent = w.store.getIssue("i1")!.parentId;
+        await rejects(w, numbers);
+        expect(w.calls.some((c) => c[0] === "setDependencies" || c[0] === "updateManagedSection")).toBe(false);
+        expect(w.store.getIssue("i1")!.body).toBe("Original body.");
+        expect(w.source(5).body).toBe("Original body.");
+        expect(w.store.listDependencies("i1")).toEqual(["existing"]);
+        expect(w.store.getIssue("i1")!.parentId).toBe(parent);
+      }
+    });
+
+    test("AC-6.1 accepts a sibling and writes section, provider links and store", async () => {
+      const w = await world(); w.add("p", 3); w.add("i1", 5); w.add("s", 6);
+      w.store.replaceRelationships("i1", { parentId: "p", siblingOrder: 1 }, []);
+      w.store.replaceRelationships("s", { parentId: "p", siblingOrder: 2 }, []);
+      expect((await tool("item.setDependencies", w.deps(), { issueNumbers: [6] })).output).toEqual({ accepted: true });
+      expect(w.calls.find((c) => c[0] === "setDependencies")![1]).toEqual({ address: "o/r", issueNumber: 5, blockerNumbers: [6] });
+      expect(w.calls.find((c) => c[0] === "updateManagedSection")![1]).toMatchObject({ section: "dependencies", markdown: "- #6" });
+      expect(parseManagedSections(w.store.getIssue("i1")!.body).sections.dependencies).toBe("- #6");
+      expect(w.store.listDependencies("i1")).toEqual(["s"]);
+      expect(w.store.getIssue("i1")!.parentId).toBe("p");
+    });
+
+    test("AC-6.3 legacy stored child dependency is overwritten, not migrated", async () => {
+      const w = await world(); w.add("i1", 5); w.add("c1", 6); w.add("o7", 7);
+      w.store.replaceRelationships("c1", { parentId: "i1", siblingOrder: 1 }, []);
+      w.store.replaceRelationships("i1", null, ["c1"]);
+      expect((await tool("item.setDependencies", w.deps(), { issueNumbers: [7] })).output).toEqual({ accepted: true });
+      expect(w.store.listDependencies("i1")).toEqual(["o7"]);
+      expect(w.store.getIssue("c1")!.parentId).toBe("i1");
+    });
+  });
+
   describe("test plan", () => {
     const kase = (id: string, criterionId: string, kind = "behaviour") => ({ id, criterionId, proves: "p", boundary: "b", setup: "s", action: "a", expected: "e", kind });
     const constraints = { mustNotTouch: ["src/x.ts"], reuse: ["helper"], redLines: ["no mocks"] };

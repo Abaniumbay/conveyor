@@ -597,6 +597,7 @@ const setParent = tool("item.setParent", "Set the parent of the current issue.",
 const setDependencies = tool("item.setDependencies", "Replace dependencies of the current issue.", dependenciesInput, true,
   async ({ deps, input }, issue) => {
     const address = deps.repository.address;
+    validateDependencySet(deps, issue, input!.issueNumbers);
     await deps.items.setDependencies({ address, issueNumber: issue.sourceNumber, blockerNumbers: input!.issueNumbers });
     const markdown = formatDependencies(input!.issueNumbers.map((number) => ({ number })));
     const updated = await deps.items.updateManagedSection({
@@ -611,6 +612,54 @@ const setDependencies = tool("item.setDependencies", "Replace dependencies of th
     await persistDependencies(deps, stored, input!.issueNumbers);
     return ACCEPTED;
   });
+
+/** Refuse self, descendant, ancestor and cyclic blockers before anything is written. */
+function validateDependencySet(deps: Deps, issue: ReturnType<typeof issueOf>, numbers: readonly number[]): void {
+  const byNumber = new Map(deps.store.listIssues(deps.repository.id).map((candidate) => [candidate.sourceNumber, candidate]));
+  const descendants = new Set<string>();
+  const pending = [issue.id];
+  while (pending.length > 0) {
+    for (const { issueId } of deps.store.listChildren(pending.pop()!)) {
+      if (descendants.has(issueId)) continue;
+      descendants.add(issueId);
+      pending.push(issueId);
+    }
+  }
+  const ancestors = new Set<string>();
+  for (let id = issue.parentId; id && !ancestors.has(id); id = deps.store.getIssue(id)?.parentId ?? null) ancestors.add(id);
+  const numberOf = (id: string) => deps.store.getIssue(id)?.sourceNumber ?? id;
+
+  for (const number of numbers) {
+    if (number === issue.sourceNumber) {
+      throw new ToolRequestError(`Invalid dependency #${number}: an item cannot depend on itself.`);
+    }
+    const blocker = byNumber.get(number);
+    if (!blocker) continue;
+    if (descendants.has(blocker.id)) {
+      throw new ToolRequestError(`Invalid dependency #${number}: it is a child or descendant of this item. Children are never dependencies; set ordering between children on the children.`);
+    }
+    if (ancestors.has(blocker.id)) {
+      throw new ToolRequestError(`Invalid dependency #${number}: it is the parent or an ancestor of this item.`);
+    }
+    // Follow blocked-by links from the blocker; reaching this item closes a cycle.
+    const visited = new Set<string>();
+    const walk = (id: string, path: string[]): string[] | null => {
+      if (id === issue.id) return path;
+      if (visited.has(id)) return null;
+      visited.add(id);
+      for (const next of deps.store.listDependencies(id)) {
+        const found = walk(next, [...path, next]);
+        if (found) return found;
+      }
+      return null;
+    };
+    const cycle = walk(blocker.id, [blocker.id]);
+    if (cycle) {
+      const names = [issue.id, ...cycle.slice(0, -1)].map((id) => `#${numberOf(id)}`);
+      throw new ToolRequestError(`Invalid dependency #${number}: it would form a dependency cycle (${[...names, `#${issue.sourceNumber}`].join(" -> ")}).`);
+    }
+  }
+}
 
 interface MetadataPlan {
   type?: string;
