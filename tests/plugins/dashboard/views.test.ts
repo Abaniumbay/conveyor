@@ -1073,12 +1073,16 @@ describe("ConveyorService dashboard", () => {
     const refreshed = dashboardViews(new ConveyorService(config, store, {} as never)).dashboard("csrf");
     expect(refreshed.graph.relationships).not.toContainEqual(expect.objectContaining({ kind: "dependency", from: "stopped", to: "unrelated" }));
     expect(refreshed.graph.relationships).toContainEqual(expect.objectContaining({ kind: "dependency", from: "finished", to: "unrelated", status: "satisfied" }));
-    // The parent's own dependency shows on its children apart from their own, tagged with the parent's number.
+    // The parent's own dependency holds its children back as a status line, not as a dependency of theirs.
     store.replaceRelationships("parent", null, ["mislabelled"]);
-    const inherited = dashboardViews(new ConveyorService(config, store, {} as never)).dashboard("csrf");
-    const inheritedCard = [...inherited.stages.flatMap((column) => column.issues), ...inherited.done.issues].find((candidate) => candidate.id === "working")!;
-    expect(inheritedCard.dependencies).toEqual([]);
-    expect(inheritedCard.inheritedDependencies.map(({ id, satisfied, from }) => ({ id, satisfied, from }))).toEqual([{ id: "mislabelled", satisfied: false, from: 1 }]);
+    const views = dashboardViews(new ConveyorService(config, store, {} as never));
+    const held = [...views.dashboard("csrf").stages.flatMap((column) => column.issues), ...views.dashboard("csrf").done.issues].find((candidate) => candidate.id === "working")!;
+    const details = views.issueDetails("csrf", "working")!;
+    for (const card of [held, details]) {
+      expect(card.dependencies).toEqual([]);
+      expect(card.waiting).toMatchObject({ kind: "waiting", reason: "Waiting: parent #1 is blocked by #6" });
+      expect("inheritedDependencies" in card).toBe(false);
+    }
     store.close();
   });
 

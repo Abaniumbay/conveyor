@@ -124,18 +124,11 @@ describe("item.dependenciesMet", () => {
     });
     expect(result).toEqual({ status: "pending", message: "Waiting for dependencies: #9, #3", waitFor: { kind: "dependencies", topics: ["issue:o/r:9"] } });
   });
-  test("waits for a dependency inherited from an ancestor and names the ancestor", async () => {
+  test("AC-1.4 lists only the unsatisfied dependencies, without any ancestor clause", async () => {
     const result = await run("item.dependenciesMet", {
-      context: ctx({ dependencies: [{ id: "a", number: 7, satisfied: false }, { id: "b", number: 9, satisfied: false, inheritedFrom: 4 }, { id: "c", number: 10, satisfied: false, inheritedFrom: 4 }, { id: "d", number: 11, satisfied: true, inheritedFrom: 4 }] }),
+      context: ctx({ dependencies: [{ id: "a", number: 7, satisfied: false }, { id: "b", number: 9, satisfied: true }] }),
     });
-    expect(result).toEqual({ status: "pending", message: "Waiting for dependencies: #7; Waiting for #9, #10 (dependencies of ancestor #4)" });
-    expect((await run("item.dependenciesMet", { context: ctx({ dependencies: [{ id: "d", number: 11, satisfied: true, inheritedFrom: 4 }] }) })).status).toBe("pass");
-  });
-  test("says parent for a dependency inherited from the direct parent", async () => {
-    const result = await run("item.dependenciesMet", {
-      context: ctx({ dependencies: [{ id: "b", number: 9, satisfied: false, inheritedFrom: 4, fromParent: true }, { id: "c", number: 10, satisfied: false, inheritedFrom: 2 }] }),
-    });
-    expect(result).toEqual({ status: "pending", message: "Waiting for #9 (dependencies of parent #4); Waiting for #10 (dependencies of ancestor #2)" });
+    expect(result).toEqual({ status: "pending", message: "Waiting for dependencies: #7" });
   });
   test("passes when all are satisfied or none exist, and waits without a timeout every five minutes", async () => {
     expect((await run("item.dependenciesMet", { context: ctx({ dependencies: [{ id: "a", number: 7, satisfied: true }] }) })).status).toBe("pass");
@@ -181,14 +174,50 @@ describe("item.dependenciesMet after", () => {
     expect(await check()).toEqual({ status: "pass" });
   });
 
-  test("AC-3.3 an inherited dependency follows the same threshold", async () => {
+  test("AC-1.2 a parent's dependency never holds the child's gate, whatever the threshold", async () => {
     const w = await world({ pipelineStages: STAGES });
     w.add("p", 5); w.add("c", 6); w.add("b008", 8, { stage: "verify" });
     w.store.replaceRelationships("c", { parentId: "p", siblingOrder: 1 }, []);
     w.store.replaceRelationships("p", null, ["b008"]);
     const load = async () => (await run("item.load", { context: {}, deps: w.deps("c") }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
     expect(await run("item.dependenciesMet", { context: ctx(await load()), config: { after: "merge" } })).toEqual({ status: "pass" });
-    expect(await run("item.dependenciesMet", { context: ctx(await load()), config: {} })).toMatchObject({ status: "pending", message: "Waiting for #8 (dependencies of parent #5)" });
+    expect(await run("item.dependenciesMet", { context: ctx(await load()), config: {} })).toEqual({ status: "pass" });
+  });
+
+  test("AC-1.1 AC-1.3 AC-2.2 the loaded context lists only the item's own dependencies, in plain wording", async () => {
+    const w = await world({ pipelineStages: STAGES });
+    w.add("p", 5); w.add("c", 6); w.add("c2", 7); w.add("b008", 8); w.add("b009", 9); w.add("b010", 10, { state: "closed" });
+    w.store.replaceRelationships("c", { parentId: "p", siblingOrder: 1 }, []);
+    w.store.replaceRelationships("c2", { parentId: "p", siblingOrder: 2 }, ["b009", "b010"]);
+    w.store.replaceRelationships("p", null, ["b008"]);
+    const load = async (id: string) => (await run("item.load", { context: {}, deps: w.deps(id) }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect((await load("c")).dependencies).toEqual([]);
+    const own = await load("c2");
+    expect(own.dependencies.map((dependency) => dependency.number)).toEqual([9, 10]);
+    expect(own.dependencies.flatMap((dependency) => Object.keys(dependency))).not.toContain("inheritedFrom");
+    expect(await run("item.dependenciesMet", { context: ctx(own), config: {} })).toMatchObject({ status: "pending", message: "Waiting for dependencies: #9" });
+  });
+
+  test("AC-2.1 a child's context lists only its own dependency under a grandparent and parent that have unmet ones", async () => {
+    const w = await world({ pipelineStages: STAGES });
+    w.add("g", 1); w.add("p", 2); w.add("c", 3); w.add("b010", 10); w.add("b020", 20); w.add("b030", 30);
+    w.store.replaceRelationships("p", { parentId: "g", siblingOrder: 1 }, ["b020"]);
+    w.store.replaceRelationships("c", { parentId: "p", siblingOrder: 1 }, ["b030"]);
+    w.store.replaceRelationships("g", null, ["b010"]);
+    const loaded = (await run("item.load", { context: {}, deps: w.deps("c") }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(loaded.dependencies.map((dependency) => dependency.number)).toEqual([30]);
+    expect(JSON.stringify(loaded)).not.toContain("inheritedFrom");
+  });
+
+  test("AC-5.2 a sibling-blocked child waits for the sibling and passes once it is closed", async () => {
+    const w = await world({ pipelineStages: STAGES });
+    w.add("p", 1); w.add("s2", 2); w.add("s3", 3);
+    w.store.replaceRelationships("s2", { parentId: "p", siblingOrder: 1 }, []);
+    w.store.replaceRelationships("s3", { parentId: "p", siblingOrder: 2 }, ["s2"]);
+    const gate = async () => run("item.dependenciesMet", { context: ctx((await run("item.load", { context: {}, deps: w.deps("s3") }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext), config: {} });
+    expect(await gate()).toMatchObject({ status: "pending", message: "Waiting for dependencies: #2" });
+    w.add("s2", 2, { state: "closed" });
+    expect(await gate()).toEqual({ status: "pass" });
   });
 
   test("AC-4.1 a blocker exactly at the stage is waited for and subscribed to", async () => {

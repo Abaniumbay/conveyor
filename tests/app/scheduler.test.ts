@@ -15,7 +15,11 @@ afterEach(async () => {
 
 async function setup(options: { runners?: number; extra?: (root: string) => Record<string, unknown> } = {}) {
   const world = await itemWorld(options.extra);
-  if (options.runners !== undefined) world.config.settings.runners = options.runners;
+  if (options.runners !== undefined) {
+    world.config.settings.runners = options.runners;
+    for (const pipeline of Object.values(world.config.pipelines)) for (const stage of pipeline.stages) stage.concurrency = options.runners;
+    for (const repository of Object.values(world.config.repositories)) repository.concurrency = options.runners;
+  }
   const running = new Map<string, RunningStage>();
   const state = { draining: false, shuttingDown: false, unready: new Set<string>() };
   const calls = { launched: [] as string[], refreshed: [] as string[][], passes: 0, timers: 0 };
@@ -229,10 +233,10 @@ describe("live status", () => {
   });
 });
 
-describe("dependencies inherited from ancestors", () => {
+describe("an ancestor's unmet dependencies hold back its descendants", () => {
   /** A child queued under `parent` with no dependencies of its own; the parent is a roll-up, so it never starts itself. */
   async function family() {
-    const context = await setup();
+    const context = await setup({ runners: 10 });
     context.world.items.add(10, ["conveyor", "conveyor:implementation"]);
     const blocker = context.world.seed(10, { stage: "implementation", state: "active" });
     const parent = context.ready(1);
@@ -266,24 +270,33 @@ describe("dependencies inherited from ancestors", () => {
     expect(candidate(leaf).dependenciesSatisfied).toBe(true);
   });
 
-  test("a grandchild waits for a dependency of its parent", async () => {
-    const { world, scheduler, ready, child, grandchild, candidate } = await family();
+  test("AC-4.2 a grandchild waits for a dependency of its parent and of its grandparent, each released on its own", async () => {
+    const { world, scheduler, calls, ready, child, grandchild, blocker, close } = await family();
     const own = ready(20);
     world.store.replaceRelationships(child, { parentId: world.store.getIssue(child)!.parentId!, siblingOrder: null }, [own]);
-    expect(candidate(grandchild).dependenciesSatisfied).toBe(false);
-    world.store.upsertIssue({ ...world.store.getIssue(own)!, sourceState: "closed" });
+    // The nearest waiting ancestor is named: the parent, not the grandparent.
+    expect(scheduler.status(world.store.getIssue(grandchild)!)?.reason).toBe("Waiting: parent #2 is blocked by #20");
+    scheduler.schedule();
+    expect(calls.launched).not.toContain(grandchild);
+    close(own);
     // The grandparent's dependency still holds it back.
-    expect(candidate(grandchild).dependenciesSatisfied).toBe(false);
-    expect(scheduler.liveStatusReader()(world.store.getIssue(grandchild)!)?.reason).toContain("(dependencies of ancestor #1)");
+    scheduler.schedule();
+    expect(calls.launched).not.toContain(grandchild);
+    expect(scheduler.status(world.store.getIssue(grandchild)!)?.reason).toBe("Waiting: ancestor #1 is blocked by #10");
+    close(blocker);
+    scheduler.schedule();
+    expect(calls.launched).toContain(grandchild);
   });
 
-  test("a grandchild waits for a dependency of its grandparent", async () => {
-    const { grandchild, child, blocker, close, candidate, scheduler, world } = await family();
+  test("AC-4.1 a grandchild waits for a dependency of its grandparent and starts once it is met", async () => {
+    const { grandchild, child, leaf, blocker, close, scheduler, calls, world } = await family();
     expect(world.store.listDependencies(child)).toEqual([]);
-    expect(candidate(grandchild).dependenciesSatisfied).toBe(false);
-    expect(scheduler.status(world.store.getIssue(grandchild)!)?.reason).toBe("Waiting for #10 (dependencies of ancestor #1)");
+    scheduler.schedule();
+    expect(calls.launched).not.toContain(grandchild);
+    expect(calls.launched).not.toContain(leaf);
     close(blocker);
-    expect(candidate(grandchild).dependenciesSatisfied).toBe(true);
+    scheduler.schedule();
+    expect(calls.launched).toContain(grandchild);
   });
 
   test("a dependency added to the parent after the child exists applies at the next pass", async () => {
@@ -295,7 +308,7 @@ describe("dependencies inherited from ancestors", () => {
     world.store.replaceRelationships(parent, null, [blocker, later]);
     scheduler.schedule();
     expect(calls.launched).not.toContain(leaf);
-    expect(scheduler.status(world.store.getIssue(leaf)!)?.reason).toBe("Waiting for #30 (dependencies of parent #1)");
+    expect(scheduler.status(world.store.getIssue(leaf)!)?.reason).toBe("Waiting: parent #1 is blocked by #30");
     close(later);
     scheduler.schedule();
     expect(calls.launched).toContain(leaf);
@@ -311,6 +324,62 @@ describe("dependencies inherited from ancestors", () => {
     expect(scheduler.candidates().find((entry) => entry.id === id)!.dependenciesSatisfied).toBe(true);
   });
 
+  test("AC-6.1 the status line names the parent and lists every unmet blocker", async () => {
+    const { world, scheduler, ready, parent, leaf, blocker } = await family();
+    expect(scheduler.status(world.store.getIssue(leaf)!)).toMatchObject({ kind: "waiting", reason: "Waiting: parent #1 is blocked by #10" });
+    const second = ready(30);
+    world.store.replaceRelationships(parent, null, [blocker, second]);
+    expect(scheduler.status(world.store.getIssue(leaf)!)?.reason).toBe("Waiting: parent #1 is blocked by #10, #30");
+  });
+
+  test("AC-6.2 a grandchild is held by the grandparent until a nearer ancestor has an unmet dependency", async () => {
+    const { world, scheduler, ready, child, grandchild, parent, blocker } = await family();
+    expect(scheduler.status(world.store.getIssue(grandchild)!)?.reason).toBe("Waiting: ancestor #1 is blocked by #10");
+    world.store.replaceRelationships(child, { parentId: parent, siblingOrder: null }, [ready(20)]);
+    expect(world.store.listDependencies(parent)).toEqual([blocker]);
+    expect(scheduler.status(world.store.getIssue(grandchild)!)?.reason).toBe("Waiting: parent #2 is blocked by #20");
+  });
+
+  test("AC-3.4 a child's own dependency holds it independently of its parent", async () => {
+    const { world, scheduler, calls, ready } = await setup({ runners: 10 });
+    const parent = ready(1);
+    const child = ready(2);
+    const blocker = ready(3);
+    world.store.replaceRelationships(child, { parentId: parent, siblingOrder: null }, [blocker]);
+    scheduler.schedule();
+    expect(calls.launched).not.toContain(child);
+    world.store.upsertIssue({ ...world.store.getIssue(blocker)!, sourceState: "closed" });
+    scheduler.schedule();
+    expect(calls.launched).toContain(child);
+  });
+
+  test("AC-5.1 AC-5.3 a child blocked by its sibling starts after the sibling is done, behind an unmet parent dependency too", async () => {
+    const { world, scheduler, calls, ready, parent, blocker, close } = await family();
+    const first = ready(7);
+    const second = ready(8);
+    world.store.replaceRelationships(first, { parentId: parent, siblingOrder: 1 }, []);
+    world.store.replaceRelationships(second, { parentId: parent, siblingOrder: 2 }, [first]);
+    scheduler.schedule();
+    expect(calls.launched).toEqual([]);
+    close(blocker);
+    scheduler.schedule();
+    expect(calls.launched).toContain(first);
+    expect(calls.launched).not.toContain(second);
+    expect(scheduler.status(world.store.getIssue(second)!)?.reason).toBe("Waiting for dependencies: #7");
+    world.store.setIssueProjection(first, { stage: "implementation", state: "done", warning: null });
+    scheduler.schedule();
+    expect(calls.launched).toContain(second);
+  });
+
+  test("AC-4.3 a parent-link cycle in stored data does not hang selection", async () => {
+    const { world, scheduler, ready } = await setup();
+    const a = ready(1);
+    const b = ready(2);
+    world.store.upsertIssue({ ...world.store.getIssue(a)!, parentId: b });
+    world.store.upsertIssue({ ...world.store.getIssue(b)!, parentId: a });
+    expect(() => scheduler.schedule()).not.toThrow();
+  });
+
   test("a parent link recorded without a plan or tool applies the same way", async () => {
     // A sub-issue added on GitHub reaches the store as the issue's parent link and nothing else.
     const { world, ready, scheduler, parent } = await family();
@@ -319,7 +388,7 @@ describe("dependencies inherited from ancestors", () => {
     expect(scheduler.candidates().find((entry) => entry.id === added)!.dependenciesSatisfied).toBe(false);
   });
 
-  test("admission leaves an item waiting, not stopped, when an inherited dependency is unmet", async () => {
+  test("admission leaves an item waiting, not stopped, when the parent's dependency is unmet", async () => {
     const { world, scheduler, calls, ready, parent } = await family();
     const racing = ready(6);
     // The parent link lands after the candidates are built: the recheck at admission still holds the item.

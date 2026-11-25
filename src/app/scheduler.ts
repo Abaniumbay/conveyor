@@ -278,7 +278,7 @@ export class Scheduler {
     });
   }
 
-  /** An item's own dependencies, then those of every ancestor. */
+  /** An item's own dependencies, then those of every ancestor (nearest first): the ones that hold it back at selection. */
   #allDependencies(issueId: string, reads: InheritanceReads): Array<{ dependencyId: string; ancestorId: string | null; depth: number }> {
     return [
       ...reads.dependencies(issueId).map((dependencyId) => ({ dependencyId, ancestorId: null, depth: 0 })),
@@ -400,15 +400,14 @@ export class Scheduler {
           const dependency = store.getIssue(entry.dependencyId);
           return this.#dependencyMet(issue, candidate.stageId, dependency) ? [] : [{ ...entry, label: dependency ? `#${dependency.sourceNumber}` : entry.dependencyId }];
         });
+      const own = unmet.filter((entry) => entry.ancestorId === null);
+      // Ancestors come nearest first; the status names the nearest one that is waiting.
+      const nearest = unmet.find((entry) => entry.ancestorId !== null);
+      const held = nearest === undefined ? [] : unmet.filter((entry) => entry.ancestorId === nearest.ancestorId);
+      const number = nearest === undefined ? undefined : store.getIssue(nearest.ancestorId!)?.sourceNumber;
       const reasons = [
-        ...(unmet.some((entry) => entry.ancestorId === null)
-          ? [`Waiting for dependencies: ${unmet.filter((entry) => entry.ancestorId === null).map((entry) => entry.label).join(", ")}`]
-          : []),
-        ...[...new Set(unmet.flatMap((entry) => (entry.ancestorId === null ? [] : [entry.ancestorId])))].map((ancestorId) => {
-          const entries = unmet.filter((entry) => entry.ancestorId === ancestorId);
-          const number = store.getIssue(ancestorId)?.sourceNumber;
-          return `Waiting for ${entries.map((entry) => entry.label).join(", ")} (dependencies of ${entries[0]!.depth === 1 ? "parent" : "ancestor"} ${number === undefined ? ancestorId : `#${number}`})`;
-        }),
+        ...(own.length > 0 ? [`Waiting for dependencies: ${own.map((entry) => entry.label).join(", ")}`] : []),
+        ...(nearest === undefined ? [] : [`Waiting: ${nearest.depth === 1 ? "parent" : "ancestor"} ${number === undefined ? nearest.ancestorId : `#${number}`} is blocked by ${held.map((entry) => entry.label).join(", ")}`]),
       ];
       return {
         kind: "waiting",

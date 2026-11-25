@@ -83,7 +83,7 @@ const detailIssue: IssueCardViewModel = {
   parent: null,
   children: [],
   dependencies: [],
-  inheritedDependencies: [],
+ 
   working: true,
   needsAttention: false,
   retryable: false,
@@ -433,7 +433,10 @@ describe("createWebHandler", () => {
     const details = await handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
     expect(details.status).toBe(200);
     expect(details.headers.get("cache-control")).toBe("no-store");
-    expect(await details.json()).toMatchObject({ id: detailIssue.id, title: "Keep <item> safe", csrfToken: auth.getSession(cookie)!.csrfToken });
+    const body = await details.json();
+    expect(body).toMatchObject({ id: detailIssue.id, title: "Keep <item> safe", csrfToken: auth.getSession(cookie)!.csrfToken });
+    // AC-7.4: the served item model carries no inherited dependency list.
+    expect("inheritedDependencies" in body).toBe(false);
 
     expect((await handler(new Request("http://localhost/api/v1/items/repo/999", { headers: { cookie } }))).status).toBe(404);
     expect((await handler(new Request("http://localhost/api/v1/items/unknown/1", { headers: { cookie } }))).status).toBe(404);

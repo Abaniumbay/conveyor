@@ -37,7 +37,7 @@ beforeAll(async () => {
   store.createRun({ id: "run1", issueId: "i1", stageId: "implementation", attempt: 1, kind: "stage", status: "completed", configHash: "h", startedAt: "2026-10-20T00:00:00.000Z" });
   store.openQuestion({ issueId: "i1", runId: "run1", prompt: "Which?", reason: "unclear", options: ["a", "b"] });
   store.appendConversationMessage({ issueId: "i1", runId: null, stageId: null, actorType: "user", actorId: "u", actorName: "Owner", actorTitle: null, message: "hello" });
-  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: createOperatorMcpHandler({ facade: { store, status: () => ({}), findItem: () => null, createIssue: () => { throw new Error("unused"); }, dispatch: () => { throw new Error("unused"); } }, tokenIsActive: () => true }) });
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: createOperatorMcpHandler({ facade: { store, status: () => ({}), waitingReason: () => null, findItem: () => null, createIssue: () => { throw new Error("unused"); }, dispatch: () => { throw new Error("unused"); } }, tokenIsActive: () => true }) });
   stop = () => void server.stop(true);
   client = new Client({ name: "test", version: "1" });
   await client.connect(new StreamableHTTPClientTransport(new URL(OPERATOR_MCP_PATH, server.url.href), { requestInit: { headers: { authorization: "Bearer abc" } } }) as Parameters<Client["connect"]>[0]);
@@ -71,12 +71,19 @@ describe("operator state tools", () => {
     ]);
   });
 
+  test("AC-6.4 get_item no longer advertises inheritedDependencies and mentions the waiting status line", async () => {
+    const description = (await client.listTools()).tools.find((tool) => tool.name === "get_item")!.description!;
+    expect(description).not.toContain("inheritedDependencies");
+    expect(description).toContain("waiting");
+  });
+
   test("AC-3 get_item returns parent, children, criteria and labels", async () => {
     const parent = (await call("get_item", { repository: "repo", number: 1 })).value;
     expect(parent.labels).toEqual(["conveyor", "conveyor:implementation"]);
     expect(parent.children).toMatchObject([{ number: 2 }]);
     expect(parent.criteria).toMatchObject([{ id: "AC-1", manual: false }, { id: "AC-2", manual: true }]);
     expect((await call("get_item", { repository: "repo", number: 2 })).value.parent).toBe(1);
+    expect("inheritedDependencies" in parent).toBe(false);
   });
 
   test("AC-4 get_conversation returns the shared conversation messages", async () => {
@@ -105,17 +112,5 @@ describe("operator state tools", () => {
     expect(repository.isError).toBe(true);
     expect(repository.value).toContain("nope/none");
     expect((await call("get_conversation", { repository: "nope/none", number: 1 })).value).toContain("nope/none");
-  });
-
-  // Last: it adds an item the earlier tests do not expect.
-  test("get_item lists inherited dependencies apart from its own, each tagged with its ancestor", async () => {
-    issue("i3", 3, { parentId: "i2" });
-    store.replaceRelationships("i3", { parentId: "i2", siblingOrder: 1 }, []);
-    const grandchild = (await call("get_item", { repository: "repo", number: 3 })).value;
-    expect(grandchild.dependencies).toEqual([]);
-    expect(grandchild.inheritedDependencies).toEqual([{ number: 1, from: 2 }]);
-    const child = (await call("get_item", { repository: "repo", number: 2 })).value;
-    expect(child.dependencies).toEqual([1]);
-    expect(child.inheritedDependencies).toEqual([]);
   });
 });

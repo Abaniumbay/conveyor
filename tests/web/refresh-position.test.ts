@@ -40,7 +40,7 @@ function issue(id: string, number: number, title = id): IssueCardViewModel {
     parent: null,
     children: [],
     dependencies: [],
-    inheritedDependencies: [],
+   
     working: false,
     needsAttention: false,
     retryable: false,

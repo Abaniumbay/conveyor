@@ -40,7 +40,7 @@ const parent: IssueCardViewModel = {
     { id: "dependency", repository: "foundation", number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40", satisfied: true },
     { id: "dependency-open", repository: "foundation", number: 39, title: "Open foundation", url: "https://github.com/sample/repo/issues/39", satisfied: false },
   ],
-  inheritedDependencies: [],
+ 
   working: true,
   needsAttention: true,
   retryable: false,
@@ -80,7 +80,7 @@ const backlogIssue: IssueCardViewModel = {
   parent: null,
   children: [],
   dependencies: [],
-  inheritedDependencies: [],
+ 
   working: false,
   needsAttention: false,
   retryable: false,
@@ -647,13 +647,18 @@ describe("renderDashboard", () => {
     expect(unlabelled).not.toContain("No split");
   });
 
-  test("shows inherited dependencies apart from the item's own, each tagged with its ancestor", () => {
-    const issue = { ...backlogIssue, dependencies: [], inheritedDependencies: [{ id: "i", repository: "foundation", number: 388, title: "Inherited foundation", url: "https://github.com/sample/repo/issues/388", satisfied: false, from: 391 }] };
+  test("AC-7.2 a held-back item's details show the status line and no inherited dependency list", () => {
+    const issue = { ...backlogIssue, dependencies: [], waiting: { kind: "waiting" as const, reason: "Waiting: parent #391 is blocked by #388", since: "2026-10-01T00:00:00Z", nextCheckAt: null, deadline: null } };
     const html = renderIssueDetails(issue);
-    expect(html).toContain("Also blocked by (from the parent chain)");
-    expect(html).toContain("#388");
-    expect(html).toContain("(from #391)");
+    expect(html).toContain("Waiting: parent #391 is blocked by #388");
+    expect(html).not.toContain("Also blocked by");
+    expect(html).not.toContain("(from the parent chain)");
     expect(html).not.toContain("Blocked by:");
+  });
+
+  test("AC-7.3 an item without relations renders no relationships section", () => {
+    const html = renderIssueDetails({ ...backlogIssue, parent: null, children: [], dependencies: [] });
+    expect(html).not.toContain('class="relationships"');
   });
 
   test("renders visible approved and unapproved criterion states", () => {

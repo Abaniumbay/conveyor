@@ -2619,6 +2619,7 @@ export class ConveyorService {
       activeWork: () => this.activeWork(),
       githubCallReport: () => this.githubCallReport(),
       itemNow: (issueId) => this.itemNow(issueId),
+      waitingReason: (issueId) => this.liveIssueStatus(issueId)?.reason ?? null,
       hasRunningAgent: (issueId) => this.hasRunningAgent(issueId),
       canResumeRollupParent: (issueId) => this.canResumeRollupParent(issueId),
       canRetryIssue: (issueId) => this.canRetryIssue(issueId),

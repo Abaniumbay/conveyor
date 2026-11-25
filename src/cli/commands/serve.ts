@@ -145,6 +145,7 @@ export const serve: Command = {
         facade: {
           store: control.store,
           status: () => controlStatus(control, controlInfo),
+          waitingReason: (issueId) => control.waitingReason(issueId),
           findItem: (reference) => operatorItemTarget(control, reference),
           createIssue: (input) => control.createIssue(input),
           dispatch: (name, input) => control.commands.dispatch(name, input, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }),
