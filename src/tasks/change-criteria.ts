@@ -94,6 +94,12 @@ function testNameSegments(name: string): string[] {
   return names.length > 0 ? names : [name];
 }
 
+/** `Class.method title` with identifier-like qualifiers: the fallback when the whole plain title is not in the source. */
+function dotQualifiedSegments(name: string): string[] | null {
+  const match = /^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.(\S.*)$/.exec(name);
+  return match && !/::|#| > /.test(name) ? [...match[1]!.split("."), match[2]!] : null;
+}
+
 const SIMPLE_ESCAPES: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", "0": "\0" };
 
 /** Evaluates the body of a JS string literal; null when it holds an escape this check does not understand. */
@@ -106,11 +112,14 @@ function unescapeLiteral(body: string): string | null {
     if (next === undefined) return null;
     if (next === "u" || next === "x") {
       const braced = next === "u" && body[i + 1] === "{";
-      const end = braced ? body.indexOf("}", i) : i + (next === "u" ? 4 : 2);
-      const hex = braced ? body.slice(i + 2, end) : body.slice(i + 1, end + 1);
-      if (!/^[0-9a-fA-F]+$/.test(hex)) return null;
-      out += String.fromCodePoint(Number.parseInt(hex, 16));
-      i = braced ? end : end;
+      const close = braced ? body.indexOf("}", i) : -1;
+      if (braced && close < 0) return null;
+      const hex = braced ? body.slice(i + 2, close) : body.slice(i + 1, i + 1 + (next === "u" ? 4 : 2));
+      if (!/^[0-9a-fA-F]+$/.test(hex) || (!braced && hex.length !== (next === "u" ? 4 : 2))) return null;
+      const code = Number.parseInt(hex, 16);
+      if (code > 0x10ffff) return null;
+      out += String.fromCodePoint(code);
+      i = braced ? close : i + hex.length;
     } else out += SIMPLE_ESCAPES[next] ?? next;
   }
   return out;
@@ -139,8 +148,7 @@ function literalLines(source: string, value: string): number[] {
   return lines;
 }
 
-function sourceLineForTest(source: string, name: string): { line: number } | { missing: string } {
-  const segments = testNameSegments(name);
+function sourceLineForSegments(source: string, segments: string[], name: string): { line: number } | { missing: string } {
   const final = segments.at(-1)!;
   const literal = literalLines(source, final)[0];
   const rawMatches = (segment: string) => !segment.includes("\\") && source.includes(segment);
@@ -148,6 +156,15 @@ function sourceLineForTest(source: string, name: string): { line: number } | { m
   if (missing) return { missing: segments.length === 1 ? name : missing };
   if (literal !== undefined) return { line: literal };
   return { line: source.split(/\r?\n/).findIndex((sourceLine) => sourceLine.includes(final)) + 1 };
+}
+
+function sourceLineForTest(source: string, name: string): { line: number } | { missing: string } {
+  const whole = sourceLineForSegments(source, testNameSegments(name), name);
+  if (!("missing" in whole)) return whole;
+  const qualified = dotQualifiedSegments(name);
+  if (!qualified) return whole;
+  const fallback = sourceLineForSegments(source, qualified, name);
+  return "missing" in fallback ? whole : fallback;
 }
 
 /** The item's criteria with their approval at `headSha` (an approval for another head or other text is none). */

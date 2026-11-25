@@ -718,10 +718,32 @@ describe("change tools", () => {
   });
 
   test("AC-7.1 criterionTestsVerified reports the full dotted name when only pieces appear", async () => {
-    const { result, w } = await verifyCriterionTestLink("AC-1.2 does x", "// AC-1 notes\nit(\"2 does x\", () => {})");
+    const w = await world({ body: PR_BODY, files: { "tests/a.test.ts": "// AC-1 notes\nit(\"2 does x\", () => {})" } }, false, BODY);
+    await dispatchTool(
+      { name: "change.recordCriterionTests", input: { criteria: [{ criterionId: "a", tests: [{ name: "AC-1.2 does x", file: "tests/a.test.ts" }] }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+      { registry, deps: () => w.deps, liveHeadSha: async () => null, store: w.store },
+    );
+    w.store.upsertPullRequest({ issueId: "i1", id: ID, number: 5, url: "https://x/pull/5", state: "open" });
 
-    expect(result).toMatchObject({ status: "fail" });
-    expect((result as Fail).message).toContain("test \"AC-1.2 does x\" must appear in tests/a.test.ts as written");
+    const result = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "a", text: "It works", manual: false }] } as never }), deps: w.deps }) as Fail;
+
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("test \"AC-1.2 does x\" must appear in tests/a.test.ts as written");
+    expect(w.store.criterionTestEvidence("i1")[0]?.sourceLinkHead).toBeNull();
+  });
+
+  test("criterionTestsVerified fails cleanly on malformed or out-of-range unicode escapes", async () => {
+    for (const source of ["it('\\u{abc', () => {})", "it('\\u{110000}', () => {})", "it('\\u12', () => {})"]) {
+      const { result } = await verifyCriterionTestLink("works", source);
+      expect(result).toMatchObject({ status: "fail" });
+    }
+  });
+
+  test("criterionTestsVerified resolves a Class.title name whose title has spaces", async () => {
+    const { result, w } = await verifyCriterionTestLink("MediaTests.classifies jpeg", 'class MediaTests {}\n\ntest("classifies jpeg", () => {})');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(3);
   });
 
   test("AC-7.2 criterionTestsVerified quotes the full dotted name when absent", async () => {
