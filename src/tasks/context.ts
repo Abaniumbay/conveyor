@@ -53,7 +53,7 @@ export interface ItemContext {
     dependsOn?: number[];
   }>;
   /** `address` is the blocker's repository; absent in snapshots stored before it was recorded. */
-  dependencies: Array<{ id: string; number: number; satisfied: boolean; /** The blocker's stage and its pipeline's stage ids in order, for an `after` threshold; absent when unknown. */ stage?: string; stages?: string[]; address?: string; /** The number of the ancestor whose dependency this is; absent for the item's own. */ inheritedFrom?: number; /** Whether that ancestor is the item's direct parent. */ fromParent?: boolean }>;
+  dependencies: Array<{ id: string; number: number; satisfied: boolean; /** The blocker's stage and its pipeline's stage ids in order, for an `after` threshold; absent when unknown. */ stage?: string; stages?: string[]; address?: string; }>;
   systemLabels: string[];
   /** The recorded merge of the item's current change; present only once it merged. `observedAt` is when this snapshot was loaded. */
   merge?: { changeNumber: number; mergedAt: string; observedAt: string };

@@ -18,6 +18,8 @@ export interface OperatorFacade {
   store: OperatorReadStore;
   /** The service status, as `conveyor status` reports it. */
   status(): unknown;
+  /** Why the scheduler holds the item back, as the dashboard shows it (for example "Waiting: parent #12 is blocked by #9"); null when it is not held back. */
+  waitingReason(issueId: string): string | null;
   /** Finds an item by `<repository>:<number>`; null when Conveyor does not know it. */
   findItem(reference: string): { issueId: string; running: boolean } | null;
   /** Creates and enrolls an issue in an onboarded repository. Not a command: only the operator MCP offers it. */

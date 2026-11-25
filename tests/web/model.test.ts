@@ -33,7 +33,7 @@ function card(number: number, overrides: Partial<IssueCardViewModel> = {}): Issu
     parent: null,
     children: [],
     dependencies: [],
-    inheritedDependencies: [],
+   
     working: false,
     needsAttention: false,
     retryable: false,

@@ -63,6 +63,8 @@ export interface ControlSources {
   githubCallReport(): Promise<GitHubCallReport>;
   /** Where an item is now: its stage, state, why and since when; null for an unknown item. */
   itemNow(issueId: string): IssueJourneyViewModel["now"] | null;
+  /** Why the scheduler holds an item back (waiting for dependencies, or an ancestor's unmet dependency), or null. */
+  waitingReason(issueId: string): string | null;
   /** Whether an agent (not a script) is running on the item. */
   hasRunningAgent(issueId: string): boolean;
   /** Whether a stopped roll-up parent can go back to waiting for its children. */

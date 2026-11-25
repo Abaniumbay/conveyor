@@ -28,7 +28,7 @@ function setup() {
     store: {} as OperatorFacade["store"],
     status: () => ({}),
     createIssue: () => { throw new Error("unused"); },
-    findItem: (reference) => ITEMS[reference] ?? null,
+    waitingReason: () => null, findItem: (reference) => ITEMS[reference] ?? null,
     dispatch: (name: CommandName, input) => commands.dispatch(name, input as never, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }) as never,
   };
   const call = (name: string, input: unknown) => OPERATOR_TOOLS.find((tool) => tool.name === name)!.handler({ input, facade });
