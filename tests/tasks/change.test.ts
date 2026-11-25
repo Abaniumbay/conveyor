@@ -612,6 +612,147 @@ describe("change tools", () => {
     expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(3);
   });
 
+  test("AC-1.1 criterionTestsVerified passes an apostrophe name in a single-quoted literal with an escaped apostrophe", async () => {
+    const { result, w } = await verifyCriterionTestLink("the user's total", "it('the user\\'s total', () => {})");
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(1);
+  });
+
+  test("AC-2.1 criterionTestsVerified passes an apostrophe name in a double-quoted literal", async () => {
+    const { result, w } = await verifyCriterionTestLink("the user's total", 'it("the user\'s total", () => {})');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(1);
+  });
+
+  test("AC-3.1 criterionTestsVerified passes an apostrophe name in a template literal", async () => {
+    const { result, w } = await verifyCriterionTestLink("the user's total", "it(`the user's total`, () => {})");
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(1);
+  });
+
+  test("AC-4.1 criterionTestsVerified passes a double-quote name in an escaped double-quoted literal", async () => {
+    const { result, w } = await verifyCriterionTestLink('renders "quoted" title', 'it("renders \\"quoted\\" title", () => {})');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(1);
+  });
+
+  test("AC-4.2 criterionTestsVerified passes a double-quote name in a single-quoted literal", async () => {
+    const { result, w } = await verifyCriterionTestLink('renders "quoted" title', 'it(\'renders "quoted" title\', () => {})');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(1);
+  });
+
+  test("AC-5.1 criterionTestsVerified passes a backslash name written as an escaped backslash", async () => {
+    const { result, w } = await verifyCriterionTestLink('reads C:\\temp file', 'it("reads C:\\\\temp file", () => {})');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(1);
+  });
+
+  test("AC-6.1 criterionTestsVerified passes a plain dotted name whole", async () => {
+    const { result, w } = await verifyCriterionTestLink('AC-1.2 does x', 'it("AC-1.2 does x", () => {})');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(1);
+  });
+
+  test("AC-6.2 criterionTestsVerified finds a plain dotted name at its own line", async () => {
+    const { result, w } = await verifyCriterionTestLink('AC-2.2 total excludes transfers', 'describe("x", () => {\n\n  it("AC-2.2 total excludes transfers", () => {});\n});');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(3);
+  });
+
+  test("AC-8.2 criterionTestsVerified still splits Class.method with an escape-needing name", async () => {
+    const { result, w } = await verifyCriterionTestLink("MediaTests.it's_ok", 'class MediaTests {}\n\ntest("it\'s_ok", () => {})');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(3);
+  });
+
+  test("AC-9.1 criterionTestsVerified reports the declaration line, not an earlier mention", async () => {
+    const { result, w } = await verifyCriterionTestLink("the user's total", "// the user's total is covered below\n\nit('the user\\'s total', () => {})");
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(3);
+  });
+
+  test("AC-9.2 criterionTestsVerified reports the declaration line of a whole dotted name", async () => {
+    const { result, w } = await verifyCriterionTestLink('AC-1.2 does x', '// 2 does x was renamed\nconst a = 1;\nit("AC-1.2 does x", () => {})');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(3);
+  });
+
+  test("AC-9.3 criterionTestsVerified reports the final segment line of a qualified escaped name", async () => {
+    const { result, w } = await verifyCriterionTestLink("media > it's fine", 'describe("media", () => {\n  it(\'it\\\'s fine\', () => {});\n});');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(2);
+  });
+
+  test("AC-1.2 criterionTestsVerified fails a different single-quoted name", async () => {
+    const { result, w } = await verifyCriterionTestLink("the user's total", "it('the users total', () => {})");
+
+    expect(result).toMatchObject({ status: "fail" });
+    expect((result as Fail).message).toContain("test \"the user's total\" must appear in tests/a.test.ts as written");
+  });
+
+  test("AC-3.2 criterionTestsVerified fails a template literal with a substitution", async () => {
+    const { result, w } = await verifyCriterionTestLink("the user's total", "it(`the user's ${name} total`, () => {})");
+
+    expect(result).toMatchObject({ status: "fail" });
+    expect((result as Fail).message).toContain("must appear in tests/a.test.ts as written");
+  });
+
+  test("AC-5.2 criterionTestsVerified fails a backslash name against a tab escape", async () => {
+    const { result, w } = await verifyCriterionTestLink("reads C:\\temp file", "it(\"reads C:\\temp file\", () => {})");
+
+    expect(result).toMatchObject({ status: "fail" });
+    expect((result as Fail).message).toContain("\"reads C:\\temp file\"");
+  });
+
+  test("AC-7.1 criterionTestsVerified reports the full dotted name when only pieces appear", async () => {
+    const w = await world({ body: PR_BODY, files: { "tests/a.test.ts": "// AC-1 notes\nit(\"2 does x\", () => {})" } }, false, BODY);
+    await dispatchTool(
+      { name: "change.recordCriterionTests", input: { criteria: [{ criterionId: "a", tests: [{ name: "AC-1.2 does x", file: "tests/a.test.ts" }] }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+      { registry, deps: () => w.deps, liveHeadSha: async () => null, store: w.store },
+    );
+    w.store.upsertPullRequest({ issueId: "i1", id: ID, number: 5, url: "https://x/pull/5", state: "open" });
+
+    const result = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "a", text: "It works", manual: false }] } as never }), deps: w.deps }) as Fail;
+
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("test \"AC-1.2 does x\" must appear in tests/a.test.ts as written");
+    expect(w.store.criterionTestEvidence("i1")[0]?.sourceLinkHead).toBeNull();
+  });
+
+  test("criterionTestsVerified fails cleanly on malformed or out-of-range unicode escapes", async () => {
+    for (const source of ["it('\\u{abc', () => {})", "it('\\u{110000}', () => {})", "it('\\u12', () => {})"]) {
+      const { result } = await verifyCriterionTestLink("works", source);
+      expect(result).toMatchObject({ status: "fail" });
+    }
+  });
+
+  test("criterionTestsVerified resolves a Class.title name whose title has spaces", async () => {
+    const { result, w } = await verifyCriterionTestLink("MediaTests.classifies jpeg", 'class MediaTests {}\n\ntest("classifies jpeg", () => {})');
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(3);
+  });
+
+  test("AC-7.2 criterionTestsVerified quotes the full dotted name when absent", async () => {
+    const { result, w } = await verifyCriterionTestLink("AC-2.2 total excludes transfers", "it(\"other\", () => {})");
+
+    expect(result).toMatchObject({ status: "fail" });
+    expect((result as Fail).message).toContain("\"AC-2.2 total excludes transfers\"");
+  });
+
   test("criterionTestsVerified fails unlinked, stale, and renamed evidence without naming a stage and refreshes a moved line", async () => {
     expect(registry.require("change.criterionTestsVerified")).toMatchObject({
       kind: "check", writes: [], invalidates: [],
