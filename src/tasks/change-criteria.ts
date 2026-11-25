@@ -86,17 +86,67 @@ const MALFORMED = (detail: string) => `PR checklist markers are malformed: ${det
 function testNameSegments(name: string): string[] {
   const qualified = name.split(/::|#| > /);
   const final = qualified.at(-1)!;
+  // A plain title (whitespace, no qualifier separator) is one name; `Class.method` has no whitespace and still splits.
+  const plain = qualified.length === 1 && /\s/.test(name);
   const qualifiers = qualified.slice(0, -1).flatMap((part) => part.includes("/") ? [] : part.split("."));
-  const segments = qualified.length === 1 && !final.includes("/") ? final.split(".") : [...qualifiers, final];
+  const segments = plain ? [name] : qualified.length === 1 && !final.includes("/") ? final.split(".") : [...qualifiers, final];
   const names = segments.filter((segment) => segment.length > 0);
   return names.length > 0 ? names : [name];
 }
 
+const SIMPLE_ESCAPES: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", "0": "\0" };
+
+/** Evaluates the body of a JS string literal; null when it holds an escape this check does not understand. */
+function unescapeLiteral(body: string): string | null {
+  let out = "";
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]!;
+    if (ch !== "\\") { out += ch; continue; }
+    const next = body[++i];
+    if (next === undefined) return null;
+    if (next === "u" || next === "x") {
+      const braced = next === "u" && body[i + 1] === "{";
+      const end = braced ? body.indexOf("}", i) : i + (next === "u" ? 4 : 2);
+      const hex = braced ? body.slice(i + 2, end) : body.slice(i + 1, end + 1);
+      if (!/^[0-9a-fA-F]+$/.test(hex)) return null;
+      out += String.fromCodePoint(Number.parseInt(hex, 16));
+      i = braced ? end : end;
+    } else out += SIMPLE_ESCAPES[next] ?? next;
+  }
+  return out;
+}
+
+/** Lines (1-based) of quoted string literals whose evaluated value is `value`; template literals with `${` never count. */
+function literalLines(source: string, value: string): number[] {
+  const lines: number[] = [];
+  let line = 1;
+  for (let i = 0; i < source.length; i++) {
+    const quote = source[i]!;
+    if (quote === "\n") { line++; continue; }
+    if (quote !== "'" && quote !== "\"" && quote !== "`") continue;
+    const startLine = line;
+    let j = i + 1;
+    let substitution = false;
+    for (; j < source.length && source[j] !== quote; j++) {
+      if (source[j] === "\\") j++;
+      else if (source[j] === "\n") { if (quote !== "`") break; line++; }
+      else if (quote === "`" && source[j] === "$" && source[j + 1] === "{") substitution = true;
+    }
+    if (source[j] !== quote) { if (quote !== "`") continue; break; }
+    if (!substitution && unescapeLiteral(source.slice(i + 1, j)) === value) lines.push(startLine);
+    i = j;
+  }
+  return lines;
+}
+
 function sourceLineForTest(source: string, name: string): { line: number } | { missing: string } {
   const segments = testNameSegments(name);
-  const missing = segments.find((segment) => !source.includes(segment));
-  if (missing) return { missing };
   const final = segments.at(-1)!;
+  const literal = literalLines(source, final)[0];
+  const rawMatches = (segment: string) => !segment.includes("\\") && source.includes(segment);
+  const missing = segments.find((segment) => segment !== final ? !source.includes(segment) : literal === undefined && !rawMatches(segment));
+  if (missing) return { missing: segments.length === 1 ? name : missing };
+  if (literal !== undefined) return { line: literal };
   return { line: source.split(/\r?\n/).findIndex((sourceLine) => sourceLine.includes(final)) + 1 };
 }
 
